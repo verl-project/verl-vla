@@ -1,0 +1,4 @@
+pytest
+pre-commit
+pytest-asyncio
+pytest-rerunfailures

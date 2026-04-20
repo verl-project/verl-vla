@@ -1,0 +1,113 @@
+# -------------------------------
+# build-system
+# -------------------------------
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+# -------------------------------
+# project (PEP 621 metadata)
+# -------------------------------
+[project]
+name = "verl-vla"
+# We'll mark the version as "dynamic" because it's read from the package module.
+# (PEP 621 calls this "dynamic version").
+# The actual version is specified in the [tool.setuptools.dynamic] section below.
+dynamic = ["version", "dependencies"]
+
+description = "VLA training framework of Volcano Engine"
+license = {text = "Apache-2.0"}  # Changed from file to text format
+readme = {file = "README.md", content-type = "text/markdown"}
+requires-python = ">=3.10"
+authors = [
+    {name = "Bytedance"},
+]
+
+[project.urls]
+Repository = "https://github.com/verl-project/verl-vla"
+
+# -------------------------------
+# tool.ruff - Linting configuration
+# -------------------------------
+[tool.ruff]
+# Note: While the formatter will attempt to format lines such that they remain within the line-length,
+# it isn't a hard upper bound, and formatted lines may exceed the line-length.
+line-length = 120
+
+[tool.ruff.lint]
+isort = {known-first-party = ["verl_vla"]}
+# c.f. https://github.com/vllm-project/vllm/blob/ce8d6b75fc0586045df75ee1568a5b5f9957251b/pyproject.toml
+select = [
+    # pycodestyle
+    "E",
+    # Pyflakes
+    "F",
+    # pyupgrade
+    "UP",
+    # flake8-bugbear
+    "B",
+    # isort
+    "I",
+    "G",
+]
+ignore = [
+    # star imports
+    "F405", "F403",
+    # lambda expression assignment
+    "E731",
+    # Loop control variable not used within loop body
+    "B007",
+    # f-string format
+    "UP032",
+    # `.log()` statement uses f-string
+    "G004",
+    # X | None for type annotations
+    "UP045",
+    # deprecated import
+    "UP035",
+]
+
+# -------------------------------
+# tool.mypy - typechecking config
+# -------------------------------
+[tool.mypy]
+pretty            = true
+ignore_missing_imports = true
+explicit_package_bases = true
+follow_imports = "skip"
+
+# Blanket silence
+ignore_errors = true
+
+# -------------------------------
+# tool.pytest - Test configuration
+# -------------------------------
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+# -------------------------------
+# tool.setuptools - Additional config
+# -------------------------------
+[tool.setuptools]
+# True means `setuptools` will attempt to include all relevant files in package_data automatically.
+# This corresponds to `include_package_data=True` in setup.py.
+include-package-data = true
+
+# We read the version from the package attribute in 'src/verl_vla/version.py'.
+[tool.setuptools.dynamic]
+version = {attr = "verl_vla.version.__version__"}
+dependencies = {file = ["requirements.txt"]}
+
+# Match the repository's src/ layout.
+[tool.setuptools.package-dir]
+"" = "src"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+# Include package-local config files when present.
+[tool.setuptools.package-data]
+verl_vla = [
+  "configs/**/*.yaml",
+]
