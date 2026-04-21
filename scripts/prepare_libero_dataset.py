@@ -1,4 +1,4 @@
-# Copyright 2024 Bytedance Ltd. and/or its affiliates
+# Copyright 2026 Bytedance Ltd. and/or its affiliates
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -18,6 +18,7 @@ Preprocess the Geometry3k dataset to parquet format
 import argparse
 import os
 import random
+import re
 
 import numpy as np
 import torch
@@ -52,25 +53,62 @@ def compute_total_num_group_envs(task_suite: Benchmark):
     return total_num_group_envs, cumsum_trial_id_bins
 
 
-def build_dataset_for_suite(task_suite_name: str, local_save_dir: str):
+def parse_task_ids(task_ids: str | None) -> list[int] | None:
+    if task_ids is None:
+        return None
+    parsed_task_ids = [task_id.strip() for task_id in task_ids.split(",") if task_id.strip()]
+    if not parsed_task_ids:
+        raise ValueError("--task_ids was provided but no valid task IDs were found.")
+    return sorted({int(task_id) for task_id in parsed_task_ids})
+
+
+def sanitize_for_path(value: str) -> str:
+    value = value.strip().lower()
+    value = re.sub(r"[^a-z0-9]+", "_", value)
+    return value.strip("_") or "task"
+
+
+def resolve_selected_task_ids(task_suite: Benchmark, selected_task_ids: list[int] | None) -> list[int]:
+    all_task_ids = list(range(task_suite.get_num_tasks()))
+    if selected_task_ids is None:
+        return all_task_ids
+
+    invalid_task_ids = [task_id for task_id in selected_task_ids if task_id not in all_task_ids]
+    if invalid_task_ids:
+        raise ValueError(f"Unknown task IDs {invalid_task_ids} for suite. Valid task IDs: {all_task_ids}")
+    return selected_task_ids
+
+
+def get_output_dir_name(task_suite_name: str, task_suite: Benchmark, selected_task_ids: list[int]) -> str:
+    if len(selected_task_ids) != 1:
+        return task_suite_name
+
+    task_id = selected_task_ids[0]
+    task = task_suite.get_task(task_id)
+    task_name = getattr(task, "name", None) or getattr(task, "language", f"task_{task_id}")
+    return os.path.join(task_suite_name, f"task_{task_id}_{sanitize_for_path(task_name)}")
+
+
+def build_dataset_for_suite(task_suite_name: str, local_save_dir: str, selected_task_ids: list[int] | None = None):
     task_suite = get_benchmark(task_suite_name)()
     total_num_group_envs, cumsum_trial_id_bins = compute_total_num_group_envs(task_suite)
+    selected_task_ids = resolve_selected_task_ids(task_suite, selected_task_ids)
     print(f"\n[Suite: {task_suite_name}]")
     print(f"Total number of group envs: {total_num_group_envs}")
     print(f"Cumsum trial id bins: {cumsum_trial_id_bins}")
+    print(f"Selected Task IDs: {selected_task_ids}")
 
     def get_state_ids_for_task(task_id):
         start_id = 0 if task_id == 0 else cumsum_trial_id_bins[task_id - 1]
         end_id = cumsum_trial_id_bins[task_id]
         return list(range(start_id, end_id))
 
-    all_task_ids = list(range(task_suite.get_num_tasks()))
-    if len(all_task_ids) > 1:
-        train_task_num = max(1, len(all_task_ids) - 1)
-        train_task_ids = sorted(random.sample(all_task_ids, train_task_num))
-        ood_test_task_ids = sorted(list(set(all_task_ids) - set(train_task_ids)))
+    if len(selected_task_ids) > 1:
+        train_task_num = max(1, len(selected_task_ids) - 1)
+        train_task_ids = sorted(random.sample(selected_task_ids, train_task_num))
+        ood_test_task_ids = sorted(list(set(selected_task_ids) - set(train_task_ids)))
     else:
-        train_task_ids = all_task_ids
+        train_task_ids = selected_task_ids
         ood_test_task_ids = []
 
     print("\n[Data Split Plan]")
@@ -80,13 +118,16 @@ def build_dataset_for_suite(task_suite_name: str, local_save_dir: str):
     train_metadata = []
     test_metadata = []
 
-    # Train split + ID test split
     for task_id in train_task_ids:
         all_trials = get_state_ids_for_task(task_id)
         random.shuffle(all_trials)
 
-        train_count = int(len(all_trials) * 0.8)
-        train_count = min(train_count, 40)
+        if len(all_trials) <= 1:
+            train_count = len(all_trials)
+        else:
+            train_count = int(len(all_trials) * 0.8)
+            train_count = max(1, train_count)
+            train_count = min(train_count, 40, len(all_trials) - 1)
         selected_train_trials = all_trials[:train_count]
         selected_id_test_trials = all_trials[train_count:]
 
@@ -96,7 +137,6 @@ def build_dataset_for_suite(task_suite_name: str, local_save_dir: str):
         for state_id in selected_id_test_trials[:10]:
             test_metadata.append({"task_id": task_id, "state_id": state_id, "data_source": "test_in_distribution"})
 
-    # OOD split
     for ood_task_id in ood_test_task_ids:
         ood_all_trials = get_state_ids_for_task(ood_task_id)
         random.shuffle(ood_all_trials)
@@ -142,7 +182,7 @@ def build_dataset_for_suite(task_suite_name: str, local_save_dir: str):
     print("Mapping and processing test dataset...")
     test_dataset = test_ds_meta.map(map_and_process, with_indices=True, num_proc=8)
 
-    suite_save_dir = os.path.join(local_save_dir, task_suite_name)
+    suite_save_dir = os.path.join(local_save_dir, get_output_dir_name(task_suite_name, task_suite, selected_task_ids))
     os.makedirs(suite_save_dir, exist_ok=True)
     print(f"Saving training dataset to {os.path.join(suite_save_dir, 'train.parquet')}")
     train_dataset.to_parquet(os.path.join(suite_save_dir, "train.parquet"))
@@ -187,6 +227,11 @@ if __name__ == "__main__":
     parser.add_argument(
         "--local_save_dir", default="~/data/libero_rl", help="The save directory for the preprocessed dataset."
     )
+    parser.add_argument(
+        "--task_ids",
+        default=None,
+        help="Optional comma-separated task IDs to include. Use a single task ID to generate a single-task dataset.",
+    )
     args = parser.parse_args()
 
     random.seed(42)
@@ -194,7 +239,12 @@ if __name__ == "__main__":
     local_save_dir = os.path.expanduser(args.local_save_dir)
     os.makedirs(local_save_dir, exist_ok=True)
     task_suites = resolve_task_suites(args.task_suite_name)
+    selected_task_ids = parse_task_ids(args.task_ids)
     print(f"Will process task suites: {task_suites}")
 
     for task_suite_name in task_suites:
-        build_dataset_for_suite(task_suite_name=task_suite_name, local_save_dir=local_save_dir)
+        build_dataset_for_suite(
+            task_suite_name=task_suite_name,
+            local_save_dir=local_save_dir,
+            selected_task_ids=selected_task_ids,
+        )
