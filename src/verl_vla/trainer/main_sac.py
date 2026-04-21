@@ -19,28 +19,19 @@ from pprint import pprint
 import datasets
 import hydra
 import ray
-import torch
 from omegaconf import OmegaConf
-from verl import DataProto
 from verl.trainer.constants_ppo import get_ppo_ray_runtime_env
 from verl.trainer.ppo.ray_trainer import ResourcePoolManager
 from verl.trainer.ppo.utils import Role
 from verl.utils import hf_tokenizer
 from verl.utils.fs import copy_local_path_from_hdfs
 
+from verl_vla.workers.env.env_worker import EnvWorker
+
 from .engine.fsdp_workers import RobActorRolloutRefWorker
 from .sac.sac_ray_trainer import RobRaySACTrainer
 
 logger = logging.getLogger(__name__)
-
-
-def calculate_reward(data: DataProto, return_dict: bool = False) -> torch.Tensor:
-    complete_tensor = data.batch["complete"]
-    reward_per_step = complete_tensor.float()
-    if return_dict:
-        return {"reward_tensor": reward_per_step}
-    else:
-        return reward_per_step
 
 
 @hydra.main(config_path="config", config_name="rob_sac_trainer", version_base=None)
@@ -70,10 +61,7 @@ def main_task(config):
 
     # define worker classes
     if config.actor_rollout_ref.actor.strategy in ["fsdp", "fsdp2"]:
-        assert config.actor_rollout_ref.actor.strategy == config.critic.strategy
         from verl.single_controller.ray import RayWorkerGroup
-
-        from verl_vla.workers.env.env_worker import EnvWorker
 
         ray_worker_group_cls = RayWorkerGroup
     else:

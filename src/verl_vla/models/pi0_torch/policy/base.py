@@ -15,6 +15,7 @@
 from abc import ABC, abstractmethod
 
 import torch
+from verl import DataProto
 
 
 class Pi0Input(ABC):
@@ -45,7 +46,14 @@ class Pi0Input(ABC):
 class Pi0Output:
     def __init__(self):
         self.action: torch.Tensor = None
+        self.log_prob: torch.Tensor = None
 
     @classmethod
     @abstractmethod
     def from_model_output(cls, model_output) -> "Pi0Output": ...
+
+    def to_data_proto(self) -> DataProto:
+        tensor_batch = {"action": self.action}
+        if self.log_prob is not None:
+            tensor_batch["log_prob"] = self.log_prob
+        return DataProto.from_dict(tensors=tensor_batch)

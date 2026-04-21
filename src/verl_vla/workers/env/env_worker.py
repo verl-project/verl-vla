@@ -50,20 +50,32 @@ def create_env_batch(obs, rews, dones, infos, meta=None):
 
 
 def create_env_batch_dataproto(obs, rews, terminations, truncations, infos, meta=None):
-    ret_dict = {"obs": obs, "rews": rews, "terminations": terminations, "truncations": truncations, "infos": infos}
+    ret_dict = {"obs": obs, "rewards": rews, "terminations": terminations, "truncations": truncations, "infos": infos}
     if meta is not None:
         ret_dict.update(meta=meta)
 
     ret_dict = put_tensor_cpu(ret_dict)
+    obs_tensor_batch = {f"obs.{key}": value for key, value in ret_dict["obs"]["images_and_states"].items()}
     tensor_batch = {
-        "full_image": ret_dict["obs"]["images_and_states"]["full_image"],
-        "wrist_image": ret_dict["obs"]["images_and_states"]["wrist_image"],
-        "state": ret_dict["obs"]["images_and_states"]["state"],
-        "rews": ret_dict["rews"],
-        "terminations": ret_dict["terminations"],
-        "truncations": ret_dict["truncations"],
+        **obs_tensor_batch,
+        "feedback.rewards": ret_dict["rewards"],
+        "feedback.terminations": ret_dict["terminations"],
+        "feedback.truncations": ret_dict["truncations"],
     }
-    non_tensor_batch = {"task_descriptions": obs["task_descriptions"]}
+    non_tensor_batch = {"obs.task_descriptions": obs["task_descriptions"]}
+    if "intervention_info" in infos:
+        intervention_batch = {
+            f"intervention_info.{key}": value
+            for key, value in infos["intervention_info"].items()
+            if isinstance(value, torch.Tensor)
+        }
+        intervention_non_tensor_batch = {
+            f"intervention_info.{key}": value
+            for key, value in infos["intervention_info"].items()
+            if not isinstance(value, torch.Tensor)
+        }
+        tensor_batch.update(intervention_batch)
+        non_tensor_batch.update(intervention_non_tensor_batch)
     output = DataProto.from_dict(tensors=tensor_batch, non_tensors=non_tensor_batch)
 
     return output
@@ -82,6 +94,7 @@ class EnvWorker(Worker, DistProfilerExtension):
         self.eval_simulator_list = []
 
         self.stage_num = self.cfg.rollout.pipeline_stage_num
+        self.single_env_rollout = bool(self.cfg.train.get("single_env_rollout", False))
         initialize_global_process_group_ray(timeout_second=None)
         device_name = get_device_name()
         env_device_mesh = init_device_mesh(device_name, mesh_shape=(self.world_size, 1), mesh_dim_names=["dp", "tp"])
@@ -146,8 +159,12 @@ class EnvWorker(Worker, DistProfilerExtension):
         """
         This function is used to interact with the environment.
         """
-        chunk_actions: torch.Tensor = data.non_tensor_batch["actions"]
-        chunk_values = data.non_tensor_batch["critic_values"]
+        if data.batch is not None and "action" in data.batch.keys():
+            chunk_actions: torch.Tensor = data.batch["action"]
+            chunk_values = data.batch["critic_value"]
+        else:
+            chunk_actions = torch.as_tensor(data.non_tensor_batch["action"])
+            chunk_values = torch.as_tensor(data.non_tensor_batch["critic_value"])
         stage_id: int = data.meta_info["stage_id"]
 
         # Pi0.5 Libero is not required
@@ -199,27 +216,28 @@ class EnvWorker(Worker, DistProfilerExtension):
         state_ids_list = list(data.non_tensor_batch["state_ids"])
         task_ids_list = list(data.non_tensor_batch["task_ids"])
 
-        assert len(state_ids_list) == self.cfg.train.num_envs * self.stage_num, (
-            f"state_ids_list length is {len(state_ids_list)}, but should be {self.cfg.train.num_envs * self.stage_num}"
+        full_batch_size = self.cfg.train.num_envs * self.stage_num
+        if self.single_env_rollout:
+            assert self.stage_num == 1, "single_env_rollout only supports pipeline_stage_num == 1"
+        stage_batch_size = 1 if self.single_env_rollout else full_batch_size
+        assert len(state_ids_list) == stage_batch_size, (
+            f"state_ids_list length is {len(state_ids_list)}, but should be {stage_batch_size}"
         )
         result_list = []
         for stage_id in range(self.stage_num):
-            if self.cfg.train.simulator_type == "isaac":
-                assert (
-                    len(
-                        set(
-                            state_ids_list[
-                                stage_id * self.cfg.train.num_envs : (stage_id + 1) * self.cfg.train.num_envs
-                            ]
-                        )
-                    )
-                    == 1
-                ), "rollout.n should equal to num_envs for isaac"
+            if self.single_env_rollout:
+                stage_state_ids = state_ids_list[:1]
+                stage_task_ids = task_ids_list[:1]
+            else:
+                start = stage_id * self.cfg.train.num_envs
+                end = (stage_id + 1) * self.cfg.train.num_envs
+                stage_state_ids = state_ids_list[start:end]
+                stage_task_ids = task_ids_list[start:end]
 
-            result = self.simulator_list[stage_id].reset_envs_to_state_ids(
-                state_ids_list[stage_id * self.cfg.train.num_envs : (stage_id + 1) * self.cfg.train.num_envs],
-                task_ids_list[stage_id * self.cfg.train.num_envs : (stage_id + 1) * self.cfg.train.num_envs],
-            )
+            if self.cfg.train.simulator_type == "isaac":
+                assert len(set(stage_state_ids)) == 1, "rollout.n should equal to num_envs for isaac"
+
+            result = self.simulator_list[stage_id].reset_envs_to_state_ids(stage_state_ids, stage_task_ids)
             result_list.append(result)
         output_tensor_dict = {}
         output_non_tensor_dict = {}

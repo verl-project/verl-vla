@@ -24,3 +24,4 @@ class PI0TorchConfig(PretrainedConfig):
         self.state_norm_stats = kwargs.get("state_norm_stats", {})
         self.action_norm_stats = kwargs.get("action_norm_stats", {})
         self.pi05_enabled = kwargs.get("pi05_enabled", False)
+        self.policy_type = kwargs.get("policy_type", "libero")

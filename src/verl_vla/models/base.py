@@ -12,9 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from abc import ABC, abstractmethod
 from typing import Any, Literal, Optional
 
 import torch
+from verl import DataProto
+
+
+class ModelOutput(ABC):
+    @abstractmethod
+    def to_data_proto(self) -> DataProto:
+        """Convert the model output to a DataProto format for downstream processing."""
+        pass
 
 
 class SupportSACTraining:
@@ -35,6 +44,22 @@ class SupportSACTraining:
 
     def sac_init(self):
         raise NotImplementedError("Subclasses must implement sac_init method.")
+
+    def sac_sample_actions(
+        self,
+        obs: DataProto,
+        tokenizer: Optional[torch.nn.Module] = None,
+        validate: bool = False,
+    ) -> ModelOutput:
+        raise NotImplementedError("Subclasses must implement sac_sample_actions method.")
+
+    def sac_get_critic_value(
+        self,
+        obs: DataProto,
+        actions: ModelOutput,
+        tokenizer: Optional[torch.nn.Module] = None,
+    ) -> torch.Tensor:
+        raise NotImplementedError("Subclasses must implement sac_get_critic_value method.")
 
     def sac_get_critic_parameters(self) -> list[torch.nn.Parameter]:
         """Get the parameters of the critic head for optimization.
@@ -65,8 +90,7 @@ class SupportSACTraining:
     ) -> torch.Tensor:
         """Compute Q-values for given state-action pairs.
         Args:
-            a: Dictionary of tensors representing actions, with key:
-                - "full_action": torch.Tensor of shape (B, action_steps, action_dim)
+            a: Dictionary of tensors representing actions
             state_features: Any data structure representing the processed state features.
             use_target_network: Whether to use the target critic network heads.
             method: Method to combine multiple heads' outputs ("cat" or "min").
@@ -83,7 +107,7 @@ class SupportSACTraining:
         self,
         state_features: Any,
         is_first_micro_batch: bool = False,
-    ) -> tuple[torch.Tensor, Optional[torch.Tensor], dict[str, float]]:
+    ) -> Any:
         """Compute actions and their log probabilities from state features.
 
         Args:
@@ -100,31 +124,16 @@ class SupportSACTraining:
 
         raise NotImplementedError("Subclasses must implement sac_forward_actor method.")
 
-    def sac_forward_state_features(self, s: dict[str, torch.Tensor]) -> Any:
+    def sac_forward_state_features(self, obs: DataProto, tokenizer: torch.nn.Module) -> Any:
         """Compute state features needed for SAC actor and critic.
 
         Args:
-            s: Dictionary of tensors representing the states, with keys
-                - "images": torch.Tensor of shape (B, n_images, C, H, W)
-                - "image_masks": torch.Tensor of shape (B, n_images)
-                - "lang_tokens": torch.Tensor of shape (B, L)
-                - "lang_masks": torch.Tensor of shape (B, L)
-                - "states": torch.Tensor of shape (B, state_dim)
+            obs: DataProto containing the observations
         Returns:
             state_features: Any data structure representing the processed state features.
         """
 
         raise NotImplementedError("Subclasses must implement sac_forward_state_features method.")
-
-    def bc_loss(
-        self,
-        state_features: Any,
-        actions: dict[str, torch.Tensor],
-        valids: torch.Tensor,
-    ) -> torch.Tensor:
-        """Compute behavior cloning loss for actor regularization."""
-
-        raise NotImplementedError("Subclasses must implement bc_loss method.")
 
     def sac_update_target_network(self, tau: float):
         """Update the target network heads using Polyak averaging.

@@ -15,9 +15,10 @@
 from __future__ import annotations
 
 import math
-from typing import Literal
+from typing import Literal, cast
 
 import torch
+import torch.nn.functional as F
 from onnx_ir import Tensor
 from torch import nn
 from torch.distributed.fsdp import register_fsdp_forward_method
@@ -27,7 +28,7 @@ from verl.protocol import DataProto
 from verl.utils.device import get_device_name
 
 from ...utils.models.mlp import MLP
-from ..base import SupportSACTraining
+from ..base import ModelOutput, SupportSACTraining
 from .configuration_pi0_torch import PI0TorchConfig
 from .model.modeling_pi0 import PI0Model, make_att_2d_masks
 from .pi0_utils import (
@@ -36,6 +37,7 @@ from .pi0_utils import (
     PromptTokenizerTransform,
     Unnormalize,
 )
+from .policy import get_pi0_policy_classes
 from .policy.base import Pi0Output
 
 
@@ -55,6 +57,7 @@ class PI0ForActionPrediction(PreTrainedModel, SupportSACTraining):
         self.state_norm_stats = config.state_norm_stats
         self.action_norm_stats = config.action_norm_stats
         self.pi05_enabled = config.pi05_enabled
+        self.policy_type = config.policy_type
 
         assert self.state_norm_stats, "state_norm_stats must be provided in PI0TorchConfig"
         assert self.action_norm_stats, "action_norm_stats must be provided in PI0TorchConfig"
@@ -132,6 +135,9 @@ class PI0ForActionPrediction(PreTrainedModel, SupportSACTraining):
             self.target_network_heads.load_state_dict(self.critic_heads.state_dict())
             self.target_prefix_cross_attn.load_state_dict(self.critic_prefix_cross_attn.state_dict())
 
+    def _get_pi0_policy_classes(self):
+        return get_pi0_policy_classes(self.policy_type)
+
     def _to(self, device: torch.device | str):
         self.state_normalize_transform.to(device)
         self.state_unnormalize_transform.to(device)
@@ -203,9 +209,8 @@ class PI0ForActionPrediction(PreTrainedModel, SupportSACTraining):
                     - "full_action": torch.Tensor of shape (B, action_steps, action_dim)
         """
 
-        from .policy.libero_policy import LiberoPi0Input
-
-        pi0_input = LiberoPi0Input.from_env_obs(env_obs)
+        pi0_input_cls, pi0_output_cls = self._get_pi0_policy_classes()
+        pi0_input = pi0_input_cls.from_env_obs(env_obs)
 
         # Input transforms
         state = self.state_normalize_transform(pi0_input.state)
@@ -232,9 +237,12 @@ class PI0ForActionPrediction(PreTrainedModel, SupportSACTraining):
             rollout_log_probs = torch.zeros(pred_action.shape[0], device=pred_action.device, dtype=torch.float32)
 
         # Output transforms
-        from .policy.libero_policy import LiberoPi0Output
-
-        pi0_output = LiberoPi0Output.from_model_output({"full_action": self.action_unnormalize_transform(pred_action)})
+        pi0_output = pi0_output_cls.from_model_output(
+            {
+                "full_action": self.action_unnormalize_transform(pred_action),
+                "log_probs": rollout_log_probs,
+            }
+        )
         s = {
             "states": state,
             "images": torch.stack(images, dim=1),
@@ -260,13 +268,9 @@ class PI0ForActionPrediction(PreTrainedModel, SupportSACTraining):
         policy.model = PI0Model.from_pretrained(pretrained_model_name_or_path)
         return policy
 
-    # def load_state_dict(self, state_dict, strict: bool = True, assign: bool = False):
-    #     filtered_state_dict = {
-    #         key: value
-    #         for key, value in state_dict.items()
-    #         if key.startswith("model.")
-    #     }
-    #     return super().load_state_dict(filtered_state_dict, strict=False, assign=assign)
+    def load_state_dict(self, state_dict, strict: bool = True, assign: bool = False):
+        filtered_state_dict = {key: value for key, value in state_dict.items() if key.startswith("model.")}
+        return super().load_state_dict(filtered_state_dict, strict=False, assign=assign)
 
     def freeze_vision_tower(self) -> None:
         """Freeze the vision tower parameters."""
@@ -279,41 +283,61 @@ class PI0ForActionPrediction(PreTrainedModel, SupportSACTraining):
 
     def bc_loss(
         self,
-        state_features: tuple[tuple[torch.Tensor, torch.Tensor, torch.Tensor], torch.Tensor],
+        obs: DataProto,
+        tokenizer: torch.nn.Module,
         actions: dict[str, torch.Tensor],
         valids: torch.Tensor,
     ) -> torch.Tensor:
         """Calculate the BC loss for the actor."""
 
-        prefix_features, states = state_features
-        _, prefix_pad_masks, _ = prefix_features
-        action_tensor = actions["full_action"]
+        pi0_input_cls, pi0_output_cls = self._get_pi0_policy_classes()
+        action_tensor = pi0_output_cls.from_model_output(
+            {
+                "full_action": actions["full_action"],
+                "log_probs": torch.zeros(actions["full_action"].shape[0], device=actions["full_action"].device),
+            }
+        ).action
+        action_tensor = torch.nn.functional.pad(
+            action_tensor,
+            (
+                0,
+                self.model.max_action_dim - action_tensor.shape[-1],
+                0,
+                self.model.n_action_steps - action_tensor.shape[1],
+            ),
+            value=0.0,
+        )
+        action_tensor = self.action_normalize_transform(action_tensor)
 
-        batch_size = action_tensor.shape[0]
-        device = action_tensor.device
+        with torch.no_grad():
+            pi0_input = pi0_input_cls.from_env_obs(obs)
+            states = self.state_normalize_transform(pi0_input.state)
+            images, _ = self.image_transform.call_batch(pi0_input.images)
+            img_masks = pi0_input.img_masks
+            lang_tokens, lang_masks = self.prompt_tokenizer_transform.call_batch(
+                {"task": pi0_input.task, "observation.state": states}, tokenizer
+            )
 
-        noise = self.model.sample_noise(action_tensor.shape, device=device)
-        gamma1 = torch.empty((batch_size,), device=device).uniform_(0, 1).pow(1 / 1.5)
-        gamma2 = torch.empty((batch_size,), device=device).uniform_(0, 1).pow(1 / 1.0)
+        noise = self.model.sample_noise(action_tensor.shape, device=action_tensor.device)
+        gamma1 = torch.empty((action_tensor.shape[0],), device=action_tensor.device).uniform_(0, 1).pow(1 / 1.5)
+        gamma2 = torch.empty((action_tensor.shape[0],), device=action_tensor.device).uniform_(0, 1).pow(1 / 1.0)
         time = (gamma1 / (gamma1 + gamma2)) * 0.999 + 0.001
-        time = time.to(dtype=torch.float32, device=device)
+        time = time.to(dtype=torch.float32, device=action_tensor.device)
 
         time_expanded = time[:, None, None]
         x_t = time_expanded * noise + (1.0 - time_expanded) * action_tensor
         u_t = noise - action_tensor
 
-        past_key_values = self._build_kv_cache_from_prefix(prefix_features)
-        model_pred = self.model.denoise_step(
-            states,
-            prefix_pad_masks,
-            past_key_values,
-            x_t,
-            time,
+        model_pred = self.model(images, img_masks, lang_tokens, lang_masks, states, x_t, time)
+        action_loss_mask = (
+            (torch.arange(self.model.n_action_steps, device=model_pred.device) < 10)
+            .to(model_pred.dtype)
+            .unsqueeze(0)
+            .expand(model_pred.shape[0], -1)
         )
-
-        loss = torch.nn.functional.mse_loss(u_t, model_pred, reduction="none").mean(dim=-1).mean(dim=-1)
-        valid_f = valids.float().to(loss.device)
-        return (loss * valid_f).sum() / valid_f.sum().clamp_min(1.0)
+        loss = F.mse_loss(u_t, model_pred, reduction="none").mean(dim=-1)
+        loss = loss * action_loss_mask
+        return loss.mean()
 
     # --- SAC Algorithm Support ---
 
@@ -482,12 +506,43 @@ class PI0ForActionPrediction(PreTrainedModel, SupportSACTraining):
         """Initialize SAC-related components."""
 
         self.freeze_vision_tower()
+        forward_methods = [
+            "bc_loss",
+            "sac_sample_actions",
+            "sac_forward_critic",
+            "sac_forward_actor",
+            "sac_forward_state_features",
+        ]
+        for method in forward_methods:
+            register_fsdp_forward_method(self, method)
 
-        register_fsdp_forward_method(self, "bc_loss")
-        register_fsdp_forward_method(self, "sac_forward_critic")
-        register_fsdp_forward_method(self, "sac_forward_actor")
-        register_fsdp_forward_method(self, "sac_update_target_network")
-        register_fsdp_forward_method(self, "sac_forward_state_features")
+    @torch.no_grad()
+    def sac_sample_actions(
+        self,
+        obs: DataProto,
+        tokenizer: torch.nn.Module | None = None,
+        validate: bool = False,
+    ) -> Pi0Output:
+        pi0_output, _, _ = self.sample_actions(obs, tokenizer, validate)
+        return pi0_output
+
+    @torch.no_grad()
+    def sac_get_critic_value(
+        self,
+        obs: DataProto,
+        actions: ModelOutput,
+        tokenizer: nn.Module | None = None,
+    ) -> torch.Tensor:
+        actions = cast(Pi0Output, actions)
+        state_features = self.sac_forward_state_features(obs, tokenizer)
+        critic_q_values = self.sac_forward_critic(
+            a={"action": actions.action},
+            state_features=state_features,
+            use_target_network=False,
+            method="min",
+            requires_grad=False,
+        )
+        return critic_q_values.detach().float()
 
     @override
     def sac_forward_actor(
@@ -512,7 +567,14 @@ class PI0ForActionPrediction(PreTrainedModel, SupportSACTraining):
                 "flow_sde_beta": float(self.flow_sde_beta().item()),
                 "flow_sde_step": float(self.flow_sde_step.item()),
             }
-        return actions, log_probs, actor_metrics
+        _, pi0_output_cls = self._get_pi0_policy_classes()
+        pi0_output = pi0_output_cls.from_model_output(
+            {
+                "full_action": self.action_unnormalize_transform(actions),
+                "log_probs": log_probs,
+            }
+        )
+        return pi0_output.action, pi0_output.log_prob, actor_metrics
 
     @override
     def sac_forward_critic(
@@ -545,7 +607,7 @@ class PI0ForActionPrediction(PreTrainedModel, SupportSACTraining):
             prefix_pad_masks=prefix_pad_masks,
             use_target_network=use_target_network,
         )  # (B, 2048)
-        actions = a["full_action"][:, :10, :7]  # (B, 10, 7)
+        actions = a["action"]  # (B, 10, 7)
         flattened_actions = actions.reshape(actions.shape[0], -1)  # (B, 70)
         critic_input = torch.cat([pooled_prefix_embs, states, flattened_actions], dim=-1)
 
@@ -566,16 +628,26 @@ class PI0ForActionPrediction(PreTrainedModel, SupportSACTraining):
 
     @override
     def sac_forward_state_features(
-        self, s: dict[str, torch.Tensor]
+        self,
+        obs: DataProto,
+        tokenizer: torch.nn.Module,
     ) -> tuple[tuple[torch.Tensor, torch.Tensor, torch.Tensor], torch.Tensor]:
+        pi0_input_cls, _ = self._get_pi0_policy_classes()
+        pi0_input = pi0_input_cls.from_env_obs(obs)
+
         with torch.no_grad():
-            prefix_features = self.model.embed_prefix(
-                images=s["images"].unbind(dim=1),
-                img_masks=s["image_masks"].unbind(dim=1),
-                lang_tokens=s["lang_tokens"],
-                lang_masks=s["lang_masks"],
+            state = self.state_normalize_transform(pi0_input.state)
+            images, _ = self.image_transform.call_batch(pi0_input.images)
+            lang_tokens, lang_masks = self.prompt_tokenizer_transform.call_batch(
+                {"task": pi0_input.task, "observation.state": state}, tokenizer
             )
-        return (prefix_features, s["states"])
+            prefix_features = self.model.embed_prefix(
+                images=images,
+                img_masks=pi0_input.img_masks,
+                lang_tokens=lang_tokens,
+                lang_masks=lang_masks,
+            )
+        return (prefix_features, state)
 
     @override
     @torch.no_grad()

@@ -11,3 +11,18 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
+from .base import Pi0Input, Pi0Output
+from .libero_policy import LiberoPi0Input, LiberoPi0Output
+
+_PI0_POLICY_REGISTRY = {
+    "libero": (LiberoPi0Input, LiberoPi0Output),
+}
+
+
+def get_pi0_policy_classes(policy_type: str) -> tuple[type[Pi0Input], type[Pi0Output]]:
+    try:
+        return _PI0_POLICY_REGISTRY[policy_type]
+    except KeyError as exc:
+        supported = ", ".join(sorted(_PI0_POLICY_REGISTRY))
+        raise ValueError(f"Unknown pi0 policy_type: {policy_type}. Supported values: {supported}") from exc

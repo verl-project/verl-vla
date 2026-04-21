@@ -29,10 +29,12 @@ from verl.utils.checkpoint.checkpoint_manager import should_save_ckpt_esi
 from verl.utils.debug import marked_timer
 from verl.utils.metric import reduce_metrics
 
+from verl_vla.utils.data import add_transition_prefixes, flatten_trajectories
+
 
 def compute_avg_positive_trajectory_length(batch: DataProto) -> float:
-    dones = batch.batch["dones"].bool()  # (B, T)
-    positive_mask = batch.batch["positive_sample_mask"]  # (B, T)
+    dones = batch.batch["info.dones"].bool()  # (B, T)
+    positive_mask = batch.batch["info.positive_sample_mask"]  # (B, T)
     positive_traj = positive_mask.any(dim=1)  # (B,)
 
     if positive_traj.sum() == 0:
@@ -43,60 +45,6 @@ def compute_avg_positive_trajectory_length(batch: DataProto) -> float:
     traj_lens = done_idx + 1
 
     return traj_lens[positive_traj].float().mean().item()
-
-
-def flatten_trajectories(data: DataProto) -> DataProto:
-    batch_size, num_steps = data.batch["action"].shape[:2]
-    new_batch_fields = {}
-    for key, tensor in data.batch.items():
-        if len(tensor.shape) >= 2 and tensor.shape[0] == batch_size and tensor.shape[1] == num_steps:
-            # (B, S, H, W) -> (B*S, H, W)
-            new_shape = (batch_size * num_steps, *tensor.shape[2:])
-            new_batch_fields[key] = tensor.reshape(new_shape)
-        elif len(tensor.shape) == 1 and tensor.shape[0] == batch_size:
-            # [e1, e2] -> [e1, e1, ..., e2, e2, ...] (S times each)
-            new_batch_fields[key] = tensor.repeat_interleave(num_steps)
-        else:
-            new_batch_fields[key] = tensor
-    new_data = DataProto.from_dict(tensors=new_batch_fields, meta_info=data.meta_info)
-    return new_data
-
-
-def add_transition_prefixes(data: DataProto) -> DataProto:
-    batch = data.batch
-    step_key = "action" if "action" in batch else "full_action"
-    if step_key not in batch:
-        return data
-
-    num_steps = batch[step_key].shape[1]
-    if num_steps <= 1:
-        return data
-
-    def drop_last(tensor: torch.Tensor) -> torch.Tensor:
-        return tensor[:, :-1, ...]
-
-    def shift_next(tensor: torch.Tensor) -> torch.Tensor:
-        return tensor[:, 1:, ...]
-
-    state_keys = ["states", "images", "image_masks", "lang_tokens", "lang_masks"]
-    action_keys = ["full_action", "action"]
-
-    for key in state_keys:
-        if key in batch:
-            batch[f"s0.{key}"] = drop_last(batch[key])
-            batch[f"s1.{key}"] = shift_next(batch[key])
-
-    for key in action_keys:
-        if key in batch:
-            batch[f"a0.{key}"] = drop_last(batch[key])
-            batch[f"a1.{key}"] = shift_next(batch[key])
-
-    batch_size = batch[step_key].shape[0]
-    for key, tensor in list(batch.items()):
-        if tensor.ndim >= 2 and tensor.shape[0] == batch_size and tensor.shape[1] == num_steps:
-            batch[key] = drop_last(tensor)
-
-    return data
 
 
 class RobRaySACTrainer(RayPPOTrainer):
@@ -196,6 +144,12 @@ class RobRaySACTrainer(RayPPOTrainer):
     def _reset_envs(self, gen_batch: DataProto) -> asyncio.Future:
         initial_state_ids = gen_batch.non_tensor_batch["state_ids"]
         task_ids = gen_batch.non_tensor_batch["task_ids"]
+        if self.config.env.train.get("single_env_rollout", False):
+            assert self.config.env.rollout.pipeline_stage_num == 1, (
+                "single_env_rollout only supports pipeline_stage_num == 1"
+            )
+            initial_state_ids = initial_state_ids[:1]
+            task_ids = task_ids[:1]
         reset_prompts = DataProto.from_dict(non_tensors={"state_ids": initial_state_ids, "task_ids": task_ids})
         reset_future = self.env_wg.reset_envs_to_state_ids(reset_prompts)
         return reset_future
@@ -216,28 +170,33 @@ class RobRaySACTrainer(RayPPOTrainer):
 
     def _prepare_actor_input(self, rollout_output: Optional[DataProto]) -> DataProto:
         # dones
-        complete_any = rollout_output.batch["complete"].any(dim=-1)  # (B, T)
+        complete_any = rollout_output.batch["feedback.terminations"].any(dim=-1)  # (B, T)
         dones_step = complete_any.clone()
         dones_step[:, -2] = True
-        rollout_output.batch["dones"] = dones_step.float()
+        rollout_output.batch["info.dones"] = dones_step.float()
 
         # reward (sparse reward with step penalty)
         sparse_rewards = complete_any.float()
-        rollout_output.batch["valids"] = (~rollout_output.batch["complete"]).any(dim=-1).float()
+        rollout_output.batch["info.valids"] = (~rollout_output.batch["feedback.terminations"]).any(dim=-1).float()
         step_penalty = float(self.config.env.train.get("step_penalty", 0.0))
-        rollout_output.batch["rewards"] = sparse_rewards - step_penalty * rollout_output.batch["valids"]
-        rollout_output.batch["rewards"][:, -2] = -1.0
+        rollout_output.batch["info.rewards"] = sparse_rewards - step_penalty * rollout_output.batch["info.valids"]
+        rollout_output.batch["info.rewards"][:, -2] = -1.0
 
         # mark samples in successful trajectories as positive samples
-        rollout_output.batch["positive_sample_mask"] = (
-            sparse_rewards.any(dim=-1).unsqueeze(-1).repeat_interleave(rollout_output.batch["action"].shape[1], dim=-1)
+        rollout_output.batch["info.positive_sample_mask"] = (
+            sparse_rewards.any(dim=-1)
+            .unsqueeze(-1)
+            .repeat_interleave(rollout_output.batch["action.action"].shape[1], dim=-1)
         )
 
         # task id
-        rollout_output.batch["task_ids"] = torch.as_tensor(
-            rollout_output.meta_info["task_ids"],
+        task_ids = rollout_output.meta_info["task_ids"]
+        if self.config.env.train.get("single_env_rollout", False):
+            task_ids = task_ids[:1]
+        rollout_output.batch["info.task_ids"] = torch.as_tensor(
+            task_ids,
             dtype=torch.long,
-            device=rollout_output.batch["action"].device,
+            device=rollout_output.batch["action.action"].device,
         )
 
         rollout_output.meta_info["global_token_num"] = [0]
