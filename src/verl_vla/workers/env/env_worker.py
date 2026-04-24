@@ -95,10 +95,16 @@ class EnvWorker(Worker, DistProfilerExtension):
 
         self.stage_num = self.cfg.rollout.pipeline_stage_num
         self.single_env_rollout = bool(self.cfg.train.get("single_env_rollout", False))
-        initialize_global_process_group_ray(timeout_second=None)
-        device_name = get_device_name()
-        env_device_mesh = init_device_mesh(device_name, mesh_shape=(self.world_size, 1), mesh_dim_names=["dp", "tp"])
-        self._register_dispatch_collect_info("env", dp_rank=env_device_mesh["dp"].get_local_rank(), is_collect=True)
+        device_name = self.cfg.train.get("device", None) or get_device_name()
+        if device_name == "cpu":
+            # CPU env workers do not need torch distributed collectives; only Ray dispatch metadata is required.
+            self._register_dispatch_collect_info("env", dp_rank=self.rank, is_collect=True)
+        else:
+            initialize_global_process_group_ray(timeout_second=None)
+            env_device_mesh = init_device_mesh(
+                device_name, mesh_shape=(self.world_size, 1), mesh_dim_names=["dp", "tp"]
+            )
+            self._register_dispatch_collect_info("env", dp_rank=env_device_mesh["dp"].get_local_rank(), is_collect=True)
 
         # Initialize profiler
         omega_profiler_config = config.train.get("profiler", {})

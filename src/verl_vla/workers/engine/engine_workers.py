@@ -1,4 +1,4 @@
-# Copyright 2024 Bytedance Ltd. and/or its affiliates
+# Copyright 2026 Bytedance Ltd. and/or its affiliates
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -11,9 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""
-Single Process Actor
-"""
+
 
 import logging
 import os
@@ -22,87 +20,110 @@ from typing import Optional
 import numpy as np
 import torch
 import torch.nn.functional as F
-from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
-from typing_extensions import override
+from torch.distributed.device_mesh import init_device_mesh
 from verl import DataProto
+from verl.checkpoint_engine import CheckpointEngineRegistry
+from verl.single_controller.base.decorator import Dispatch, make_nd_compute_dataproto_dispatch_fn, register
+from verl.utils.config import omega_conf_to_dataclass
 from verl.utils.device import get_device_id, get_device_name
+from verl.utils.memory_utils import aggressive_empty_cache
+from verl.workers.config import HFModelConfig, RolloutConfig, TrainingWorkerConfig
+from verl.workers.engine_workers import ActorRolloutRefWorker, TrainingWorker
+from verl.workers.rollout.base import BaseRollout, get_rollout_class
 
-from verl_vla.models.base import SupportSACTraining
-from verl_vla.utils.data import (
-    get_dataproto_from_prefix,
-    get_dataproto_keys_by_prefix,
-    split_nested_dicts_or_tuples,
-    valid_mean,
-)
+from verl_vla.models.register_vla_models import register_vla_models
+from verl_vla.utils.data import get_dataproto_from_prefix, split_nested_dicts_or_tuples, valid_mean
 from verl_vla.utils.replay_pool import SACReplayPool
+from verl_vla.workers.config import ActorConfig
+from verl_vla.workers.rollout import register_vla_rollouts
 
-from .base import BaseSACActor
+from .fsdp import FSDPEngineWithActionHEAD
+
+register_vla_rollouts()
 
 logger = logging.getLogger(__name__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
 
 
-class RobDataParallelSACActor(BaseSACActor):
-    def __init__(
-        self,
-        config,
-        actor_module: SupportSACTraining,
-        actor_optimizer: torch.optim.Optimizer,
-        tokenizer=None,
-    ):
-        super().__init__()
-        self.config = config
-        self.sac_config = config.sac
-        self.device = get_device_name()
+class VLATrainingWorker(TrainingWorker):
+    """
+    VLATrainingWorker extends the TrainingWorker used in the LLM pipeline.
 
-        self.actor_optimizer = actor_optimizer
-        self.actor_module = actor_module
-        self.actor_module.sac_init()
-        self.tokenizer = tokenizer
+    It overrides several methods to adapt the worker to the VLA setting,
+    including differences in input/output structure, training behavior,
+    and metric computation.
 
+    Inherited from TrainingWorker:
+    - __init__
+    - to
+    - reset
+    - train_mini_batch (override)
+    - save_checkpoint
+    - load_checkpoint
+    - set_loss_fn (not used)
+    - infer_batch (not used)
+    - train_batch (not used)
+    """
+
+    def __init__(self, config: TrainingWorkerConfig, actor_config: ActorConfig, tokenizer=None):
+        super().__init__(config=config)
+        self.actor_config = actor_config
+        self.sac_config = actor_config.sac
+        self.tokenizer = tokenizer or self.model_config.tokenizer
+        self._sac_initialized = False
+
+    @register(dispatch_mode=make_nd_compute_dataproto_dispatch_fn(mesh_name="train"), blocking=False)
+    def train_mini_batch(self, data: DataProto) -> DataProto:
+        self._ensure_sac_initialized()
+        with self.engine.train_mode():
+            metrics = self._update_sac_policy(data)
+        return DataProto(meta_info={"metrics": metrics})
+
+    def _ensure_sac_initialized(self):
+        if self._sac_initialized:
+            return
+
+        self.engine.module.sac_init()
         self.replay_pool = SACReplayPool(
-            single_pool_capacity=self.config.replay_pool_single_size,
-            sample_device=self.device,
+            single_pool_capacity=self.actor_config.replay_pool_single_size,
+            sample_device=get_device_name(),
         )
-        self.replay_pool.load(self.config.replay_pool_save_dir)
+        self.replay_pool.load(self.actor_config.replay_pool_save_dir)
 
-        self._init_alpha()
-        self._init_critic()
-
-        self.actor_ema_enabled = bool(self.config.get("actor_ema_enabled", True))
-        self.actor_ema_decay = float(self.config.get("actor_ema_decay", 0.995))
-        self.actor_ema_shadow: dict[str, torch.Tensor] = {}
-        self.actor_ema_initialized = False
-        self.bc_loss_coef = float(self.sac_config.get("bc_loss_coef", 0.5))
-
-    def _init_critic(self):
         self.critic_optimizer = torch.optim.Adam(
-            self.actor_module.sac_get_critic_parameters(),
-            lr=self.config.critic_lr,
-            weight_decay=self.config.critic_weight_decay,
+            self.engine.module.sac_get_critic_parameters(),
+            lr=self.actor_config.critic_lr,
+            weight_decay=self.actor_config.critic_weight_decay,
         )
         self.critic_scheduler = torch.optim.lr_scheduler.ConstantLR(self.critic_optimizer, factor=1.0)
 
-    def _init_alpha(self):
         self.auto_entropy = self.sac_config.get("auto_entropy", False)
         if self.auto_entropy:
-            self.target_entropy = torch.tensor(float(self.sac_config.get("target_entropy", -32.0)), device=self.device)
+            self.target_entropy = torch.tensor(
+                float(self.sac_config.get("target_entropy", -32.0)), device=get_device_name()
+            )
             self.alpha_type = self.sac_config.get("alpha_type", "softplus")
+            initial_alpha = float(self.sac_config.get("initial_alpha", 1 if self.alpha_type == "exp" else 0.01))
             if self.alpha_type == "exp":
-                self.raw_alpha = torch.nn.Parameter(
-                    np.log(np.exp(self.sac_config.get("initial_alpha", 1))) * torch.ones(1, device=self.device),
-                    requires_grad=True,
-                )
+                raw_alpha = np.log(np.exp(initial_alpha))
             elif self.alpha_type == "softplus":
-                self.raw_alpha = torch.nn.Parameter(
-                    np.log(np.exp(self.sac_config.get("initial_alpha", 0.01)) - 1) * torch.ones(1, device=self.device),
-                    requires_grad=True,
-                )
+                raw_alpha = np.log(np.exp(initial_alpha) - 1)
             else:
                 raise NotImplementedError(f"Unsupported alpha_type: {self.alpha_type}")
-
+            self.raw_alpha = torch.nn.Parameter(torch.full((1,), raw_alpha, device=get_device_name()))
             self.alpha_optimizer = torch.optim.Adam([self.raw_alpha], lr=self.sac_config.get("alpha_lr", 3e-4))
             self.alpha_scheduler = torch.optim.lr_scheduler.ConstantLR(self.alpha_optimizer, factor=1.0)
+
+        self.actor_ema_enabled = bool(self.actor_config.get("actor_ema_enabled", True))
+        self.actor_ema_decay = float(self.actor_config.get("actor_ema_decay", 0.995))
+        self.actor_ema_shadow: dict[str, torch.Tensor] = {}
+        self.actor_ema_initialized = False
+        self.bc_loss_coef = float(self.sac_config.get("bc_loss_coef", 0.5))
+        self._sac_initialized = True
+
+    @property
+    def _grad_clip(self) -> float:
+        return self.actor_config.optim.clip_grad
 
     def _init_actor_ema(self):
         if self.actor_ema_initialized:
@@ -111,7 +132,7 @@ class RobDataParallelSACActor(BaseSACActor):
         if not self.actor_ema_enabled:
             self.actor_ema_initialized = True
             return
-        for name, param in self.actor_module.sac_get_named_actor_parameters():
+        for name, param in self.engine.module.sac_get_named_actor_parameters():
             self.actor_ema_shadow[name] = param.detach().clone().to(dtype=torch.float32)
         self.actor_ema_initialized = True
 
@@ -120,15 +141,16 @@ class RobDataParallelSACActor(BaseSACActor):
         if not self.actor_ema_enabled:
             return
         one_minus_decay = 1.0 - self.actor_ema_decay
-        for name, param in self.actor_module.sac_get_named_actor_parameters():
-            shadow = self.actor_ema_shadow[name]
-            shadow.mul_(self.actor_ema_decay).add_(param.detach().to(dtype=torch.float32), alpha=one_minus_decay)
+        for name, param in self.engine.module.sac_get_named_actor_parameters():
+            self.actor_ema_shadow[name].mul_(self.actor_ema_decay).add_(
+                param.detach().to(dtype=torch.float32), alpha=one_minus_decay
+            )
 
     @torch.no_grad()
     def _apply_actor_ema_to_actor_module(self):
         if not self.actor_ema_enabled:
             return
-        for name, param in self.actor_module.sac_get_named_actor_parameters():
+        for name, param in self.engine.module.sac_get_named_actor_parameters():
             param.copy_(self.actor_ema_shadow[name].to(device=param.device, dtype=param.dtype))
 
     def _get_alpha(self) -> torch.Tensor:
@@ -136,9 +158,9 @@ class RobDataParallelSACActor(BaseSACActor):
             if self.alpha_type == "exp":
                 return self.raw_alpha.exp()
             if self.alpha_type == "softplus":
-                return torch.nn.functional.softplus(self.raw_alpha)
+                return F.softplus(self.raw_alpha)
             raise NotImplementedError(f"Unsupported alpha_type: {self.alpha_type}")
-        return torch.tensor(float(self.sac_config.get("initial_alpha", 0.2)), device=self.device)
+        return torch.tensor(float(self.sac_config.get("initial_alpha", 0.2)), device=get_device_name())
 
     def _calculate_actor_loss(
         self,
@@ -188,11 +210,12 @@ class RobDataParallelSACActor(BaseSACActor):
 
         with torch.autocast(device_type=get_device_name(), dtype=torch.bfloat16):
             with torch.no_grad():
-                s = DataProto.concat([s0, s1])
-                state_features = self.actor_module.sac_forward_state_features(s, self.tokenizer)
+                state_features = self.engine.module.sac_forward_state_features(
+                    DataProto.concat([s0, s1]), self.tokenizer
+                )
                 s0_state_features, s1_state_features = split_nested_dicts_or_tuples(state_features, 2)
                 if resample:
-                    a1_actions, log_probs_1, _ = self.actor_module.sac_forward_actor(
+                    a1_actions, log_probs_1, _ = self.engine.module.sac_forward_actor(
                         s1_state_features,
                         is_first_micro_batch=False,
                     )
@@ -200,14 +223,14 @@ class RobDataParallelSACActor(BaseSACActor):
                 else:
                     log_probs_1 = None
 
-            q_values_0 = self.actor_module.sac_forward_critic(
+            q_values_0 = self.engine.module.sac_forward_critic(
                 a0,
                 s0_state_features,
                 use_target_network=False,
                 method="cat",
                 requires_grad=True,
             )
-            q_values_1 = self.actor_module.sac_forward_critic(
+            q_values_1 = self.engine.module.sac_forward_critic(
                 a1,
                 s1_state_features,
                 use_target_network=True,
@@ -230,16 +253,15 @@ class RobDataParallelSACActor(BaseSACActor):
         micro_batch: DataProto,
         is_first_micro_batch: bool,
     ) -> tuple[torch.Tensor, Optional[torch.Tensor], torch.Tensor, dict[str, float]]:
-        micro_batch = micro_batch.to(get_device_id())
         s0 = get_dataproto_from_prefix(micro_batch, "t0.obs.")
 
         with torch.autocast(device_type=get_device_name(), dtype=torch.bfloat16):
-            s0_state_features = self.actor_module.sac_forward_state_features(s0, self.tokenizer)
-            a0_actions, log_probs_0, actor_forward_metrics = self.actor_module.sac_forward_actor(
+            s0_state_features = self.engine.module.sac_forward_state_features(s0, self.tokenizer)
+            a0_actions, log_probs_0, actor_forward_metrics = self.engine.module.sac_forward_actor(
                 s0_state_features,
                 is_first_micro_batch=is_first_micro_batch,
             )
-            q_values_0 = self.actor_module.sac_forward_critic(
+            q_values_0 = self.engine.module.sac_forward_critic(
                 {"action": a0_actions},
                 s0_state_features,
                 use_target_network=False,
@@ -253,7 +275,7 @@ class RobDataParallelSACActor(BaseSACActor):
                 valids=micro_batch.batch["info.valids"],
             )
             if self.bc_loss_coef > 0:
-                bc_loss = self.actor_module.bc_loss(
+                bc_loss = self.engine.module.bc_loss(
                     obs=s0,
                     tokenizer=self.tokenizer,
                     actions={"full_action": a0_actions},
@@ -264,41 +286,36 @@ class RobDataParallelSACActor(BaseSACActor):
                 actor_loss = sac_loss
         return actor_loss, log_probs_0, q_values_0, actor_forward_metrics
 
-    def _force_set_lr(self, opt: torch.optim.Optimizer, lr: float):
+    @staticmethod
+    def _force_set_lr(opt: torch.optim.Optimizer, lr: float):
         for pg in opt.param_groups:
             pg["lr"] = lr
 
-    @override
-    def update_policy(self, data: DataProto):
+    def _update_sac_policy(self, data: DataProto) -> dict:
         if not self.actor_ema_initialized:
             self._init_actor_ema()
 
-        self._force_set_lr(self.actor_optimizer, 5e-6)
+        self._force_set_lr(self.engine.optimizer, 5e-6)
         self._force_set_lr(self.critic_optimizer, 1e-4)
 
         if "empty_batch" not in data.meta_info:
-            task_ids = data.batch["info.task_ids"]
-            replay_batch_keys, replay_non_tensor_batch_keys = get_dataproto_keys_by_prefix(
-                data,
-                prefixes=("t0.", "t1.", "info."),
-            )
+            replay_batch_keys = [key for key in data.batch.keys() if key.startswith(("t0.", "t1.", "info."))]
+            replay_non_tensor_batch_keys = [
+                key for key in data.non_tensor_batch.keys() if key.startswith(("t0.", "t1.", "info."))
+            ]
             self.replay_pool.add_batch(
-                data.select(
-                    batch_keys=replay_batch_keys,
-                    non_tensor_batch_keys=replay_non_tensor_batch_keys,
-                ),
-                task_ids=task_ids,
+                data.select(batch_keys=replay_batch_keys, non_tensor_batch_keys=replay_non_tensor_batch_keys),
+                task_ids=data.batch["info.task_ids"],
             )
 
-        replay_positive_sample_ratio = float(self.sac_config.get("critic_replay_positive_sample_ratio", 0.5))
         critic_batch, critic_replay_sample_info = self.replay_pool.sample_batch(
-            self.config.sac_mini_batch_size,
-            positive_sample_ratio=replay_positive_sample_ratio,
+            self.actor_config.sac_mini_batch_size,
+            positive_sample_ratio=float(self.sac_config.get("critic_replay_positive_sample_ratio", 0.5)),
             return_sample_info=True,
         )
-        micro_batches = critic_batch.split(self.config.sac_micro_batch_size_per_gpu)
-        global_steps = data.meta_info["global_steps"]
+        micro_batches = critic_batch.split(self.actor_config.sac_micro_batch_size_per_gpu)
         grad_accum_steps = len(micro_batches) * torch.distributed.get_world_size()
+        global_steps = data.meta_info["global_steps"]
 
         actor_logprobs_list, actor_qvalues_list = [], []
         critic_qvalues_0_list, critic_qvalues_1_list = [], []
@@ -315,28 +332,27 @@ class RobDataParallelSACActor(BaseSACActor):
             critic_qvalues_0_list.append(q_values_0.mean(dim=-1).detach())
             critic_qvalues_1_list.append(q_values_1.detach())
         critic_grad_norm = torch.nn.utils.clip_grad_norm_(
-            self.actor_module.sac_get_critic_parameters(), max_norm=self.config.grad_clip
+            self.engine.module.sac_get_critic_parameters(), max_norm=self._grad_clip
         )
         self.critic_optimizer.step()
         self.critic_scheduler.step()
 
         update_actor = (
-            global_steps >= self.config.critic_warmup_steps and global_steps % self.config.actor_update_interval == 0
+            global_steps >= self.actor_config.critic_warmup_steps
+            and global_steps % self.actor_config.actor_update_interval == 0
         )
         actor_replay_sample_info = {"actual_positive_sample_ratio": 0.0}
         if update_actor:
-            replay_positive_sample_ratio = float(self.sac_config.get("actor_replay_positive_sample_ratio", 0.5))
             actor_batch, actor_replay_sample_info = self.replay_pool.sample_batch(
-                self.config.sac_mini_batch_size,
-                positive_sample_ratio=replay_positive_sample_ratio,
+                self.actor_config.sac_mini_batch_size,
+                positive_sample_ratio=float(self.sac_config.get("actor_replay_positive_sample_ratio", 0.5)),
                 return_sample_info=True,
             )
-            micro_batches = actor_batch.split(self.config.sac_micro_batch_size_per_gpu)
+            micro_batches = actor_batch.split(self.actor_config.sac_micro_batch_size_per_gpu)
 
-            self.actor_optimizer.zero_grad()
+            self.engine.optimizer_zero_grad()
             for batch_idx, micro_batch in enumerate(micro_batches):
                 logger.info(f"[{batch_idx + 1}/{len(micro_batches)}] actor micro batch ")
-
                 micro_batch = micro_batch.to(get_device_id())
                 raw_actor_loss, log_probs, q_values, actor_forward_metrics_mb = self._forward_actor(
                     micro_batch,
@@ -348,7 +364,7 @@ class RobDataParallelSACActor(BaseSACActor):
                     actor_logprobs_list.append(log_probs.detach())
                 actor_qvalues_list.append(q_values.detach())
                 actor_forward_metrics.update(actor_forward_metrics_mb)
-            actor_grad_norm = self._optimizer_step()
+            actor_grad_norm = self.engine.optimizer_step()
             self._update_actor_ema()
             self._apply_actor_ema_to_actor_module()
 
@@ -360,13 +376,13 @@ class RobDataParallelSACActor(BaseSACActor):
                     (raw_alpha_loss / grad_accum_steps).backward()
                     alpha_loss_list.append(raw_alpha_loss.detach().item())
                 torch.distributed.all_reduce(self.raw_alpha.grad, op=torch.distributed.ReduceOp.SUM)
-                alpha_grad_norm = torch.nn.utils.clip_grad_norm_(self.raw_alpha, max_norm=self.config.grad_clip)
+                alpha_grad_norm = torch.nn.utils.clip_grad_norm_(self.raw_alpha, max_norm=self._grad_clip)
                 self.alpha_optimizer.step()
                 self.alpha_scheduler.step()
 
-        self.actor_module.sac_update_target_network(self.sac_config.tau)
-        if global_steps % self.config.replay_pool_save_interval == 0:
-            self.replay_pool.save(self.config.replay_pool_save_dir)
+        self.engine.module.sac_update_target_network(self.sac_config.tau)
+        if global_steps % self.actor_config.replay_pool_save_interval == 0:
+            self.replay_pool.save(self.actor_config.replay_pool_save_dir)
 
         critic_positive_mask = critic_batch.batch["info.positive_sample_mask"].to(torch.bool)
         critic_valid_mask = critic_batch.batch["info.valids"].to(torch.bool)
@@ -425,8 +441,8 @@ class RobDataParallelSACActor(BaseSACActor):
             metrics.update(
                 {
                     "actor/loss": sum(actor_loss_list) / len(actor_loss_list),
-                    "actor/lr": self.actor_optimizer.param_groups[0]["lr"],
-                    "actor/grad_norm": actor_grad_norm.detach().item(),
+                    "actor/lr": self.engine.optimizer.param_groups[0]["lr"],
+                    "actor/grad_norm": actor_grad_norm,
                     "actor/logprob_mean": (
                         valid_mean(torch.cat(actor_logprobs_list), actor_batch.batch["info.valids"]).detach().item()
                         if actor_logprobs_list
@@ -450,11 +466,129 @@ class RobDataParallelSACActor(BaseSACActor):
 
         return metrics
 
-    def _optimizer_step(self) -> torch.Tensor:
-        assert self.config.grad_clip is not None
-        if isinstance(self.actor_module, FSDP):
-            grad_norm = self.actor_module.clip_grad_norm_(max_norm=self.config.grad_clip)
-        else:
-            grad_norm = torch.nn.utils.clip_grad_norm_(self.actor_module.parameters(), max_norm=self.config.grad_clip)
-        self.actor_optimizer.step()
-        return grad_norm
+
+class VLAActorRolloutRefWorker(ActorRolloutRefWorker):
+    """
+    - __init__
+    - init_model (override)
+    - compute_ref_log_prob (not used)
+    - compute_log_prob (not used)
+    - update_actor (override)
+    - load_checkpoint
+    - save_checkpoint
+    - update_weights
+    - execute_checkpoint_engine
+    """
+
+    def _require_fsdp_rollout_engine(self) -> FSDPEngineWithActionHEAD:
+        if self.config.actor.strategy not in {"fsdp", "fsdp2"}:
+            raise RuntimeError(
+                "switch_to_rollout/switch_to_train are only supported when actor.strategy is fsdp or fsdp2."
+            )
+        if self.actor is None or not isinstance(self.actor.engine, FSDPEngineWithActionHEAD):
+            raise RuntimeError("VLA rollout switching requires a FSDPEngineWithActionHEAD-backed actor engine.")
+        return self.actor.engine
+
+    @register(dispatch_mode=Dispatch.ONE_TO_ALL)
+    def init_model(self):
+        model_config: HFModelConfig = omega_conf_to_dataclass(self.config.model)
+        self.tokenizer = getattr(self, "tokenizer", None) or model_config.tokenizer
+
+        # 1. build reference model
+        if "ref" in self.role:
+            # VLA training currently does not require ref.
+            ...
+
+        # 2. build actor model
+        if "actor" in self.role:
+            actor_config: ActorConfig = omega_conf_to_dataclass(self.config.actor)
+            actor_config.model_config = model_config
+            actor_training_config = TrainingWorkerConfig(
+                model_type="vla_model",
+                model_config=actor_config.model_config,
+                engine_config=actor_config.engine,
+                optimizer_config=actor_config.optim,
+                checkpoint_config=actor_config.checkpoint,
+            )
+
+            self.actor = VLATrainingWorker(
+                config=actor_training_config,
+                actor_config=actor_config,
+                tokenizer=self.tokenizer,
+            )
+            self.actor.reset()
+            self.set_dispatch_collect(mesh_name="actor", **self.actor.get_dispatch_collect())
+
+        # 3. build rollout engine
+        if "rollout" in self.role:
+            rollout_config: RolloutConfig = omega_conf_to_dataclass(self.config.rollout)
+
+            # TODO: move rollout_device_mesh into ServerAdapter
+            # 3.1 build rollout device mesh (sglang need only)
+            infer_tp = rollout_config.tensor_model_parallel_size * rollout_config.data_parallel_size
+            infer_pp = rollout_config.pipeline_model_parallel_size
+            infer_world_size = infer_tp * infer_pp
+            dp = self.world_size // infer_world_size
+            assert self.world_size % infer_world_size == 0, (
+                f"rollout world_size: {self.world_size} is not divisible by infer_world_size: {infer_world_size}"
+            )
+            rollout_device_mesh = init_device_mesh(
+                get_device_name(), mesh_shape=(dp, infer_tp, infer_pp), mesh_dim_names=["dp", "infer_tp", "infer_pp"]
+            )
+            self._register_dispatch_collect_info(
+                "rollout", dp_rank=rollout_device_mesh["dp"].get_local_rank(), is_collect=True
+            )
+
+            # 3.2 initialize rollout engine
+            rollout_cls: type[BaseRollout] = get_rollout_class(rollout_config.name, rollout_config.mode)
+            self.rollout = rollout_cls(
+                config=rollout_config,
+                model_config=model_config,
+                device_mesh=rollout_device_mesh,
+                engine=self.actor.engine if "actor" in self.role else None,
+                tokenizer=self.tokenizer,
+            )
+
+            # used for LoRA
+            self.base_sync_done: bool = "dummy" not in self.config.rollout.load_format
+            self.layered_summon = self.config.rollout.get("layered_summon", False)
+            self.peft_merge: bool = model_config.lora.get("merge", False)
+
+        # 4. build checkpoint engine
+        if "actor" in self.role:
+            checkpoint_engine_config = omega_conf_to_dataclass(self.config.rollout.checkpoint_engine)
+            backend = checkpoint_engine_config.backend
+            bucket_size = checkpoint_engine_config.update_weights_bucket_megabytes << 20
+            engine_kwargs = checkpoint_engine_config.engine_kwargs.get(backend, {})
+            self.checkpoint_engine = CheckpointEngineRegistry.new(
+                backend, is_master=(torch.distributed.get_rank() == 0), bucket_size=bucket_size, **engine_kwargs
+            )
+
+        # Free cached GPU memory so colocated vLLM processes can see it via cudaMemGetInfo
+        aggressive_empty_cache(force_sync=True)
+
+    @register(dispatch_mode=make_nd_compute_dataproto_dispatch_fn(mesh_name="actor"))
+    def update_actor(self, data: DataProto) -> DataProto:
+        assert self._is_actor
+        output = self.actor.train_mini_batch(data=data)
+        return output.to("cpu") if output is not None else None
+
+    # The interface reserved for VLA
+
+    @register(dispatch_mode=Dispatch.ONE_TO_ALL)
+    def switch_to_rollout(self):
+        self._require_fsdp_rollout_engine().switch_to_rollout()
+
+    @register(dispatch_mode=Dispatch.ONE_TO_ALL)
+    def switch_to_train(self):
+        self._require_fsdp_rollout_engine().switch_to_train()
+
+    @register(dispatch_mode=make_nd_compute_dataproto_dispatch_fn(mesh_name="rollout"), blocking=False)
+    def generate_sequences(self, prompts: DataProto) -> DataProto:
+        assert self._is_rollout
+        prompts = prompts.to(get_device_id())
+        output = self.rollout.generate_sequences(prompts=prompts)
+        return output.to("cpu")
+
+
+register_vla_models()

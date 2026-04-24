@@ -1,0 +1,209 @@
+# Format checks enforced on CI:
+# 1. Comments must appear above each field.
+# 2. There must be a blank line between each field.
+# 3. Inline comments (after a field on the same line) are not allowed.
+# 4. Indentation level is respected for nested fields.
+
+# Target class for this configuration
+_target_: verl_vla.workers.config.ActorConfig
+
+# the abstract actor configs
+# fsdp, fsdp2 or megatron. must be set.
+strategy: ???
+
+# Legacy compatibility flag used by upstream `verl` PPO trainer when deciding
+# whether a reference policy is needed.
+use_kl_loss: false
+
+# checkpoint configs
+checkpoint:
+
+  # Target dataclass for this configuration
+  _target_: verl.trainer.config.CheckpointConfig
+
+  # What to include in saved checkpoints
+  # with 'hf_model' you can save whole model as hf format, now only use sharded model checkpoint to save space
+  save_contents: ['model', 'optimizer', 'extra']
+
+  # For more flexibility, you can specify the contents to load from the checkpoint.
+  # .xxx refers to the local variable xxx from the same level of hierarchy similar to python pkg
+  load_contents: ${.save_contents}
+
+  # Whether to save checkpoints asynchronously. Only effective for Megatron as of now.
+  async_save: False
+  
+  # Mbridge config extension.
+  # when vanilla_mbridge=True, and your filesystem is a distributed filesystem,(which means you write a file in node A
+  # and you can read the file in node B immediately)
+  # set `mbridge_config.distributed_filesystem=True` and `mbridge_config.memory_efficient=True` to 
+  # speed up the checkpoint saving by 10x speed.
+  mbridge_config: {}
+
+# optimizer configs
+optim:
+
+  # Learning rate
+  lr: 1e-6
+
+  # Warmup steps ratio (used if lr_warmup_steps is 0 or negative)
+  lr_warmup_steps_ratio: 0.0
+
+  # Total training steps (must be overridden at runtime)
+  total_training_steps: -1
+
+  # Weight decay
+  weight_decay: 0.01
+
+  # Prioritized. None, 0 or Negative values mean delegating to lr_warmup_steps_ratio.
+  lr_warmup_steps: -1
+
+
+# profile the actor model in `update_policy` 
+profiler:
+
+  # Required when using verl.utils.omega_conf_to_dataclass to instantiate dataclass configs
+  _target_: verl.utils.profiler.ProfilerConfig
+
+  # profiler tool, default same as profiler.tool in global config
+  # choices: nsys, npu, torch
+  tool: ${oc.select:global_profiler.tool,null}
+
+  # whether enable profile on Actor
+  enable: False
+  
+  # Whether to profile all ranks.
+  all_ranks: False
+
+  # The ranks that will be profiled. [] or [0,1,...]
+  ranks: []
+
+  # profile results saving path
+  save_path: ${oc.select:global_profiler.save_path,null}
+
+  # specific tool config which only related to the role
+  tool_config:
+
+    # nsys tool config
+    nsys:
+
+      # Required when using verl.utils.omega_conf_to_dataclass to instantiate dataclass configs
+      _target_: verl.utils.profiler.config.NsightToolConfig
+    
+      # True for each task has its own database, False for all tasks in one training step share one database.
+      discrete: ${oc.select:global_profiler.global_tool_config.nsys.discrete}
+    
+    # npu config
+    npu:
+
+      # Required when using verl.utils.omega_conf_to_dataclass to instantiate dataclass configs
+      _target_: verl.utils.profiler.config.NPUToolConfig
+
+      # Contents to profile, can be empty
+      # options: npu, cpu, memory, shapes, module, stack
+      contents: []
+
+      # Collection level, optional values: level_none, level0, level1, level2.
+      level: "level0"
+
+      # Whether to automatically parse the data.
+      analysis: True
+
+      # True for each task has its own database, False for all tasks in one training step share one database.
+      discrete: False
+    
+    # torch profiler config
+    torch:
+
+      # Required when using verl.utils.omega_conf_to_dataclass to instantiate dataclass configs
+      _target_: verl.utils.profiler.config.TorchProfilerToolConfig
+
+      # Contents to profile, can be empty
+      # options: cuda, cpu, memory, shapes, stack
+      contents: []
+
+      # True for each task has its own database, False for all tasks in one training step share one database.
+      discrete: false
+
+    # torch memory profiler config
+    torch_memory:
+
+      # Required when using verl.utils.omega_conf_to_dataclass to instantiate dataclass configs
+      _target_: verl.utils.profiler.config.TorchMemoryToolConfig
+
+      # Maximum number of memory allocation entries to track
+      trace_alloc_max_entries: ${oc.select:global_profiler.global_tool_config.torch_memory.trace_alloc_max_entries,100000}
+
+      # Stack trace depth for memory allocations
+      stack_depth: ${oc.select:global_profiler.global_tool_config.torch_memory.stack_depth,32}
+
+# SAC optimization config
+sac:
+
+  # Required when using verl.utils.omega_conf_to_dataclass to instantiate dataclass configs
+  _target_: verl_vla.workers.config.SACConfig
+
+  # Discount factor for target Q computation
+  gamma: 0.99
+
+  # Target network update coefficient
+  tau: 0.25
+
+  # Optional BC loss coefficient mixed into the actor loss
+  bc_loss_coef: 0.0
+
+  # Initial entropy temperature
+  initial_alpha: 0.0
+
+  # Positive sample ratio when drawing replay data for critic updates
+  critic_replay_positive_sample_ratio: 0.5
+
+  # Positive sample ratio when drawing replay data for actor updates
+  actor_replay_positive_sample_ratio: 0.9
+
+  # Whether to learn entropy temperature automatically
+  auto_entropy: false
+
+  # Parameterization for alpha: "exp" or "softplus"
+  alpha_type: exp
+
+  # Learning rate for alpha optimization
+  alpha_lr: 3e-4
+
+  # Target entropy used when auto_entropy is enabled
+  target_entropy: -64.0
+
+# Critic optimizer learning rate
+critic_lr: 1e-4
+
+# Critic optimizer weight decay
+critic_weight_decay: 0.0
+
+# Number of initial training steps that force fresh rollout collection
+warm_rollout_steps: 22
+
+# Number of steps to train critic before actor updates start
+critic_warmup_steps: 0
+
+# Update actor every N trainer steps
+actor_update_interval: 2
+
+# Whether to maintain EMA weights for actor parameters
+actor_ema_enabled: true
+
+# EMA decay for actor parameters
+actor_ema_decay: 0.8
+
+# SAC mini-batch size sampled from replay buffer
+sac_mini_batch_size: 256
+
+# SAC micro-batch size per GPU used during updates
+sac_micro_batch_size_per_gpu: 16
+
+# How often to persist replay buffer snapshots
+replay_pool_save_interval: 500
+
+# Capacity of each rank-local replay pool
+replay_pool_single_size: 10
+
+# Directory used to save and restore replay pools
+replay_pool_save_dir: /tmp/replay_pools

@@ -67,7 +67,7 @@ class RobActorRolloutRefWorker(ActorRolloutRefWorker):
         # 3. init trainer and rollout random states
         self.torch_random_states = get_torch_device().get_rng_state()
         gen_dp_rank = rollout_device_mesh["dp"].get_local_rank()
-        get_torch_device().manual_seed(gen_dp_rank + 1000)  # make sure all tp ranks have the same random states
+        get_torch_device().manual_seed(gen_dp_rank + 1000)
         self.gen_random_states = get_torch_device().get_rng_state()
         get_torch_device().set_rng_state(self.torch_random_states)
 
@@ -85,7 +85,6 @@ class RobActorRolloutRefWorker(ActorRolloutRefWorker):
                 state_dict_config=ShardedStateDictConfig(),
             )
         elif fsdp_ver == 2:
-            # FSDP2 already handles state dict logic via torch.distributed.checkpoint APIs.
             pass
         else:
             raise NotImplementedError(f"Unsupported fsdp version {fsdp_ver}")
@@ -119,14 +118,11 @@ class RobActorRolloutRefWorker(ActorRolloutRefWorker):
         log_gpu_memory_usage("After switch to trainer mode", logger=logger)
 
     async def rollout_mode(self):
-        """Context switch hybridengine to rollout mode."""
-
         self.actor_module_fsdp.eval()
 
         aggressive_empty_cache(force_sync=True)
         self.base_sync_done = True
 
-        # important: need to manually set the random states of each tp to be identical.
         self.torch_random_states = get_torch_device().get_rng_state()
         get_torch_device().set_rng_state(self.gen_random_states)
 
@@ -165,15 +161,11 @@ class RobActorRolloutRefWorker(ActorRolloutRefWorker):
         logger.info("rollout mode")
 
     async def trainer_mode(self):
-        """Context switch hybridengine to trainer mode."""
-
         self.actor_module_fsdp.train()
 
-        # add empty cache after each compute
         aggressive_empty_cache(force_sync=True)
         set_expandable_segments(True)
 
-        # restore random states
         self.gen_random_states = get_torch_device().get_rng_state()
         get_torch_device().set_rng_state(self.torch_random_states)
 
@@ -198,7 +190,6 @@ class RobActorRolloutRefWorker(ActorRolloutRefWorker):
     @register(dispatch_mode=make_nd_compute_dataproto_dispatch_fn(mesh_name="rollout"), blocking=False)
     @DistProfiler.annotate(color="red", role="rollout_generate")
     def generate_sequences(self, prompts: DataProto):
-        # Support all hardwares
         assert self._is_rollout
         prompts = prompts.to(get_device_id())
 
@@ -231,7 +222,6 @@ class RobActorRolloutRefWorker(ActorRolloutRefWorker):
         output.meta_info["metrics"] = timing_generate
         output = output.to("cpu")
 
-        # clear kv cache
         get_torch_device().empty_cache()
         return output
 

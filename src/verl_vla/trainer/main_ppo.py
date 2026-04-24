@@ -103,9 +103,8 @@ def main_task(config):
         assert config.actor_rollout_ref.actor.strategy == config.critic.strategy
         from verl.single_controller.ray import RayWorkerGroup
 
+        from verl_vla.workers.engine import RobActorRolloutRefWorker
         from verl_vla.workers.env.env_worker import EnvWorker
-
-        from .engine.fsdp_workers import RobActorRolloutRefWorker
 
         ray_worker_group_cls = RayWorkerGroup
 

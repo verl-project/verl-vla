@@ -1,0 +1,77 @@
+# Environment configuration for SAC training
+rollout:
+
+  # Number of pipeline stages used by the env-loop rollout.
+  pipeline_stage_num: 2
+
+actor:
+  model:
+
+    # Number of action chunks predicted at each step.
+    num_action_chunks: 8
+
+    # Action dimension for the robot policy head.
+    action_dim: 7
+
+train:
+
+  # Device used by environment workers: typically "cpu" or "cuda".
+  device: cpu
+
+  # Simulator backend for LIBERO tasks.
+  simulator_type: libero
+
+  # Maximum number of environment steps per episode.
+  max_episode_steps: 512
+
+  # Multiplier applied to positive task reward.
+  reward_coef: 1.0
+
+  # Per-step penalty used to encourage shorter successful trajectories.
+  step_penalty: 0.001
+
+  # If True, only run evaluation without training updates.
+  only_eval: False
+
+  # Video recording options for rollouts.
+  video_cfg:
+
+    # Whether to save rollout videos.
+    save_video: True
+
+    # Output directory for saved rollout videos.
+    video_base_dir: /tmp/videos
+
+  # Number of simulator environments hosted by each env worker.
+  num_envs: 16
+
+  # Random seed for env initialization and reset sampling.
+  seed: 42
+
+  # LIBERO task suite name.
+  task_suite_name: libero_spatial
+
+  # Simulator-specific initialization parameters.
+  init_params:
+
+    # Whether to render depth images from cameras.
+    camera_depths: False
+
+    # Camera image height.
+    camera_heights: 256
+
+    # Camera image width.
+    camera_widths: 256
+
+    # Camera views included in each observation.
+    camera_names:
+      - agentview
+      - robot0_eye_in_hand
+
+disagg_sim:
+
+  # Whether simulator workers run on separate nodes from training workers.
+  enable: False
+
+  # Number of simulator nodes when disaggregated simulation is enabled.
+  nnodes: 1

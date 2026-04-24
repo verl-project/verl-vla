@@ -23,7 +23,7 @@ from tqdm import tqdm
 from verl import DataProto
 from verl.single_controller.ray import RayClassWithInitArgs
 from verl.single_controller.ray.base import create_colocated_worker_cls
-from verl.trainer.ppo.ray_trainer import RayPPOTrainer
+from verl.trainer.ppo.ray_trainer import RayPPOTrainer, ValidationGenerationsLogger
 from verl.trainer.ppo.utils import Role
 from verl.utils.checkpoint.checkpoint_manager import should_save_ckpt_esi
 from verl.utils.debug import marked_timer
@@ -48,6 +48,50 @@ def compute_avg_positive_trajectory_length(batch: DataProto) -> float:
 
 
 class RobRaySACTrainer(RayPPOTrainer):
+    def __init__(
+        self,
+        config,
+        tokenizer,
+        role_worker_mapping,
+        resource_pool_manager,
+        ray_worker_group_cls,
+        processor=None,
+        train_dataset=None,
+        val_dataset=None,
+        collate_fn=None,
+        train_sampler=None,
+        device_name=None,
+    ):
+        self.tokenizer = tokenizer
+        self.processor = processor
+        self.config = config
+
+        self.hybrid_engine = config.actor_rollout_ref.hybrid_engine
+        assert self.hybrid_engine, "Currently, only support hybrid engine"
+        assert Role.ActorRollout in role_worker_mapping, f"{role_worker_mapping.keys()=}"
+
+        self.role_worker_mapping = role_worker_mapping
+        self.resource_pool_manager = resource_pool_manager
+
+        # SAC uses a single actor-rollout worker to manage actor/critic updates.
+        self.use_reference_policy = False
+        self.use_rm = False
+        self.use_critic = False
+
+        self.ray_worker_group_cls = ray_worker_group_cls
+        self.device_name = device_name if device_name else self.config.trainer.device
+        self.validation_generations_logger = ValidationGenerationsLogger(
+            project_name=self.config.trainer.project_name,
+            experiment_name=self.config.trainer.experiment_name,
+        )
+
+        self.ref_in_actor = False
+        self.use_prefix_grouper = False
+        self.use_legacy_worker_impl = config.trainer.get("use_legacy_worker_impl", "auto")
+
+        self._create_dataloader(train_dataset, val_dataset, collate_fn, train_sampler)
+        self.checkpoint_manager = None
+
     def _start_profiling(self, do_profile: bool) -> None:
         """Start profiling for all worker groups including env workers."""
         super()._start_profiling(do_profile)

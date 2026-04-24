@@ -1,0 +1,51 @@
+# Format checks enforced on CI:
+# 1. Comments must appear above each field.
+# 2. There must be a blank line between each field.
+# 3. Inline comments (after a field on the same line) are not allowed.
+# 4. Indentation level is respected for nested fields.
+
+
+defaults:
+  # fsdp optimizer config
+  - /optim@optim: fsdp
+
+  # fsdp engine config
+  - /engine@fsdp_config: fsdp
+
+  # inherit the base actor config so fields like profiler/checkpoint/router_replay exist
+  - actor
+
+  - _self_
+
+# Distribution strategy for SAC actor
+strategy: fsdp2
+
+# Keep engine strategy aligned with actor strategy
+fsdp_config:
+
+  # FSDP backend implementation used by the engine
+  strategy: ${..strategy}
+
+  # FSDP auto-wrap policy for the VLA actor model
+  wrap_policy:
+
+    # Transformer layer classes to wrap
+    transformer_layer_cls_to_wrap:
+
+      - PrismaticProjector
+      - LlamaDecoderLayer
+
+    # Minimum parameter count before wrapping
+    min_num_params: 0
+
+  # Whether to offload model parameters to CPU
+  param_offload: false
+
+  # Whether to offload optimizer states to CPU
+  optimizer_offload: false
+
+  # Whether to prefetch parameters for the next forward pass
+  forward_prefetch: true
+
+  # FSDP shard group size
+  fsdp_size: -1

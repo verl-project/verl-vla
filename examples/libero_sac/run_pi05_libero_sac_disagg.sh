@@ -90,13 +90,11 @@ $PYTHON -m verl_vla.trainer.main_sac \
     actor_rollout_ref.actor.optim.warmup_style=constant \
     actor_rollout_ref.actor.ppo_mini_batch_size=$MINI_BATCH_SIZE \
     actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=$MICRO_BATCH_SIZE \
-    actor_rollout_ref.actor.use_dynamic_bsz=False \
     actor_rollout_ref.actor.strategy=fsdp2 \
     critic.strategy=fsdp2 \
     actor_rollout_ref.actor.grad_clip=1 \
     actor_rollout_ref.actor.clip_ratio_high=0.28 \
     actor_rollout_ref.actor.clip_ratio_low=0.2 \
-    actor_rollout_ref.actor.num_images_in_input=1 \
     actor_rollout_ref.model.enable_gradient_checkpointing=False \
     actor_rollout_ref.model.use_remove_padding=False \
     actor_rollout_ref.model.trust_remote_code=False \
@@ -111,8 +109,6 @@ $PYTHON -m verl_vla.trainer.main_sac \
     actor_rollout_ref.rollout.free_cache_engine=False \
     actor_rollout_ref.ref.log_prob_micro_batch_size=16 \
     actor_rollout_ref.ref.fsdp_config.param_offload=True \
-    +actor_rollout_ref.algorithm='sac' \
-    algorithm.kl_ctrl.kl_coef=0.00 \
     trainer.logger=['console'] \
     trainer.project_name=$PROJECT_NAME \
     trainer.experiment_name=$EXPERIMENT_NAME \
@@ -126,5 +122,4 @@ $PYTHON -m verl_vla.trainer.main_sac \
     trainer.test_freq=10 \
     trainer.total_epochs=1000 \
     trainer.val_only=False \
-    algorithm.adv_estimator=reinforce_plus_plus \
     trainer.val_before_train=False
