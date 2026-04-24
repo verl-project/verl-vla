@@ -47,6 +47,36 @@ def compute_avg_positive_trajectory_length(batch: DataProto) -> float:
     return traj_lens[positive_traj].float().mean().item()
 
 
+def compute_per_task_trajectory_metrics(rollout_batch: DataProto, metric_prefix: str) -> dict[str, float]:
+    task_ids = rollout_batch.meta_info.get("task_ids")
+    if task_ids is None:
+        return {}
+
+    complete_any = rollout_batch.batch["feedback.terminations"].any(dim=-1)  # (B, T)
+    success_np = complete_any.any(dim=-1).detach().float().cpu().numpy()  # (B,)
+
+    dones = complete_any.detach().cpu()
+    done_idx = torch.argmax(dones.int(), dim=1)
+    traj_lens = (done_idx + 1).float().numpy()
+
+    metrics = {}
+    for task_id in np.unique(task_ids):
+        task_mask = task_ids == task_id
+        if not task_mask.any():
+            continue
+
+        task_key = int(task_id)
+        task_success = success_np[task_mask]
+        metrics[f"{metric_prefix}/per_task_success_rate/task_{task_key}"] = float(task_success.mean())
+
+        positive_lens = traj_lens[task_mask][task_success.astype(bool)]
+        metrics[f"{metric_prefix}/per_task_avg_positive_trajectory_length/task_{task_key}"] = (
+            float(positive_lens.mean()) if len(positive_lens) > 0 else 0.0
+        )
+
+    return metrics
+
+
 class RobRaySACTrainer(RayPPOTrainer):
     def __init__(
         self,
@@ -387,6 +417,9 @@ class RobRaySACTrainer(RayPPOTrainer):
                                     reset_future = self._reset_envs(next_rollout_batch)
 
                                 # compute rewards and other metrics, and prepare for actor update
+                                metrics.update(
+                                    compute_per_task_trajectory_metrics(rollout_output, metric_prefix="data")
+                                )
                                 actor_input = self._prepare_actor_input(rollout_output)
 
                         # === update policy ===
@@ -494,6 +527,7 @@ class RobRaySACTrainer(RayPPOTrainer):
 
     def _validate(self) -> dict:
         metric_list = []
+        per_task_metric_lists = {}
         val_iter = iter(self.val_dataloader)
         test_batch = self._next_rollout_batch(val_iter)
         while test_batch is not None:
@@ -512,6 +546,10 @@ class RobRaySACTrainer(RayPPOTrainer):
                 valid_rollout_output.meta_info["task_ids"] = valid_rollout_output.meta_info["task_ids"][
                     :valid_batch_size
                 ]
+            per_task_metrics = compute_per_task_trajectory_metrics(valid_rollout_output, metric_prefix="val")
+            for key, value in per_task_metrics.items():
+                per_task_metric_lists.setdefault(key, []).append(value)
+
             actor_input = self._prepare_actor_input(valid_rollout_output)
 
             metric_list.append(
@@ -527,5 +565,7 @@ class RobRaySACTrainer(RayPPOTrainer):
             metrics["val/avg_positive_trajectory_length"] = np.mean(
                 [m["val/avg_positive_trajectory_length"] for m in metric_list]
             )
+        for key, values in per_task_metric_lists.items():
+            metrics[key] = float(np.mean(values))
 
         return metrics
