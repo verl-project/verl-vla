@@ -256,6 +256,38 @@ class RobRaySACTrainer(RayPPOTrainer):
 
         return rollout_output
 
+    @staticmethod
+    def _pad_validation_batch(batch: DataProto, target_batch_size: int) -> DataProto:
+        valid_batch_size = len(batch)
+        if valid_batch_size >= target_batch_size:
+            return batch
+
+        pad_size = target_batch_size - valid_batch_size
+        pad_part = batch.select_idxs([0]).repeat(pad_size)
+
+        padded_batch = None
+        if batch.batch is not None:
+            padded_batch = torch.cat([batch.batch, pad_part.batch], dim=0)
+
+        padded_non_tensor_batch = {
+            key: np.concatenate([value, pad_part.non_tensor_batch[key]], axis=0)
+            for key, value in batch.non_tensor_batch.items()
+        }
+
+        padded_meta_info = dict(batch.meta_info)
+        task_ids = padded_meta_info.get("task_ids")
+        if isinstance(task_ids, np.ndarray):
+            padded_meta_info["task_ids"] = np.concatenate(
+                [task_ids, np.repeat(task_ids[:1], pad_size, axis=0)],
+                axis=0,
+            )
+
+        return DataProto(
+            batch=padded_batch,
+            non_tensor_batch=padded_non_tensor_batch,
+            meta_info=padded_meta_info,
+        )
+
     def fit(self):
         from omegaconf import OmegaConf
         from verl.utils.tracking import Tracking
@@ -465,16 +497,22 @@ class RobRaySACTrainer(RayPPOTrainer):
         val_iter = iter(self.val_dataloader)
         test_batch = self._next_rollout_batch(val_iter)
         while test_batch is not None:
-            if len(test_batch) < self.config.data.val_batch_size:
-                print(f"drop last batch in val_dataloader, len {len(test_batch)}")
-                break
+            valid_batch_size = len(test_batch)
+            target_batch_size = self.config.data.val_batch_size
+            if valid_batch_size < target_batch_size:
+                test_batch = self._pad_validation_batch(test_batch, target_batch_size)
 
             test_batch.meta_info["validate"] = True
             reset_future = self._reset_envs(test_batch)
             rollout_output = self.async_rollout_manager.generate_sequences(test_batch, reset_future)
-            self._prepare_actor_input(rollout_output)
             test_batch = self._next_rollout_batch(val_iter)
-            actor_input = self._prepare_actor_input(rollout_output)
+            valid_rollout_output = rollout_output[:valid_batch_size]
+            valid_rollout_output.meta_info = dict(valid_rollout_output.meta_info)
+            if "task_ids" in valid_rollout_output.meta_info:
+                valid_rollout_output.meta_info["task_ids"] = valid_rollout_output.meta_info["task_ids"][
+                    :valid_batch_size
+                ]
+            actor_input = self._prepare_actor_input(valid_rollout_output)
 
             metric_list.append(
                 {

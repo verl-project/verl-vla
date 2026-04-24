@@ -89,7 +89,13 @@ def get_output_dir_name(task_suite_name: str, task_suite: Benchmark, selected_ta
     return os.path.join(task_suite_name, f"task_{task_id}_{sanitize_for_path(task_name)}")
 
 
-def build_dataset_for_suite(task_suite_name: str, local_save_dir: str, selected_task_ids: list[int] | None = None):
+def build_dataset_for_suite(
+    task_suite_name: str,
+    local_save_dir: str,
+    selected_task_ids: list[int] | None = None,
+    no_split: bool = False,
+    val_samples_per_task: int = 10,
+):
     task_suite = get_benchmark(task_suite_name)()
     total_num_group_envs, cumsum_trial_id_bins = compute_total_num_group_envs(task_suite)
     selected_task_ids = resolve_selected_task_ids(task_suite, selected_task_ids)
@@ -103,17 +109,27 @@ def build_dataset_for_suite(task_suite_name: str, local_save_dir: str, selected_
         end_id = cumsum_trial_id_bins[task_id]
         return list(range(start_id, end_id))
 
-    if len(selected_task_ids) > 1:
-        train_task_num = max(1, len(selected_task_ids) - 1)
-        train_task_ids = sorted(random.sample(selected_task_ids, train_task_num))
-        ood_test_task_ids = sorted(list(set(selected_task_ids) - set(train_task_ids)))
-    else:
+    if no_split:
         train_task_ids = selected_task_ids
+        val_task_ids = selected_task_ids
         ood_test_task_ids = []
+    else:
+        if len(selected_task_ids) > 1:
+            train_task_num = max(1, len(selected_task_ids) - 1)
+            train_task_ids = sorted(random.sample(selected_task_ids, train_task_num))
+            ood_test_task_ids = sorted(list(set(selected_task_ids) - set(train_task_ids)))
+        else:
+            train_task_ids = selected_task_ids
+            ood_test_task_ids = []
+        val_task_ids = train_task_ids
 
     print("\n[Data Split Plan]")
     print(f"Training Task IDs: {train_task_ids}")
-    print(f"OOD Test Task IDs: {ood_test_task_ids}")
+    if no_split:
+        print(f"Validation Task IDs: {val_task_ids}")
+        print(f"Validation samples per task: {val_samples_per_task}")
+    else:
+        print(f"OOD Test Task IDs: {ood_test_task_ids}")
 
     train_metadata = []
     test_metadata = []
@@ -122,29 +138,42 @@ def build_dataset_for_suite(task_suite_name: str, local_save_dir: str, selected_
         all_trials = get_state_ids_for_task(task_id)
         random.shuffle(all_trials)
 
-        if len(all_trials) <= 1:
-            train_count = len(all_trials)
+        if no_split:
+            selected_train_trials = all_trials
         else:
-            train_count = int(len(all_trials) * 0.8)
-            train_count = max(1, train_count)
-            train_count = min(train_count, 40, len(all_trials) - 1)
-        selected_train_trials = all_trials[:train_count]
-        selected_id_test_trials = all_trials[train_count:]
+            if len(all_trials) <= 1:
+                train_count = len(all_trials)
+            else:
+                train_count = int(len(all_trials) * 0.8)
+                train_count = max(1, train_count)
+                train_count = min(train_count, 40, len(all_trials) - 1)
+            selected_train_trials = all_trials[:train_count]
+            selected_id_test_trials = all_trials[train_count:]
 
         for state_id in selected_train_trials:
             train_metadata.append({"task_id": task_id, "state_id": state_id, "data_source": "train"})
 
-        for state_id in selected_id_test_trials[:10]:
-            test_metadata.append({"task_id": task_id, "state_id": state_id, "data_source": "test_in_distribution"})
+        if not no_split:
+            for state_id in selected_id_test_trials[:10]:
+                test_metadata.append({"task_id": task_id, "state_id": state_id, "data_source": "test_in_distribution"})
 
-    for ood_task_id in ood_test_task_ids:
-        ood_all_trials = get_state_ids_for_task(ood_task_id)
-        random.shuffle(ood_all_trials)
-        selected_ood_trials = ood_all_trials[:20]
-        for state_id in selected_ood_trials:
-            test_metadata.append(
-                {"task_id": ood_task_id, "state_id": state_id, "data_source": "test_out_of_distribution"}
-            )
+    if no_split:
+        for task_id in val_task_ids:
+            all_trials = get_state_ids_for_task(task_id)
+            random.shuffle(all_trials)
+            selected_val_trials = all_trials[:val_samples_per_task]
+            for state_id in selected_val_trials:
+                test_metadata.append({"task_id": task_id, "state_id": state_id, "data_source": "validation"})
+
+    else:
+        for ood_task_id in ood_test_task_ids:
+            ood_all_trials = get_state_ids_for_task(ood_task_id)
+            random.shuffle(ood_all_trials)
+            selected_ood_trials = ood_all_trials[:20]
+            for state_id in selected_ood_trials:
+                test_metadata.append(
+                    {"task_id": ood_task_id, "state_id": state_id, "data_source": "test_out_of_distribution"}
+                )
 
     print(f"Generated {len(train_metadata)} training samples.")
     print(f"Generated {len(test_metadata)} testing samples.")
@@ -232,6 +261,17 @@ if __name__ == "__main__":
         default=None,
         help="Optional comma-separated task IDs to include. Use a single task ID to generate a single-task dataset.",
     )
+    parser.add_argument(
+        "--no_split",
+        action="store_true",
+        help="Do not hold out any samples from training. Build validation data separately into test.parquet.",
+    )
+    parser.add_argument(
+        "--val_samples_per_task",
+        type=int,
+        default=10,
+        help="Number of validation samples per task when --no_split is enabled.",
+    )
     args = parser.parse_args()
 
     random.seed(42)
@@ -247,4 +287,6 @@ if __name__ == "__main__":
             task_suite_name=task_suite_name,
             local_save_dir=local_save_dir,
             selected_task_ids=selected_task_ids,
+            no_split=args.no_split,
+            val_samples_per_task=args.val_samples_per_task,
         )

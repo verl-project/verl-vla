@@ -16,18 +16,18 @@ NUM_GPUS=4                                     # total number of gpus per node
 
 # Role Config
 ENV_DEVICE=cpu                                 # env worker device: cpu or cuda
-NUM_ENV_WORKERS=2                              # number of CPU env workers per node
+NUM_ENV_WORKERS=16                              # number of CPU env workers per node
 NUM_ROLLOUT_GPUS=4                             # number of gpus for actor/rollout workers per node
 
 # Rollout Config
-# NOTE: TRAIN_BATCH_SIZE * ROLLOUT_N == NUM_ENV_WORKERS * NUM_STAGE * NUM_ENV
-TRAIN_BATCH_SIZE=32                            # batch size for dataloaders per step
+# NOTE: BATCH_SIZE * ROLLOUT_N == NUM_ENV_WORKERS * NUM_STAGE * NUM_ENV
+BATCH_SIZE=64                                  # batch size for dataloaders per step
 ROLLOUT_N=1                                    # response number for each prompt (for GRPO)
 NUM_STAGE=2                                    # number of pipeline stages
-NUM_ENV=8                                      # number of envs per env worker
+NUM_ENV=2                                      # number of envs per env worker
 
 NUM_ACTION_CHUNKS=10                           # number of action chunks
-MAX_EPISODE_STEPS=40                           # max episode steps for each env
+MAX_EPISODE_STEPS=256                           # max episode steps for each env
                                                # max_interactions = MAX_EPISODE_STEPS / num_action_chunks
 
 # Training Config
@@ -64,8 +64,8 @@ export VERL_LOGGING_LEVEL=INFO
 $PYTHON -m verl_vla.trainer.main_sac \
     data.train_files="$train_files" \
     data.val_files="$test_files" \
-    data.train_batch_size=$TRAIN_BATCH_SIZE \
-    data.val_batch_size=4 \
+    data.train_batch_size=$BATCH_SIZE \
+    data.val_batch_size=$BATCH_SIZE \
     actor_rollout_ref.rollout.n=$ROLLOUT_N \
     env.train.num_envs=$NUM_ENV \
     env.rollout.pipeline_stage_num=$NUM_STAGE \
@@ -105,7 +105,7 @@ $PYTHON -m verl_vla.trainer.main_sac \
     trainer.rollout_interval=20 \
     trainer.nnodes=$NUM_NODES \
     trainer.save_freq=300 \
-    trainer.test_freq=-1 \
+    trainer.test_freq=100 \
     trainer.total_epochs=100 \
     trainer.val_only=False \
-    trainer.val_before_train=False
+    trainer.val_before_train=True
