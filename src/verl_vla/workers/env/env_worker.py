@@ -167,10 +167,14 @@ class EnvWorker(Worker, DistProfilerExtension):
         """
         if data.batch is not None and "action" in data.batch.keys():
             chunk_actions: torch.Tensor = data.batch["action"]
-            chunk_values = data.batch["critic_value"]
+            chunk_values = data.batch.get("critic_value")
         else:
             chunk_actions = torch.as_tensor(data.non_tensor_batch["action"])
-            chunk_values = torch.as_tensor(data.non_tensor_batch["critic_value"])
+            chunk_values = (
+                torch.as_tensor(data.non_tensor_batch["critic_value"])
+                if "critic_value" in data.non_tensor_batch
+                else None
+            )
         stage_id: int = data.meta_info["stage_id"]
 
         # Pi0.5 Libero is not required

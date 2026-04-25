@@ -345,8 +345,9 @@ class LiberoEnv(gym.Env):
             plot_infos = {
                 "rewards": step_reward,
                 "terminations": terminations,
-                "critic_value": np.asarray(critic_values, dtype=np.float32),
             }
+            if critic_values is not None:
+                plot_infos["critic_value"] = np.asarray(critic_values, dtype=np.float32)
             plot_infos["task"] = self.task_descriptions
             self.add_new_frames(raw_obs, plot_infos)
 
@@ -370,10 +371,12 @@ class LiberoEnv(gym.Env):
         raw_chunk_truncations = []
         for i in range(chunk_size):
             actions = chunk_actions[:, i]
-            if len(chunk_values.shape) == 1:
-                step_values = chunk_values
-            elif len(chunk_values.shape) == 2:
-                step_values = chunk_values[:, i]
+            step_values = None
+            if chunk_values is not None:
+                if len(chunk_values.shape) == 1:
+                    step_values = chunk_values
+                elif len(chunk_values.shape) == 2:
+                    step_values = chunk_values[:, i]
 
             extracted_obs, step_reward, terminations, truncations, infos = self.step(actions, critic_values=step_values)
 

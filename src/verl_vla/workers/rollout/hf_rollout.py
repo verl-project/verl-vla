@@ -45,6 +45,10 @@ class HFRollout(BaseRollout):
         self.engine = engine
         self.module = module if module is not None else (engine.module if engine is not None else None)
         self.tokenizer = tokenizer
+        rollout_custom_config = config.custom or {}
+        self.output_critic_value = bool(
+            config.get("output_critic_value", rollout_custom_config.get("output_critic_value", True))
+        )
 
         if self.module is None:
             raise ValueError("HFRollout requires a shared actor engine or module.")
@@ -52,7 +56,8 @@ class HFRollout(BaseRollout):
         from torch.distributed.fsdp import register_fsdp_forward_method
 
         register_fsdp_forward_method(self.module, "sac_sample_actions")
-        register_fsdp_forward_method(self.module, "sac_get_critic_value")
+        if self.output_critic_value:
+            register_fsdp_forward_method(self.module, "sac_get_critic_value")
 
     def generate_sequences(self, prompts: DataProto) -> DataProto:
         with torch.autocast(device_type=get_device_name(), dtype=torch.bfloat16):
@@ -62,10 +67,12 @@ class HFRollout(BaseRollout):
                 tokenizer=self.tokenizer,
                 validate=validate,
             )
-            critic_value = self.module.sac_get_critic_value(prompts, output, self.tokenizer)
 
         ret = output.to_data_proto()
-        ret.batch["critic_value"] = critic_value
+        if self.output_critic_value:
+            with torch.autocast(device_type=get_device_name(), dtype=torch.bfloat16):
+                critic_value = self.module.sac_get_critic_value(prompts, output, self.tokenizer)
+            ret.batch["critic_value"] = critic_value
         return ret
 
     async def update_weights(self, weights, **kwargs):

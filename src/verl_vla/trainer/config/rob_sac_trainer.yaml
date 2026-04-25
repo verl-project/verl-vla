@@ -240,7 +240,7 @@ actor_rollout_ref:
       sac_enable: True
 
       # critic backend type: "cross_attn" or "multi_cross_attn"
-      critic_type: multi_cross_attn
+      critic_type: cross_attn
 
       # number of critic backends when using multi_cross_attn
       critic_num: 10
@@ -258,3 +258,6 @@ actor_rollout_ref:
 
   rollout:
     mode: async_envloop
+
+    # Whether HF rollout computes and emits critic_value for environment visualization.
+    output_critic_value: True
