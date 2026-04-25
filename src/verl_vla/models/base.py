@@ -108,12 +108,15 @@ class SupportSACTraining:
     def sac_forward_actor(
         self,
         state_features: Any,
+        task_ids: Optional[torch.Tensor] = None,
         is_first_micro_batch: bool = False,
     ) -> Any:
         """Compute actions and their log probabilities from state features.
 
         Args:
             state_features: Any data structure representing the processed state features.
+            task_ids: Optional tensor of shape (B,) selecting task-specific actor sampling
+                behavior, such as task-specific Flow-SDE noise levels.
             is_first_micro_batch: Whether the current forward corresponds to the first
                 micro batch of the actor update step.
 

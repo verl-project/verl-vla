@@ -194,6 +194,7 @@ class RobDataParallelSACActor(BaseSACActor):
                 if resample:
                     a1_actions, log_probs_1, _ = self.actor_module.sac_forward_actor(
                         s1_state_features,
+                        task_ids=micro_batch.batch["info.task_ids"],
                         is_first_micro_batch=False,
                     )
                     a1 = {"action": a1_actions}
@@ -239,6 +240,7 @@ class RobDataParallelSACActor(BaseSACActor):
             s0_state_features = self.actor_module.sac_forward_state_features(s0, self.tokenizer)
             a0_actions, log_probs_0, actor_forward_metrics = self.actor_module.sac_forward_actor(
                 s0_state_features,
+                task_ids=micro_batch.batch["info.task_ids"],
                 is_first_micro_batch=is_first_micro_batch,
             )
             q_values_0 = self.actor_module.sac_forward_critic(

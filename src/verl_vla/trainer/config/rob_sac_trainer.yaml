@@ -250,6 +250,7 @@ actor_rollout_ref:
 
       flow_sde_enable: True
       flow_sde_noise_level: 0.08
+      flow_sde_task_noise_level: ""
       flow_sde_rollout_noise_scale: 1.0
       flow_sde_train_noise_scale: 1.0
       flow_sde_initial_beta: 1.0

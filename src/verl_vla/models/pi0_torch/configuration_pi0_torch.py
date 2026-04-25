@@ -28,3 +28,4 @@ class PI0TorchConfig(PretrainedConfig):
         self.critic_type = kwargs.get("critic_type", "cross_attn")
         self.critic_num = kwargs.get("critic_num", 1)
         self.critic_task_to_critic = kwargs.get("critic_task_to_critic", None)
+        self.flow_sde_task_noise_level = kwargs.get("flow_sde_task_noise_level", {})

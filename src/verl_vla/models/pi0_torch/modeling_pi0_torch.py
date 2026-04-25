@@ -88,6 +88,7 @@ class PI0ForActionPrediction(PreTrainedModel, SupportSACTraining):
         self._to(get_device_name())
         self.flow_sde_enable = bool(getattr(config, "flow_sde_enable", True))
         self.flow_sde_noise_level = float(getattr(config, "flow_sde_noise_level", 0.5))
+        self.flow_sde_task_noise_level = self._parse_task_noise_levels(config.flow_sde_task_noise_level)
         self.flow_sde_rollout_noise_scale = float(getattr(config, "flow_sde_rollout_noise_scale", 1.0))
         self.flow_sde_train_noise_scale = float(getattr(config, "flow_sde_train_noise_scale", 1.0))
         self.flow_sde_initial_beta = float(getattr(config, "flow_sde_initial_beta", 1.0))
@@ -198,6 +199,7 @@ class PI0ForActionPrediction(PreTrainedModel, SupportSACTraining):
                 noise_scale=self.flow_sde_rollout_noise_scale,
                 requires_grad=False,
                 return_log_prob=True,
+                task_ids=torch.tensor(env_obs.non_tensor_batch["task_ids"], device=state.device, dtype=torch.long),
             )
         else:
             pred_action = self.model.sample_actions(images, pi0_input.img_masks, lang_tokens, lang_masks, state=state)
@@ -327,12 +329,48 @@ class PI0ForActionPrediction(PreTrainedModel, SupportSACTraining):
         )
         return torch.tensor(beta, device=self.flow_sde_step.device, dtype=torch.float32)
 
+    def _parse_task_noise_levels(
+        self,
+        task_noise_levels: str,
+    ) -> dict[int, float]:
+        normalized: dict[int, float] = {}
+        for item in task_noise_levels.split(","):
+            task_id, noise_level = item.split(":", 1)
+            normalized_task_id = int(task_id)
+            normalized_noise_level = float(noise_level)
+            if normalized_noise_level < 0:
+                raise ValueError(
+                    f"flow_sde_task_noise_level[{normalized_task_id}] must be non-negative, "
+                    f"got {normalized_noise_level}."
+                )
+            normalized[normalized_task_id] = normalized_noise_level
+        return normalized
+
+    def _resolve_flow_sde_noise_levels(
+        self,
+        batch_size: int,
+        device: torch.device,
+        dtype: torch.dtype,
+        task_ids: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        noise_levels = torch.full((batch_size,), self.flow_sde_noise_level, device=device, dtype=dtype)
+        task_ids = task_ids.to(device=device, dtype=torch.long).reshape(-1)
+        if task_ids.shape[0] != batch_size:
+            raise ValueError(f"task_ids batch size {task_ids.shape[0]} does not match batch size {batch_size}")
+
+        for task_id, noise_level in self.flow_sde_task_noise_level.items():
+            task_mask = task_ids == task_id
+            if task_mask.any():
+                noise_levels = noise_levels.masked_fill(task_mask, noise_level)
+        return noise_levels
+
     def _sample_actions_flow_sde(
         self,
         state_features: tuple[tuple[torch.Tensor, torch.Tensor, torch.Tensor], torch.Tensor],
         noise_scale: float,
         requires_grad: bool,
         return_log_prob: bool,
+        task_ids: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         """
         add noise to the action sampling process using Flow-SDE method.
@@ -344,6 +382,12 @@ class PI0ForActionPrediction(PreTrainedModel, SupportSACTraining):
         batch_size = prefix_embs.shape[0]
         device = prefix_embs.device
         beta = self.flow_sde_beta().to(device=device, dtype=prefix_embs.dtype)
+        noise_levels = self._resolve_flow_sde_noise_levels(
+            batch_size=batch_size,
+            device=device,
+            dtype=prefix_embs.dtype,
+            task_ids=task_ids,
+        )
 
         past_key_values = self._build_kv_cache_from_prefix(prefix_features)
         actions_shape = (batch_size, self.model.n_action_steps, self.model.max_action_dim)
@@ -384,9 +428,9 @@ class PI0ForActionPrediction(PreTrainedModel, SupportSACTraining):
             x1_pred = x_t + v_t * (1.0 - t_cur_exp)
 
             if noise_scale > 0:
-                sigma_schedule = self.flow_sde_noise_level * noise_scale * torch.sqrt(t_cur_safe / (1.0 - t_cur_safe))
+                sigma_schedule = noise_levels * noise_scale * torch.sqrt(t_cur_safe / (1.0 - t_cur_safe))
                 sigma = beta * sigma_schedule
-                sigma_exp = sigma.view(1, 1, 1)
+                sigma_exp = sigma.view(batch_size, 1, 1)
                 x0_weight = 1.0 - t_next_exp
                 x1_weight = t_next_exp - sigma_exp.pow(2) * delta_exp / (2.0 * t_cur_exp)
                 x_mean = x0_pred * x0_weight + x1_pred * x1_weight
@@ -492,6 +536,7 @@ class PI0ForActionPrediction(PreTrainedModel, SupportSACTraining):
             tuple[torch.Tensor, torch.Tensor, torch.Tensor],
             torch.Tensor,
         ],
+        task_ids: torch.Tensor | None = None,
         is_first_micro_batch: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor | None, dict[str, float]]:
         actions, log_probs = self._sample_actions_flow_sde(
@@ -499,6 +544,7 @@ class PI0ForActionPrediction(PreTrainedModel, SupportSACTraining):
             noise_scale=self.flow_sde_train_noise_scale,
             requires_grad=True,
             return_log_prob=True,
+            task_ids=task_ids,
         )
         if is_first_micro_batch:
             self.flow_sde_step.add_(1)
