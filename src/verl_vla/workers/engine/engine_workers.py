@@ -226,6 +226,7 @@ class VLATrainingWorker(TrainingWorker):
             q_values_0 = self.engine.module.sac_forward_critic(
                 a0,
                 s0_state_features,
+                task_ids=micro_batch.batch["info.task_ids"],
                 use_target_network=False,
                 method="cat",
                 requires_grad=True,
@@ -233,6 +234,7 @@ class VLATrainingWorker(TrainingWorker):
             q_values_1 = self.engine.module.sac_forward_critic(
                 a1,
                 s1_state_features,
+                task_ids=micro_batch.batch["info.task_ids"],
                 use_target_network=True,
                 method="min",
                 requires_grad=False,
@@ -264,6 +266,7 @@ class VLATrainingWorker(TrainingWorker):
             q_values_0 = self.engine.module.sac_forward_critic(
                 {"action": a0_actions},
                 s0_state_features,
+                task_ids=micro_batch.batch["info.task_ids"],
                 use_target_network=False,
                 method="min",
                 requires_grad=False,

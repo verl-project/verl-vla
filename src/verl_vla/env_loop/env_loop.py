@@ -146,17 +146,21 @@ class EnvLoop:
     async def run(self, prompts: DataProto, reset_results: DataProto) -> tuple[DataProto, dict[str, float]]:
         trajectories = {i: [] for i in range(self.stage_num)}
         initial_state_ids = prompts.non_tensor_batch["state_ids"]
+        staged_task_ids = self._restructure_prompt_task_ids(prompts)
 
         staged_obs = self._restructure_obs_data(reset_results)
         for stage_id in range(self.stage_num):
             trajectories[stage_id].append({OBS_KEY: self._strip_meta_info(staged_obs[stage_id])})
         if self.single_env_rollout:
             staged_obs = [staged_obs[0].repeat(repeat_times=len(prompts), interleave=True)]
+            staged_task_ids = [staged_task_ids[0]]
 
         rollout_futures = {}
         for stage_id in range(self.stage_num):
             vla_input = staged_obs[stage_id]
             vla_input.meta_info = prompts.meta_info
+            if staged_task_ids[stage_id] is not None:
+                vla_input.non_tensor_batch["task_ids"] = staged_task_ids[stage_id]
             rollout_futures[stage_id] = self.rollout_wg.generate_sequences(vla_input)
 
         stage_timing = {
@@ -235,6 +239,8 @@ class EnvLoop:
                     if self.single_env_rollout:
                         vla_input = vla_input.repeat(repeat_times=action_batch_size, interleave=True)
                     vla_input.meta_info = prompts.meta_info
+                    if staged_task_ids[stage_id] is not None:
+                        vla_input.non_tensor_batch["task_ids"] = staged_task_ids[stage_id]
                     rollout_futures[stage_id] = self.rollout_wg.generate_sequences(vla_input)
 
             stage_timing[stage_id]["stage_wall_s"] = time.perf_counter() - stage_start_t
@@ -273,6 +279,33 @@ class EnvLoop:
             for stage_id, data in enumerate(stage_chunks):
                 staged_data[stage_id].append(data)
         return [DataProto.concat(data_list) for data_list in staged_data]
+
+    def _restructure_prompt_task_ids(self, prompts: DataProto) -> list[np.ndarray | None]:
+        if "task_ids" not in prompts.meta_info:
+            return [None for _ in range(self.stage_num)]
+
+        task_ids = np.asarray(prompts.meta_info["task_ids"])
+        staged_task_ids = [[] for _ in range(self.stage_num)]
+        num_workers = self.env_wg.world_size
+        envs_per_worker = len(task_ids) // num_workers
+        if envs_per_worker * num_workers != len(task_ids):
+            raise ValueError(f"task_ids length {len(task_ids)} is not divisible by env worker count {num_workers}.")
+
+        for worker_id in range(num_workers):
+            worker_start = worker_id * envs_per_worker
+            worker_end = worker_start + envs_per_worker
+            worker_task_ids = task_ids[worker_start:worker_end]
+            if len(worker_task_ids) % self.stage_num != 0:
+                raise ValueError(
+                    f"worker task_ids length {len(worker_task_ids)} is not divisible by stage_num {self.stage_num}."
+                )
+            stage_size = len(worker_task_ids) // self.stage_num
+            for stage_id in range(self.stage_num):
+                stage_start = stage_id * stage_size
+                stage_end = stage_start + stage_size
+                staged_task_ids[stage_id].append(worker_task_ids[stage_start:stage_end])
+
+        return [np.concatenate(task_id_list, axis=0) if task_id_list else None for task_id_list in staged_task_ids]
 
     def _collate_trajectories(self, trajectories: dict, initial_state_ids: np.ndarray, meta_info) -> DataProto:
         flat_trajs = [{} for _ in range(len(trajectories[0]))]

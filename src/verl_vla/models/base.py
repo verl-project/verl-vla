@@ -83,6 +83,7 @@ class SupportSACTraining:
         self,
         a: dict[str, torch.Tensor],
         state_features: Any,
+        task_ids: Optional[torch.Tensor] = None,
         *,
         use_target_network: bool = False,
         method: Literal["cat", "min"] = "cat",
@@ -92,6 +93,7 @@ class SupportSACTraining:
         Args:
             a: Dictionary of tensors representing actions
             state_features: Any data structure representing the processed state features.
+            task_ids: Optional tensor of shape (B,) for task-conditioned critic routing.
             use_target_network: Whether to use the target critic network heads.
             method: Method to combine multiple heads' outputs ("cat" or "min").
             requires_grad: Whether to enable gradients for the critic head parameters.

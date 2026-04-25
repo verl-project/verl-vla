@@ -238,6 +238,16 @@ actor_rollout_ref:
   model:
     override_config:
       sac_enable: True
+
+      # critic backend type: "cross_attn" or "multi_cross_attn"
+      critic_type: multi_cross_attn
+
+      # number of critic backends when using multi_cross_attn
+      critic_num: 10
+
+      # optional task_id -> critic_id mapping, e.g. {0: 0, 1: 0, 2: 1}
+      critic_task_to_critic: null
+
       flow_sde_enable: True
       flow_sde_noise_level: 0.08
       flow_sde_rollout_noise_scale: 1.0
