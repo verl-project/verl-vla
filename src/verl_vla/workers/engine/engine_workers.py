@@ -407,9 +407,10 @@ class VLATrainingWorker(TrainingWorker):
                 self.alpha_optimizer.step()
                 self.alpha_scheduler.step()
 
+        force_tau_one_in_warmup = bool(self.sac_config.get("force_critic_tau_one_in_warmup", True))
         critic_target_tau = (
             1.0
-            if global_steps < self.actor_config.critic_warmup_steps
+            if force_tau_one_in_warmup and global_steps < self.actor_config.critic_warmup_steps
             else (1.0 - self.critic_target_ema_scheduler.current_value)
         )
         self.engine.module.sac_update_target_network(critic_target_tau)

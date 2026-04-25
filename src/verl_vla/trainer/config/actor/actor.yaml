@@ -148,6 +148,9 @@ sac:
   # Target network update coefficient
   tau: 0.25
 
+  # Whether to force critic target tau to 1.0 during critic warmup steps
+  force_critic_tau_one_in_warmup: true
+
   # Whether to adjust critic target EMA strength from rollout success rate
   critic_target_ema_dynamic_enabled: false
 

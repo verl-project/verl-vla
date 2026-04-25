@@ -34,6 +34,7 @@ class SACConfig(BaseConfig):
 
     gamma: float = 0.99
     tau: float = 0.25
+    force_critic_tau_one_in_warmup: bool = True
     critic_target_ema_dynamic_enabled: bool = False
     critic_target_ema_strength_initial: float = 0.2
     critic_target_ema_strength_final: float = 0.98
