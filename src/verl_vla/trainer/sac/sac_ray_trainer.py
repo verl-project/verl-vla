@@ -420,6 +420,7 @@ class RobRaySACTrainer(RayPPOTrainer):
                                 metrics.update(
                                     compute_per_task_trajectory_metrics(rollout_output, metric_prefix="data")
                                 )
+                                metrics.update(rollout_output.meta_info["metrics"])
                                 actor_input = self._prepare_actor_input(rollout_output)
 
                         # === update policy ===
@@ -527,6 +528,7 @@ class RobRaySACTrainer(RayPPOTrainer):
 
     def _validate(self) -> dict:
         metric_list = []
+        rollout_metric_lists = {}
         per_task_metric_lists = {}
         val_iter = iter(self.val_dataloader)
         test_batch = self._next_rollout_batch(val_iter)
@@ -539,6 +541,8 @@ class RobRaySACTrainer(RayPPOTrainer):
             test_batch.meta_info["validate"] = True
             reset_future = self._reset_envs(test_batch)
             rollout_output = self.async_rollout_manager.generate_sequences(test_batch, reset_future)
+            for key, value in rollout_output.meta_info["metrics"].items():
+                rollout_metric_lists.setdefault(key, []).append(float(value))
             test_batch = self._next_rollout_batch(val_iter)
             valid_rollout_output = rollout_output[:valid_batch_size]
             valid_rollout_output.meta_info = dict(valid_rollout_output.meta_info)
@@ -566,6 +570,8 @@ class RobRaySACTrainer(RayPPOTrainer):
                 [m["val/avg_positive_trajectory_length"] for m in metric_list]
             )
         for key, values in per_task_metric_lists.items():
+            metrics[key] = float(np.mean(values))
+        for key, values in rollout_metric_lists.items():
             metrics[key] = float(np.mean(values))
 
         return metrics
