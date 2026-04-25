@@ -28,4 +28,8 @@ class PI0TorchConfig(PretrainedConfig):
         self.critic_type = kwargs.get("critic_type", "cross_attn")
         self.critic_num = kwargs.get("critic_num", 1)
         self.critic_task_to_critic = kwargs.get("critic_task_to_critic", None)
+        self.flow_sde_noise_schedule_enabled = kwargs.get("flow_sde_noise_schedule_enabled", False)
+        self.flow_sde_noise_schedule_initial = kwargs.get("flow_sde_noise_schedule_initial", None)
+        self.flow_sde_noise_schedule_final = kwargs.get("flow_sde_noise_schedule_final", None)
+        self.flow_sde_noise_schedule_method = kwargs.get("flow_sde_noise_schedule_method", "cos")
         self.flow_sde_task_noise_level = kwargs.get("flow_sde_task_noise_level", {})

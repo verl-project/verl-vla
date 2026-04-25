@@ -34,6 +34,7 @@ from verl.workers.rollout.base import BaseRollout, get_rollout_class
 from verl_vla.models.register_vla_models import register_vla_models
 from verl_vla.utils.data import get_dataproto_from_prefix, split_nested_dicts_or_tuples, valid_mean
 from verl_vla.utils.replay_pool import SACReplayPool
+from verl_vla.utils.scalar_schedule import ScheduledScalar
 from verl_vla.workers.config import ActorConfig
 from verl_vla.workers.rollout import register_vla_rollouts
 
@@ -114,10 +115,25 @@ class VLATrainingWorker(TrainingWorker):
             self.alpha_optimizer = torch.optim.Adam([self.raw_alpha], lr=self.sac_config.get("alpha_lr", 3e-4))
             self.alpha_scheduler = torch.optim.lr_scheduler.ConstantLR(self.alpha_optimizer, factor=1.0)
 
-        self.actor_ema_enabled = bool(self.actor_config.get("actor_ema_enabled", True))
-        self.actor_ema_decay = float(self.actor_config.get("actor_ema_decay", 0.995))
+        self.actor_ema_enabled = bool(self.actor_config.actor_ema_enabled)
+        self.actor_ema_decay = float(self.actor_config.actor_ema_decay)
         self.actor_ema_shadow: dict[str, torch.Tensor] = {}
         self.actor_ema_initialized = False
+        self.actor_ema_scheduler = ScheduledScalar(
+            base_value=self.actor_ema_decay,
+            enabled=bool(self.actor_config.actor_ema_dynamic_enabled),
+            initial_value=float(self.actor_config.actor_ema_strength_initial),
+            final_value=float(self.actor_config.actor_ema_strength_final),
+            method=self.actor_config.actor_ema_schedule_method,
+        )
+        critic_target_strength_default = ScheduledScalar(base_value=1.0 - float(self.sac_config.tau)).base_value
+        self.critic_target_ema_scheduler = ScheduledScalar(
+            base_value=critic_target_strength_default,
+            enabled=bool(self.sac_config.critic_target_ema_dynamic_enabled),
+            initial_value=float(self.sac_config.critic_target_ema_strength_initial),
+            final_value=float(self.sac_config.critic_target_ema_strength_final),
+            method=self.sac_config.critic_target_ema_schedule_method,
+        )
         self.bc_loss_coef = float(self.sac_config.get("bc_loss_coef", 0.5))
         self._sac_initialized = True
 
@@ -140,9 +156,9 @@ class VLATrainingWorker(TrainingWorker):
     def _update_actor_ema(self):
         if not self.actor_ema_enabled:
             return
-        one_minus_decay = 1.0 - self.actor_ema_decay
+        one_minus_decay = 1.0 - self.actor_ema_scheduler.current_value
         for name, param in self.engine.module.sac_get_named_actor_parameters():
-            self.actor_ema_shadow[name].mul_(self.actor_ema_decay).add_(
+            self.actor_ema_shadow[name].mul_(self.actor_ema_scheduler.current_value).add_(
                 param.detach().to(dtype=torch.float32), alpha=one_minus_decay
             )
 
@@ -300,6 +316,13 @@ class VLATrainingWorker(TrainingWorker):
         if not self.actor_ema_initialized:
             self._init_actor_ema()
 
+        global_steps = data.meta_info["global_steps"]
+        rollout_success_rate = self.actor_ema_scheduler.control_value
+        if "data/trajectory_avg_reward" in data.meta_info:
+            rollout_success_rate = float(data.meta_info["data/trajectory_avg_reward"])
+        self.actor_ema_scheduler.refresh(rollout_success_rate)
+        self.critic_target_ema_scheduler.refresh(rollout_success_rate)
+
         self._force_set_lr(self.engine.optimizer, 5e-6)
         self._force_set_lr(self.critic_optimizer, 1e-4)
 
@@ -320,7 +343,6 @@ class VLATrainingWorker(TrainingWorker):
         )
         micro_batches = critic_batch.split(self.actor_config.sac_micro_batch_size_per_gpu)
         grad_accum_steps = len(micro_batches) * torch.distributed.get_world_size()
-        global_steps = data.meta_info["global_steps"]
 
         actor_logprobs_list, actor_qvalues_list = [], []
         critic_qvalues_0_list, critic_qvalues_1_list = [], []
@@ -385,7 +407,12 @@ class VLATrainingWorker(TrainingWorker):
                 self.alpha_optimizer.step()
                 self.alpha_scheduler.step()
 
-        self.engine.module.sac_update_target_network(self.sac_config.tau)
+        critic_target_tau = (
+            1.0
+            if global_steps < self.actor_config.critic_warmup_steps
+            else (1.0 - self.critic_target_ema_scheduler.current_value)
+        )
+        self.engine.module.sac_update_target_network(critic_target_tau)
         if global_steps % self.actor_config.replay_pool_save_interval == 0:
             self.replay_pool.save(self.actor_config.replay_pool_save_dir)
 
@@ -422,8 +449,17 @@ class VLATrainingWorker(TrainingWorker):
             "sac/replay_pool_negative_size": critic_replay_sample_info["negative_size"],
             "sac/replay_task_count": critic_replay_sample_info["task_count"],
             "sac/alpha": self._get_alpha().detach().item(),
+            "sac/rollout_success_rate": self.actor_ema_scheduler.control_value,
             "sac/actor_ema_enabled": float(self.actor_ema_enabled),
-            "sac/actor_ema_decay": self.actor_ema_decay,
+            "sac/actor_ema_dynamic_enabled": float(self.actor_ema_scheduler.enabled),
+            "sac/actor_ema_decay": self.actor_ema_scheduler.current_value,
+            "sac/actor_ema_strength_initial": self.actor_ema_scheduler.initial_value,
+            "sac/actor_ema_strength_final": self.actor_ema_scheduler.final_value,
+            "sac/critic_target_ema_dynamic_enabled": float(self.critic_target_ema_scheduler.enabled),
+            "sac/critic_target_tau": critic_target_tau,
+            "sac/critic_target_ema_strength": 1.0 - critic_target_tau,
+            "sac/critic_target_ema_strength_initial": self.critic_target_ema_scheduler.initial_value,
+            "sac/critic_target_ema_strength_final": self.critic_target_ema_scheduler.final_value,
             "sac/replay_pool_size": len(self.replay_pool),
             "critic/loss": sum(critic_loss_list) / len(critic_loss_list) if critic_loss_list else 0.0,
             "critic/lr": self.critic_optimizer.param_groups[0]["lr"],

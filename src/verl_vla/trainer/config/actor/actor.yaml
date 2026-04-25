@@ -148,6 +148,18 @@ sac:
   # Target network update coefficient
   tau: 0.25
 
+  # Whether to adjust critic target EMA strength from rollout success rate
+  critic_target_ema_dynamic_enabled: false
+
+  # Critic target EMA strength at zero rollout success rate
+  critic_target_ema_strength_initial: 0.2
+
+  # Critic target EMA strength at full rollout success rate
+  critic_target_ema_strength_final: 0.98
+
+  # Schedule method for critic target EMA strength: linear, square, or cos
+  critic_target_ema_schedule_method: square
+
   # Optional BC loss coefficient mixed into the actor loss
   bc_loss_coef: 0.0
 
@@ -192,6 +204,18 @@ actor_ema_enabled: true
 
 # EMA decay for actor parameters
 actor_ema_decay: 0.8
+
+# Whether to adjust actor EMA decay from rollout success rate
+actor_ema_dynamic_enabled: false
+
+# Actor EMA decay at zero rollout success rate
+actor_ema_strength_initial: 0.4
+
+# Actor EMA decay at full rollout success rate
+actor_ema_strength_final: 0.98
+
+# Schedule method for actor EMA decay: linear, square, or cos
+actor_ema_schedule_method: square
 
 # SAC mini-batch size sampled from replay buffer
 sac_mini_batch_size: 256

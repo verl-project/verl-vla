@@ -34,6 +34,10 @@ class SACConfig(BaseConfig):
 
     gamma: float = 0.99
     tau: float = 0.25
+    critic_target_ema_dynamic_enabled: bool = False
+    critic_target_ema_strength_initial: float = 0.2
+    critic_target_ema_strength_final: float = 0.98
+    critic_target_ema_schedule_method: str = "square"
     bc_loss_coef: float = 0.0
     initial_alpha: float = 0.0
     critic_replay_positive_sample_ratio: float = 0.5
@@ -81,6 +85,10 @@ class ActorConfig(BaseConfig):
 
     actor_ema_enabled: bool = True
     actor_ema_decay: float = 0.995
+    actor_ema_dynamic_enabled: bool = False
+    actor_ema_strength_initial: float = 0.4
+    actor_ema_strength_final: float = 0.98
+    actor_ema_schedule_method: str = "square"
 
     sac_mini_batch_size: int = 256
     sac_micro_batch_size_per_gpu: int = 16
