@@ -27,7 +27,7 @@ from verl.single_controller.base.decorator import Dispatch, make_nd_compute_data
 from verl.utils.config import omega_conf_to_dataclass
 from verl.utils.device import get_device_id, get_device_name
 from verl.utils.memory_utils import aggressive_empty_cache
-from verl.workers.config import HFModelConfig, RolloutConfig, TrainingWorkerConfig
+from verl.workers.config import HFModelConfig, TrainingWorkerConfig
 from verl.workers.engine_workers import ActorRolloutRefWorker, TrainingWorker
 from verl.workers.rollout.base import BaseRollout, get_rollout_class
 
@@ -35,7 +35,7 @@ from verl_vla.models.register_vla_models import register_vla_models
 from verl_vla.utils.data import get_dataproto_from_prefix, split_nested_dicts_or_tuples, valid_mean
 from verl_vla.utils.replay_pool import SACReplayPool
 from verl_vla.utils.scalar_schedule import ScheduledScalar
-from verl_vla.workers.config import ActorConfig
+from verl_vla.workers.config import ActorConfig, RolloutConfig
 from verl_vla.workers.rollout import register_vla_rollouts
 
 from .fsdp import FSDPEngineWithActionHEAD
@@ -69,6 +69,7 @@ class VLATrainingWorker(TrainingWorker):
     def __init__(self, config: TrainingWorkerConfig, actor_config: ActorConfig, tokenizer=None):
         super().__init__(config=config)
         self.actor_config = actor_config
+        self.sac_mini_batch_size = self.actor_config.sac_mini_batch_size // torch.distributed.get_world_size()
         self.sac_config = actor_config.sac
         self.tokenizer = tokenizer or self.model_config.tokenizer
         self._sac_initialized = False
@@ -337,7 +338,7 @@ class VLATrainingWorker(TrainingWorker):
             )
 
         critic_batch, critic_replay_sample_info = self.replay_pool.sample_batch(
-            self.actor_config.sac_mini_batch_size,
+            self.sac_mini_batch_size,
             positive_sample_ratio=float(self.sac_config.get("critic_replay_positive_sample_ratio", 0.5)),
             return_sample_info=True,
         )
@@ -371,7 +372,7 @@ class VLATrainingWorker(TrainingWorker):
         actor_replay_sample_info = {"actual_positive_sample_ratio": 0.0}
         if update_actor:
             actor_batch, actor_replay_sample_info = self.replay_pool.sample_batch(
-                self.actor_config.sac_mini_batch_size,
+                self.sac_mini_batch_size,
                 positive_sample_ratio=float(self.sac_config.get("actor_replay_positive_sample_ratio", 0.5)),
                 return_sample_info=True,
             )
@@ -563,7 +564,7 @@ class VLAActorRolloutRefWorker(ActorRolloutRefWorker):
 
         # 3. build rollout engine
         if "rollout" in self.role:
-            rollout_config: RolloutConfig = omega_conf_to_dataclass(self.config.rollout)
+            rollout_config: RolloutConfig = omega_conf_to_dataclass(self.config.rollout, dataclass_type=RolloutConfig)
 
             # TODO: move rollout_device_mesh into ServerAdapter
             # 3.1 build rollout device mesh (sglang need only)

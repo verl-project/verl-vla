@@ -1,0 +1,110 @@
+# Target class for this configuration
+_target_: verl_vla.workers.config.RolloutConfig
+
+# Rollout backend name, e.g. hf/vllm/sglang/trtllm
+name: ???
+
+# VLA rollout mode
+mode: async_envloop
+
+# Number of rollout workers per sample
+n: 1
+
+# Whether to sample stochastically during rollout
+do_sample: true
+
+# Sampling temperature
+temperature: 1.0
+
+# Top-k sampling parameter
+top_k: -1
+
+# Top-p sampling parameter
+top_p: 1.0
+
+# Prompt token length used for rollout
+prompt_length: 512
+
+# Response token length used for rollout
+response_length: 512
+
+# Fraction of GPU memory for rollout engine
+gpu_memory_utilization: 0.5
+
+# Whether to release rollout cache between phases
+free_cache_engine: true
+
+# Tensor parallel size for rollout
+tensor_model_parallel_size: 1
+
+# Data parallel size for rollout
+data_parallel_size: 1
+
+# Pipeline parallel size for rollout
+pipeline_model_parallel_size: 1
+
+# [Deprecated] Global log-prob micro batch size
+log_prob_micro_batch_size: null
+
+# Local log-prob micro batch size per GPU
+log_prob_micro_batch_size_per_gpu: null
+
+# Whether to enable dynamic batch size for log-prob computation
+log_prob_use_dynamic_bsz: false
+
+# Max token length per GPU for log-prob computation
+log_prob_max_token_len_per_gpu: 16384
+
+# Weight loading format for rollout engine
+load_format: dummy
+
+# Whether layered summon is enabled
+layered_summon: false
+
+# Whether HF rollout emits critic_value for visualization
+output_critic_value: true
+
+# Validation sampling parameters
+val_kwargs:
+
+  # Required when using verl.utils.omega_conf_to_dataclass to instantiate dataclass configs
+  _target_: verl.workers.config.SamplingConfig
+
+  # Top-k sampling parameter used in validation
+  top_k: -1
+
+  # Top-p sampling parameter used in validation
+  top_p: 1.0
+
+  # Sampling temperature used in validation
+  temperature: 0.0
+
+  # Number of samples per validation prompt
+  n: 1
+
+  # Whether to sample in validation
+  do_sample: false
+
+# Multi-turn rollout options
+multi_turn:
+
+  # Required when using verl.utils.omega_conf_to_dataclass to instantiate dataclass configs
+  _target_: verl.workers.config.MultiTurnConfig
+
+  # Whether to enable multi-turn rollout
+  enable: false
+
+# Checkpoint engine options for async/disagg weight sync
+checkpoint_engine:
+
+  # Required when using verl.utils.omega_conf_to_dataclass to instantiate dataclass configs
+  _target_: verl.workers.config.CheckpointEngineConfig
+
+  # Checkpoint engine backend
+  backend: naive
+
+  # Transfer bucket size in MB
+  update_weights_bucket_megabytes: 2048
+
+  # Backend-specific extra kwargs
+  engine_kwargs: {}

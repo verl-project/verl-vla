@@ -46,7 +46,7 @@ class CrossAttentionCriticGroup(nn.Module):
             [
                 MLP(
                     input_dim=2150,
-                    hidden_dims=[2048, 1024, 256],
+                    hidden_dims=[1024, 512, 256],
                     output_dim=1,
                     activation="relu",
                     init_method="kaiming",
@@ -58,7 +58,7 @@ class CrossAttentionCriticGroup(nn.Module):
             [
                 MLP(
                     input_dim=2150,
-                    hidden_dims=[2048, 1024, 256],
+                    hidden_dims=[1024, 512, 256],
                     output_dim=1,
                     activation="relu",
                     init_method="kaiming",

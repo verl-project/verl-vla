@@ -133,7 +133,7 @@ class MultiCrossAttentionCriticBackend(CriticBackend):
     uses_task_ids = True
 
     def init(self, model) -> None:
-        head_num = int(getattr(model.config, "critic_head_num", 10))
+        head_num = int(getattr(model.config, "critic_head_num", 2))
         attn_heads = int(getattr(model.config, "critic_prefix_attn_heads", 8))
         critic_num = int(getattr(model.config, "critic_num", 1))
         task_to_critic = _normalize_task_to_critic(getattr(model.config, "critic_task_to_critic", None))

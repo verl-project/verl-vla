@@ -53,6 +53,7 @@ class RobDataParallelSACActor(BaseSACActor):
     ):
         super().__init__()
         self.config = config
+        self.sac_mini_batch_size = self.config.sac_mini_batch_size // torch.distributed.get_world_size()
         self.sac_config = config.sac
         self.device = get_device_name()
 
@@ -322,7 +323,7 @@ class RobDataParallelSACActor(BaseSACActor):
 
         replay_positive_sample_ratio = float(self.sac_config.get("critic_replay_positive_sample_ratio", 0.5))
         critic_batch, critic_replay_sample_info = self.replay_pool.sample_batch(
-            self.config.sac_mini_batch_size,
+            self.sac_mini_batch_size,
             positive_sample_ratio=replay_positive_sample_ratio,
             return_sample_info=True,
         )
@@ -356,7 +357,7 @@ class RobDataParallelSACActor(BaseSACActor):
         if update_actor:
             replay_positive_sample_ratio = float(self.sac_config.get("actor_replay_positive_sample_ratio", 0.5))
             actor_batch, actor_replay_sample_info = self.replay_pool.sample_batch(
-                self.config.sac_mini_batch_size,
+                self.sac_mini_batch_size,
                 positive_sample_ratio=replay_positive_sample_ratio,
                 return_sample_info=True,
             )

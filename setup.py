@@ -58,7 +58,9 @@ setup(
     extras_require=extras_require,
     package_data={
         "verl_vla": [
-            "configs/**/*.yaml",
+            "trainer/config/*.yaml",
+            "trainer/config/*/*.yaml",
+            "trainer/config/*/*/*.yaml",
         ],
     },
     include_package_data=True,

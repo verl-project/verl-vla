@@ -109,5 +109,7 @@ where = ["src"]
 # Include package-local config files when present.
 [tool.setuptools.package-data]
 verl_vla = [
-  "configs/**/*.yaml",
+    "trainer/config/*.yaml",
+    "trainer/config/*/*.yaml",
+    "trainer/config/*/*/*.yaml",
 ]

@@ -244,6 +244,8 @@ actor_rollout_ref:
 
       # number of critic backends when using multi_cross_attn
       critic_num: 10
+      critic_head_num: 2
+      critic_prefix_attn_heads: 8
 
       # optional task_id -> critic_id mapping, e.g. {0: 0, 1: 0, 2: 1}
       critic_task_to_critic: null

@@ -19,8 +19,10 @@ import torch
 from torch.distributed.device_mesh import DeviceMesh
 from verl import DataProto
 from verl.utils.device import get_device_name
-from verl.workers.config import HFModelConfig, RolloutConfig
+from verl.workers.config import HFModelConfig
 from verl.workers.rollout.base import BaseRollout
+
+from verl_vla.workers.config import RolloutConfig
 
 logger = logging.getLogger(__name__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
@@ -45,10 +47,7 @@ class HFRollout(BaseRollout):
         self.engine = engine
         self.module = module if module is not None else (engine.module if engine is not None else None)
         self.tokenizer = tokenizer
-        rollout_custom_config = config.custom or {}
-        self.output_critic_value = bool(
-            config.get("output_critic_value", rollout_custom_config.get("output_critic_value", True))
-        )
+        self.output_critic_value = bool(config.output_critic_value)
 
         if self.module is None:
             raise ValueError("HFRollout requires a shared actor engine or module.")
