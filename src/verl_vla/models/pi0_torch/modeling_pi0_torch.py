@@ -29,7 +29,7 @@ from verl.utils.device import get_device_name
 
 from verl_vla.utils.scalar_schedule import ScheduledScalar
 
-from ..base import ModelOutput, SupportSACTraining
+from ..base import ModelOutput, SupportSACTraining, SupportSFTTraining
 from .configuration_pi0_torch import PI0TorchConfig
 from .critic import (
     CrossAttentionCriticBackend,
@@ -58,7 +58,7 @@ CRITIC_BACKENDS = {
 }
 
 
-class PI0ForActionPrediction(PreTrainedModel, SupportSACTraining):
+class PI0ForActionPrediction(PreTrainedModel, SupportSACTraining, SupportSFTTraining):
     config_class = PI0TorchConfig
     base_model_prefix = "pi0_torch"
 
@@ -260,6 +260,11 @@ class PI0ForActionPrediction(PreTrainedModel, SupportSACTraining):
         vision_tower = self.model.paligemma_with_expert.vision_tower
         vision_tower.requires_grad_(False)
         vision_tower.eval()
+
+    def sft_init(self):
+        """Initialize the model for supervised fine-tuning."""
+        self.freeze_vision_tower()
+        register_fsdp_forward_method(self, "bc_loss")
 
     def bc_loss(
         self,

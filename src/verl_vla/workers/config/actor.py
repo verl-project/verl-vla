@@ -24,7 +24,9 @@ from .optimizer import FSDPOptimizerConfig
 
 __all__ = [
     "SACConfig",
+    "BaseVLAActorConfig",
     "ActorConfig",
+    "SFTActorConfig",
 ]
 
 
@@ -55,15 +57,13 @@ class SACConfig(BaseConfig):
 
 
 @dataclass
-class ActorConfig(BaseConfig):
-    """SAC actor config with local FSDP/optimizer config types."""
+class BaseVLAActorConfig(BaseConfig):
+    """Shared actor config used by algorithm-specific VLA actor configs."""
 
     _mutable_fields = BaseConfig._mutable_fields | {
         "engine",
         "model_config",
     }
-
-    _target_: str = "verl_vla.workers.config.ActorConfig"
 
     strategy: str = "fsdp"
     use_kl_loss: bool = False
@@ -73,7 +73,19 @@ class ActorConfig(BaseConfig):
     profiler: ProfilerConfig = field(default_factory=ProfilerConfig)
     fsdp_config: FSDPEngineConfig = field(default_factory=FSDPEngineConfig)
     engine: BaseConfig = field(default_factory=BaseConfig)
-    model_config: HFModelConfig = field(default_factory=BaseConfig)
+    model_config: HFModelConfig | None = None
+
+    def __post_init__(self):
+        if self.strategy not in {"fsdp", "fsdp2"}:
+            raise ValueError(f"Unsupported actor strategy: {self.strategy}")
+        self.engine = self.fsdp_config
+
+
+@dataclass
+class ActorConfig(BaseVLAActorConfig):
+    """SAC actor config with local FSDP/optimizer config types."""
+
+    _target_: str = "verl_vla.workers.config.ActorConfig"
 
     sac: SACConfig = field(default_factory=SACConfig)
 
@@ -99,10 +111,7 @@ class ActorConfig(BaseConfig):
     replay_pool_save_dir: str = "/tmp/replay_pools"
 
     def __post_init__(self):
-        if self.strategy not in {"fsdp", "fsdp2"}:
-            raise ValueError(f"Unsupported actor strategy: {self.strategy}")
-
-        self.engine = self.fsdp_config
+        super().__post_init__()
 
         if self.critic_lr <= 0:
             raise ValueError(f"critic_lr must be positive, got {self.critic_lr}")
@@ -115,3 +124,31 @@ class ActorConfig(BaseConfig):
 
         if self.sac_micro_batch_size_per_gpu <= 0:
             raise ValueError(f"sac_micro_batch_size_per_gpu must be positive, got {self.sac_micro_batch_size_per_gpu}")
+
+
+@dataclass
+class SFTActorConfig(BaseVLAActorConfig):
+    """SFT actor config kept separate from SAC-specific fields."""
+
+    _target_: str = "verl_vla.workers.config.SFTActorConfig"
+
+    actor_ema_enabled: bool = False
+    actor_ema_decay: float = 0.995
+
+    sft_mini_batch_size: int = 256
+    sft_micro_batch_size_per_gpu: int | None = None
+    grad_clip: float = 1.0
+
+    def __post_init__(self):
+        super().__post_init__()
+
+        if self.sft_mini_batch_size <= 0:
+            raise ValueError(f"sft_mini_batch_size must be positive, got {self.sft_mini_batch_size}")
+
+        if self.sft_micro_batch_size_per_gpu is not None and self.sft_micro_batch_size_per_gpu <= 0:
+            raise ValueError(
+                f"sft_micro_batch_size_per_gpu must be positive when provided, got {self.sft_micro_batch_size_per_gpu}"
+            )
+
+        if self.grad_clip <= 0:
+            raise ValueError(f"grad_clip must be positive, got {self.grad_clip}")

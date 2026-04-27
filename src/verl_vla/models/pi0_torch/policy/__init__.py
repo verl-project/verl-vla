@@ -13,10 +13,12 @@
 # limitations under the License.
 
 from .base import Pi0Input, Pi0Output
+from .lerobot_policy import LerobotPi0Input, LerobotPi0Output
 from .libero_policy import LiberoPi0Input, LiberoPi0Output
 
 _PI0_POLICY_REGISTRY = {
     "libero": (LiberoPi0Input, LiberoPi0Output),
+    "lerobot": (LerobotPi0Input, LerobotPi0Output),
 }
 
 

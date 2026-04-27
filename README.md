@@ -1,6 +1,6 @@
 # verl-vla
 
-Experimental VLA RL support built on top of `verl`, currently focused on PI0.5 training with Libero and Isaac simulators.
+Experimental VLA training support built on top of `verl`, currently focused on PI0.5 workflows for Libero, Isaac, and LeRobot-style SFT.
 
 ## Supported Simulators
 
@@ -41,7 +41,7 @@ Adjust paths inside the script or your environment before generating data.
 
 ## Training Entry
 
-The current default training entry is SAC.
+The current default training entry is SAC, and the repo now also includes a LeRobot-based SFT entry.
 
 Main Python entry:
 
@@ -59,6 +59,18 @@ Disaggregated launcher:
 
 ```bash
 bash examples/libero_sac/run_pi05_libero_sac_disagg.sh
+```
+
+SFT entry:
+
+```bash
+python -m verl_vla.trainer.main_sft
+```
+
+Recommended SFT launcher:
+
+```bash
+bash examples/lerobot_sft/run_pi05_lerobot_sft.sh
 ```
 
 ## Disaggregation Mode

@@ -12,14 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .engine_workers import VLAActorRolloutRefWorker
-from .fsdp import FSDPEngineWithActionHEAD
-from .sac import SACTrainingWorker
-from .sft import SFTTrainingWorker
+from .training_worker import SACTrainingWorker
 
-__all__ = [
-    "VLAActorRolloutRefWorker",
-    "SACTrainingWorker",
-    "SFTTrainingWorker",
-    "FSDPEngineWithActionHEAD",
-]
+__all__ = ["SACTrainingWorker"]

@@ -148,3 +148,24 @@ class SupportSACTraining:
         """
 
         raise NotImplementedError("Subclasses must implement sac_update_target_network method.")
+
+
+class SupportSFTTraining:
+    """
+    Base class for models that support SFT/BC-style supervised updates.
+
+    This intentionally does NOT inherit from `abc.ABC` because model classes may
+    be wrapped or rewritten by FSDP at runtime.
+    """
+
+    def sft_init(self):
+        raise NotImplementedError("Subclasses must implement sft_init method.")
+
+    def bc_loss(
+        self,
+        obs: DataProto,
+        tokenizer: torch.nn.Module,
+        actions: dict[str, torch.Tensor],
+        valids: torch.Tensor,
+    ) -> torch.Tensor:
+        raise NotImplementedError("Subclasses must implement bc_loss method.")

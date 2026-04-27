@@ -1,0 +1,55 @@
+hydra:
+  searchpath:
+    - pkg://verl.trainer.config
+
+defaults:
+  - ppo_trainer
+  - override /actor@actor_rollout_ref.actor: sft_actor
+  - _self_
+
+data:
+  sft:
+    enable: True
+    repo_id: Miical/record-test
+    revision: main
+    batch_size: 2
+    num_workers: 0
+    shuffle: True
+    drop_last: False
+    seed: null
+    video_backend: pyav
+
+actor_rollout_ref:
+  model:
+    path: /file_system/liujincheng/models/pi05_libero_torch
+    tokenizer_path: ${actor_rollout_ref.model.path}
+    enable_gradient_checkpointing: False
+    use_remove_padding: False
+    trust_remote_code: False
+    override_config:
+      policy_type: lerobot
+      attn_implementation: eager
+
+  actor:
+    strategy: fsdp2
+    actor_ema_enabled: False
+    actor_ema_decay: 0.995
+    sft_mini_batch_size: 2
+    sft_micro_batch_size_per_gpu: 1
+    grad_clip: 1.0
+    optim:
+      lr: 1e-5
+    fsdp_config:
+      model_dtype: bfloat16
+      wrap_policy:
+        transformer_layer_cls_to_wrap:
+          - SiglipEncoderLayer
+          - GemmaDecoderLayerWithExpert
+        min_num_params: 0
+
+trainer:
+  project_name: vla-sft
+  experiment_name: lerobot-preview
+  logger: ["console"]
+  nnodes: 1
+  n_gpus_per_node: 1

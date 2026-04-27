@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from verl.base_config import BaseConfig
+from verl.workers.config import QATEngineConfig
 
 __all__ = [
     "EngineRouterReplayConfig",
@@ -85,6 +86,7 @@ class FSDPEngineConfig(EngineConfig):
     use_torch_compile: bool = True
     entropy_checkpointing: bool = False
     strategy: str = "fsdp"
+    qat: QATEngineConfig = field(default_factory=QATEngineConfig)
 
     def __post_init__(self):
         if self.strategy not in ["fsdp", "fsdp2"]:
