@@ -25,6 +25,7 @@ from verl.single_controller.base.decorator import Dispatch, make_nd_compute_data
 from verl.utils.config import omega_conf_to_dataclass
 from verl.utils.device import get_device_id, get_device_name
 from verl.utils.memory_utils import aggressive_empty_cache
+from verl.utils.profiler import log_gpu_memory_usage
 from verl.workers.config import HFModelConfig, TrainingWorkerConfig
 from verl.workers.engine_workers import ActorRolloutRefWorker
 from verl.workers.rollout.base import BaseRollout, get_rollout_class
@@ -141,13 +142,19 @@ class VLAActorRolloutRefWorker(ActorRolloutRefWorker):
             self.peft_merge: bool = model_config.lora.get("merge", False)
 
         # 4. build checkpoint engine
-        if "actor" in self.role:
+        if "actor" in self.role or "rollout" in self.role:
             checkpoint_engine_config = omega_conf_to_dataclass(self.config.rollout.checkpoint_engine)
             backend = checkpoint_engine_config.backend
             bucket_size = checkpoint_engine_config.update_weights_bucket_megabytes << 20
             engine_kwargs = checkpoint_engine_config.engine_kwargs.get(backend, {})
+            is_master = False
+            if "actor" in self.role:
+                is_master = torch.distributed.get_rank() == 0
             self.checkpoint_engine = CheckpointEngineRegistry.new(
-                backend, is_master=(torch.distributed.get_rank() == 0), bucket_size=bucket_size, **engine_kwargs
+                backend, 
+                is_master=is_master, 
+                bucket_size=bucket_size, 
+                **engine_kwargs
             )
 
         # Free cached GPU memory so colocated vLLM processes can see it via cudaMemGetInfo
@@ -176,5 +183,76 @@ class VLAActorRolloutRefWorker(ActorRolloutRefWorker):
         output = self.rollout.generate_sequences(prompts=prompts)
         return output.to("cpu")
 
+    @register(dispatch_mode=Dispatch.ONE_TO_ALL, blocking=False)
+    async def update_weights(self, global_steps: int = None):
+        # Rollout-only worker: receive weights from checkpoint engine
+        if self._is_rollout and not self._is_actor:
+            weights = self.checkpoint_engine.receive_weights()
+            await self.rollout.update_weights(weights, global_steps=global_steps)
+            return
+
+        assert self.checkpoint_engine is not None
+
+        # Actor-only worker: send weights via checkpoint engine
+        if self._is_actor and not self._is_rollout:
+            if self.config.rollout.checkpoint_engine.backend != "naive":
+                per_tensor_param, _ = self.actor.engine.get_per_tensor_param()
+                await self.checkpoint_engine.send_weights(per_tensor_param)
+            return
+
+        # Colocated worker (actor + rollout)
+        if self.config.rollout.checkpoint_engine.backend != "naive":
+            per_tensor_param, _ = self.actor.engine.get_per_tensor_param()
+            await self.checkpoint_engine.send_weights(per_tensor_param)
+            return
+
+        from verl.utils.device import set_expandable_segments
+
+        set_expandable_segments(False)
+
+        if self.config.rollout.free_cache_engine:
+            await self.rollout.resume(tags=["weights"])
+        log_gpu_memory_usage("After resume weights", logger=logger)
+
+        per_tensor_param, peft_config = self.actor.engine.get_per_tensor_param(
+            layered_summon=self.layered_summon, base_sync_done=True
+        )
+
+        await self.rollout.update_weights(per_tensor_param, peft_config=peft_config, base_sync_done=True)
+
+        do_lora_base_sync = False
+        if not self.peft_merge and peft_config is not None:
+            self.rollout.sleep_level = 1
+            do_lora_base_sync = not self.base_sync_done or self.rollout.sleep_level != 1
+
+        if do_lora_base_sync:
+            per_tensor_base_params, _ = self.actor.engine.get_per_tensor_param(
+                layered_summon=self.layered_summon, base_sync_done=False
+            )
+            await self.rollout.update_weights(per_tensor_base_params, peft_config=peft_config, base_sync_done=False)
+
+        log_gpu_memory_usage("After update_weights", logger=logger)
+
+        self.actor.engine.to("cpu", model=True, optimizer=False, grad=False)
+        aggressive_empty_cache(force_sync=True)
+
+        if self.config.rollout.free_cache_engine:
+            await self.rollout.resume(tags=["kv_cache"])
+        log_gpu_memory_usage("After resume kv_cache", logger=logger)
+
+        self.base_sync_done = True
+        set_expandable_segments(True)
+
+    @register(dispatch_mode=Dispatch.DP_COMPUTE, blocking=False)
+    def execute_checkpoint_engine(self, method: str, *args, **kwargs):
+        return getattr(self.checkpoint_engine, method)(*args, **kwargs)
+
+class VLAActorWorker(VLAActorRolloutRefWorker):
+    def __init__(self, config, role=None):
+        super().__init__(config, role="actor")
+        
+class VLARolloutWorker(VLAActorRolloutRefWorker):
+    def __init__(self, config, role=None):
+        super().__init__(config, role="rollout")
 
 register_vla_models()

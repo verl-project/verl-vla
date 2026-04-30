@@ -124,11 +124,17 @@ class EnvLoop:
         reset_wait_s = time.perf_counter() - reset_wait_start_t
 
         loop = asyncio.get_event_loop()
-        self.rollout_wg.switch_to_rollout()
-        run_start_t = time.perf_counter()
-        output, run_metrics = loop.run_until_complete(self.run(prompts, reset_results))
-        run_s = time.perf_counter() - run_start_t
-        self.rollout_wg.switch_to_train()
+
+        if not self.config.trainer.separate_train_inference:
+            self.rollout_wg.switch_to_rollout()
+            run_start_t = time.perf_counter()
+            output, run_metrics = loop.run_until_complete(self.run(prompts, reset_results))
+            run_s = time.perf_counter() - run_start_t
+            self.rollout_wg.switch_to_train()
+        else:
+            run_start_t = time.perf_counter()
+            output, run_metrics = loop.run_until_complete(self.run(prompts, reset_results))
+            run_s = time.perf_counter() - run_start_t
 
         total_s = time.perf_counter() - total_start_t
         metrics = dict(output.meta_info.get("metrics", {}))
