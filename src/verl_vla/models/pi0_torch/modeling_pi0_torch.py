@@ -278,8 +278,8 @@ class PI0ForActionPrediction(PreTrainedModel, SupportSACTraining, SupportSFTTrai
         pi0_input_cls, pi0_output_cls = self._get_pi0_policy_classes()
         action_tensor = pi0_output_cls.from_model_output(
             {
-                "full_action": actions["full_action"],
-                "log_probs": torch.zeros(actions["full_action"].shape[0], device=actions["full_action"].device),
+                "full_action": actions["action"],
+                "log_probs": torch.zeros(actions["action"].shape[0], device=actions["action"].device),
             }
         ).action
         action_tensor = torch.nn.functional.pad(
@@ -322,7 +322,9 @@ class PI0ForActionPrediction(PreTrainedModel, SupportSACTraining, SupportSFTTrai
         )
         loss = F.mse_loss(u_t, model_pred, reduction="none").mean(dim=-1)
         loss = loss * action_loss_mask
-        return loss.mean()
+        sample_loss = loss.mean(dim=-1)
+        valids = valids.to(device=sample_loss.device, dtype=sample_loss.dtype)
+        return (sample_loss * valids).sum() / valids.sum().clamp_min(1.0)
 
     # --- SAC Algorithm Support ---
 

@@ -41,7 +41,8 @@ class SACConfig(BaseConfig):
     critic_target_ema_strength_initial: float = 0.2
     critic_target_ema_strength_final: float = 0.98
     critic_target_ema_schedule_method: str = "square"
-    bc_loss_coef: float = 0.0
+    td3_enabled: bool = False
+    td3_bc_alpha: float = 2.5
     initial_alpha: float = 0.0
     critic_replay_positive_sample_ratio: float = 0.5
     actor_replay_positive_sample_ratio: float = 0.5
@@ -54,6 +55,8 @@ class SACConfig(BaseConfig):
         valid_alpha_types = ["exp", "softplus"]
         if self.alpha_type not in valid_alpha_types:
             raise ValueError(f"Invalid alpha_type: {self.alpha_type}. Must be one of {valid_alpha_types}")
+        if self.td3_bc_alpha <= 0:
+            raise ValueError(f"td3_bc_alpha must be positive, got {self.td3_bc_alpha}")
 
 
 @dataclass

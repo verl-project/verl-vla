@@ -102,7 +102,8 @@ class SACTrainingWorker(TrainingWorker):
             final_value=float(self.sac_config.critic_target_ema_strength_final),
             method=self.sac_config.critic_target_ema_schedule_method,
         )
-        self.bc_loss_coef = float(self.sac_config.get("bc_loss_coef", 0.5))
+        self.td3_enabled = bool(self.sac_config.get("td3_enabled", False))
+        self.td3_bc_alpha = float(self.sac_config.get("td3_bc_alpha", 2.5))
         self._sac_initialized = True
 
     @property
@@ -252,6 +253,7 @@ class SACTrainingWorker(TrainingWorker):
         is_first_micro_batch: bool,
     ) -> tuple[torch.Tensor, Optional[torch.Tensor], torch.Tensor, dict[str, float]]:
         s0 = get_dataproto_from_prefix(micro_batch, "t0.obs.")
+        a0 = get_dataproto_from_prefix(micro_batch, "t0.action.").batch
 
         with torch.autocast(device_type=get_device_name(), dtype=torch.bfloat16):
             s0_state_features = self.engine.module.sac_forward_state_features(s0, self.tokenizer)
@@ -274,14 +276,25 @@ class SACTrainingWorker(TrainingWorker):
                 q_values=q_values_0,
                 valids=micro_batch.batch["info.valids"],
             )
-            if self.bc_loss_coef > 0:
+            if self.td3_enabled:
                 bc_loss = self.engine.module.bc_loss(
                     obs=s0,
                     tokenizer=self.tokenizer,
-                    actions={"full_action": a0_actions},
+                    actions=a0,
                     valids=micro_batch.batch["info.valids"],
                 )
-                actor_loss = sac_loss + self.bc_loss_coef * bc_loss
+                td3_bc_weight = (
+                    valid_mean(q_values_0.abs(), micro_batch.batch["info.valids"]).detach().clamp_min(1e-6)
+                    / self.td3_bc_alpha
+                )
+                actor_loss = sac_loss + td3_bc_weight * bc_loss
+                actor_forward_metrics.update(
+                    {
+                        "td3_bc_weight": td3_bc_weight.detach().item(),
+                        "td3_bc_q_loss": sac_loss.detach().item(),
+                        "td3_bc_bc_loss": bc_loss.detach().item(),
+                    }
+                )
             else:
                 actor_loss = sac_loss
         return actor_loss, log_probs_0, q_values_0, actor_forward_metrics
@@ -423,6 +436,7 @@ class SACTrainingWorker(TrainingWorker):
             "sac/actor_replay_sampled_ratio": actor_replay_sample_info["actual_positive_sample_ratio"]
             if update_actor
             else 0.0,
+            "sac/td3_enabled": float(self.td3_enabled),
             "sac/replay_pool_positive_size": critic_replay_sample_info["positive_size"],
             "sac/replay_pool_negative_size": critic_replay_sample_info["negative_size"],
             "sac/replay_task_count": critic_replay_sample_info["task_count"],

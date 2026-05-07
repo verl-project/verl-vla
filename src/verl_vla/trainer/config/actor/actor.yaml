@@ -163,8 +163,11 @@ sac:
   # Schedule method for critic target EMA strength: linear, square, or cos
   critic_target_ema_schedule_method: square
 
-  # Optional BC loss coefficient mixed into the actor loss
-  bc_loss_coef: 0.0
+  # Whether to switch SAC updates to TD3+BC style updates
+  td3_enabled: false
+
+  # TD3+BC alpha coefficient used in lambda = alpha / mean(|Q|)
+  td3_bc_alpha: 2.5
 
   # Initial entropy temperature
   initial_alpha: 0.0
