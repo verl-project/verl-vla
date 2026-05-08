@@ -43,6 +43,9 @@ class SACConfig(BaseConfig):
     critic_target_ema_schedule_method: str = "square"
     td3_enabled: bool = False
     td3_bc_alpha: float = 2.5
+    cql_enabled: bool = False
+    cql_alpha: float = 1.0
+    cql_temperature: float = 1.0
     initial_alpha: float = 0.0
     critic_replay_positive_sample_ratio: float = 0.5
     actor_replay_positive_sample_ratio: float = 0.5
@@ -57,6 +60,10 @@ class SACConfig(BaseConfig):
             raise ValueError(f"Invalid alpha_type: {self.alpha_type}. Must be one of {valid_alpha_types}")
         if self.td3_bc_alpha <= 0:
             raise ValueError(f"td3_bc_alpha must be positive, got {self.td3_bc_alpha}")
+        if self.cql_alpha < 0:
+            raise ValueError(f"cql_alpha must be non-negative, got {self.cql_alpha}")
+        if self.cql_temperature <= 0:
+            raise ValueError(f"cql_temperature must be positive, got {self.cql_temperature}")
 
 
 @dataclass

@@ -169,6 +169,15 @@ sac:
   # TD3+BC alpha coefficient used in lambda = alpha / mean(|Q|)
   td3_bc_alpha: 2.5
 
+  # Whether to enable conservative Q-learning regularization for critic updates
+  cql_enabled: false
+
+  # Weight applied to the CQL penalty term
+  cql_alpha: 1.0
+
+  # Temperature used by the CQL logsumexp penalty
+  cql_temperature: 1.0
+
   # Initial entropy temperature
   initial_alpha: 0.0
 

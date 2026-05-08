@@ -55,6 +55,7 @@ def compute_per_task_trajectory_metrics(rollout_batch: DataProto, metric_prefix:
 
     complete_any = rollout_batch.batch["feedback.terminations"].any(dim=-1)  # (B, T)
     success_np = complete_any.any(dim=-1).detach().float().cpu().numpy()  # (B,)
+    task_ids = np.asarray(task_ids)[: success_np.shape[0]]
 
     dones = complete_any.detach().cpu()
     done_idx = torch.argmax(dones.int(), dim=1)

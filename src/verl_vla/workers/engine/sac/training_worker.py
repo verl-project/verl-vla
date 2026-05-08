@@ -14,6 +14,7 @@
 
 import logging
 import os
+from collections import defaultdict
 from typing import Optional
 
 import numpy as np
@@ -104,6 +105,9 @@ class SACTrainingWorker(TrainingWorker):
         )
         self.td3_enabled = bool(self.sac_config.get("td3_enabled", False))
         self.td3_bc_alpha = float(self.sac_config.get("td3_bc_alpha", 2.5))
+        self.cql_enabled = bool(self.sac_config.get("cql_enabled", False))
+        self.cql_alpha = float(self.sac_config.get("cql_alpha", 1.0))
+        self.cql_temperature = float(self.sac_config.get("cql_temperature", 1.0))
         self._sac_initialized = True
 
     @property
@@ -177,12 +181,13 @@ class SACTrainingWorker(TrainingWorker):
     def _calculate_critic_loss(
         self,
         q_predict: torch.Tensor,
+        q_policy: Optional[torch.Tensor],
         q_target: torch.Tensor,
         rewards: torch.Tensor,
         dones: torch.Tensor,
         next_log_prob: Optional[torch.Tensor],
         valids: torch.Tensor,
-    ) -> torch.Tensor:
+    ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
         gamma = self.sac_config.gamma
         alpha = self._get_alpha()
         with torch.no_grad():
@@ -196,9 +201,34 @@ class SACTrainingWorker(TrainingWorker):
         valid_mask = valids.unsqueeze(1)
         mse = F.mse_loss(q_predict, y, reduction="none")
         per_critic = (mse * valid_mask).sum(dim=0) / valid_mask.sum().clamp_min(1.0)
-        return per_critic.sum()
+        td_loss = per_critic.sum()
 
-    def _forward_critic(self, micro_batch: DataProto, resample=True) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        critic_loss_metrics = {
+            "td_loss": td_loss.detach(),
+        }
+        cql_loss = torch.tensor(0.0, device=q_predict.device)
+        if self.cql_enabled and q_policy is not None:
+            q_candidates = torch.stack([q_predict, q_policy], dim=0)
+            cql_per_critic = (
+                torch.logsumexp(q_candidates / self.cql_temperature, dim=0) * self.cql_temperature - q_predict
+            )
+            cql_per_critic = (cql_per_critic * valid_mask).sum(dim=0) / valid_mask.sum().clamp_min(1.0)
+            cql_loss = self.cql_alpha * cql_per_critic.sum()
+            critic_loss_metrics["cql_loss"] = cql_loss.detach()
+
+            q_gap = q_policy - q_predict
+            valid_q_gap = q_gap.masked_select(valid_mask.expand_as(q_gap).bool())
+            if valid_q_gap.numel() > 0:
+                critic_loss_metrics["cql/q_gap_mean"] = valid_q_gap.mean().detach()
+                critic_loss_metrics["cql/q_gap_max"] = valid_q_gap.max().detach()
+                critic_loss_metrics["cql/q_gap_pos_ratio"] = (valid_q_gap > 0).float().mean().detach()
+
+        total_loss = td_loss + cql_loss
+        return total_loss, critic_loss_metrics
+
+    def _forward_critic(
+        self, micro_batch: DataProto, resample=True
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, dict[str, torch.Tensor]]:
         s0 = get_dataproto_from_prefix(micro_batch, "t0.obs.")
         s1 = get_dataproto_from_prefix(micro_batch, "t1.obs.")
         a0 = get_dataproto_from_prefix(micro_batch, "t0.action.").batch
@@ -236,16 +266,33 @@ class SACTrainingWorker(TrainingWorker):
                 method="min",
                 requires_grad=False,
             )
+            q_policy_0 = None
+            if self.cql_enabled:
+                with torch.no_grad():
+                    policy_actions_0, _, _ = self.engine.module.sac_forward_actor(
+                        s0_state_features,
+                        task_ids=micro_batch.batch["info.task_ids"],
+                        is_first_micro_batch=False,
+                    )
+                q_policy_0 = self.engine.module.sac_forward_critic(
+                    {"action": policy_actions_0},
+                    s0_state_features,
+                    task_ids=micro_batch.batch["info.task_ids"],
+                    use_target_network=False,
+                    method="cat",
+                    requires_grad=True,
+                )
 
-            critic_loss = self._calculate_critic_loss(
+            critic_loss, critic_loss_metrics = self._calculate_critic_loss(
                 q_predict=q_values_0,
+                q_policy=q_policy_0,
                 q_target=q_values_1,
                 rewards=micro_batch.batch["info.rewards"],
                 dones=micro_batch.batch["info.dones"],
                 next_log_prob=log_probs_1,
                 valids=micro_batch.batch["info.valids"],
             )
-        return critic_loss, q_values_0, q_values_1
+        return critic_loss, q_values_0, q_values_1, critic_loss_metrics
 
     def _forward_actor(
         self,
@@ -333,16 +380,22 @@ class SACTrainingWorker(TrainingWorker):
 
         actor_logprobs_list, actor_qvalues_list = [], []
         critic_qvalues_0_list, critic_qvalues_1_list = [], []
-        actor_loss_list, critic_loss_list, alpha_loss_list = [], [], []
-        actor_forward_metrics: dict[str, float] = {}
+        actor_loss_list, alpha_loss_list = [], []
+        critic_loss_list = []
+        critic_loss_metrics_agg: dict[str, list[float]] = defaultdict(list)
+        actor_forward_metrics: dict[str, list[float]] = defaultdict(list)
 
         self.critic_optimizer.zero_grad()
         for batch_idx, micro_batch in enumerate(micro_batches):
             logger.info(f"[{batch_idx + 1}/{len(micro_batches)}] critic micro batch ")
             micro_batch = micro_batch.to(get_device_id())
-            raw_critic_loss, q_values_0, q_values_1 = self._forward_critic(micro_batch, resample=True)
+            raw_critic_loss, q_values_0, q_values_1, critic_loss_metrics = self._forward_critic(
+                micro_batch, resample=True
+            )
             (raw_critic_loss / grad_accum_steps).backward()
-            critic_loss_list.append(raw_critic_loss.detach().item())
+            critic_loss_list.append(float(raw_critic_loss.detach().item()))
+            for key, value in critic_loss_metrics.items():
+                critic_loss_metrics_agg[key].append(float(value.item()))
             critic_qvalues_0_list.append(q_values_0.mean(dim=-1).detach())
             critic_qvalues_1_list.append(q_values_1.detach())
         critic_grad_norm = torch.nn.utils.clip_grad_norm_(
@@ -377,7 +430,8 @@ class SACTrainingWorker(TrainingWorker):
                 if log_probs is not None:
                     actor_logprobs_list.append(log_probs.detach())
                 actor_qvalues_list.append(q_values.detach())
-                actor_forward_metrics.update(actor_forward_metrics_mb)
+                for key, value in actor_forward_metrics_mb.items():
+                    actor_forward_metrics[key].append(float(value))
             actor_grad_norm = self.engine.optimizer_step()
             self._update_actor_ema()
             self._apply_actor_ema_to_actor_module()
@@ -437,6 +491,15 @@ class SACTrainingWorker(TrainingWorker):
             if update_actor
             else 0.0,
             "sac/td3_enabled": float(self.td3_enabled),
+            **(
+                {
+                    "sac/cql_enabled": float(self.cql_enabled),
+                    "sac/cql_alpha": self.cql_alpha,
+                    "sac/cql_temperature": self.cql_temperature,
+                }
+                if self.cql_enabled
+                else {}
+            ),
             "sac/replay_pool_positive_size": critic_replay_sample_info["positive_size"],
             "sac/replay_pool_negative_size": critic_replay_sample_info["negative_size"],
             "sac/replay_task_count": critic_replay_sample_info["task_count"],
@@ -472,6 +535,15 @@ class SACTrainingWorker(TrainingWorker):
             "critic/negative_qvalue_mean": negative_qvalue_mean,
             "critic/diff_pos_neg_qvalue_mean": positive_qvalue_mean - negative_qvalue_mean,
         }
+        metrics.update(
+            {
+                (key if key.startswith("cql/") else f"critic/{key}"): (
+                    max(values) if key == "cql/q_gap_max" else sum(values) / len(values)
+                )
+                for key, values in critic_loss_metrics_agg.items()
+                if len(values) > 0
+            }
+        )
         if update_actor:
             actor_grad_norm_post_clip = self._post_clip_norm(actor_grad_norm, self._actor_grad_clip)
             metrics.update(
@@ -506,7 +578,13 @@ class SACTrainingWorker(TrainingWorker):
                     else 0.0,
                 }
             )
-            metrics.update({f"actor/{k}": v for k, v in actor_forward_metrics.items()})
+            metrics.update(
+                {
+                    f"actor/{k}": sum(values) / len(values)
+                    for k, values in actor_forward_metrics.items()
+                    if len(values) > 0
+                }
+            )
 
         return metrics
 
