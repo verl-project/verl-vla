@@ -1,6 +1,10 @@
 set -x
 
-export MUJOCO_GL=osmesa
+# export NCCL_SOCKET_IFNAME=${NCCL_SOCKET_IFNAME:-eth1}
+# export GLOO_SOCKET_IFNAME=${GLOO_SOCKET_IFNAME:-eth1}
+# export NCCL_IB_DISABLE=${NCCL_IB_DISABLE:-1}
+# export NCCL_NET=${NCCL_NET:-Socket}
+# export MUJOCO_GL=osmesa
 
 libero_train_path=$HOME/data/libero_rl/train.parquet
 libero_test_path=$HOME/data/libero_rl/test.parquet
@@ -34,7 +38,7 @@ NUM_STAGE=2                                    # number of pipeline stages
 NUM_ENV=2                                      # number of envs per env worker
 
 NUM_ACTION_CHUNKS=10                           # number of action chunks
-MAX_EPISODE_STEPS=64                          # max episode steps for each env
+MAX_EPISODE_STEPS=256                          # max episode steps for each env
                                                # max_interactions = MAX_EPISODE_STEPS / num_action_chunks
 
 # Training Config

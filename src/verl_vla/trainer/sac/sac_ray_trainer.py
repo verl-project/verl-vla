@@ -625,7 +625,7 @@ class RobRaySACSeparateTrainInference(RayPPOTrainer):
 
             test_batch.meta_info["validate"] = True
             reset_future = self._reset_envs(test_batch)
-            rollout_output = self.async_rollout_manager.generate_sequences(test_batch, reset_future)
+            rollout_output = ray.get(generate_sequences_task.remote(self.async_rollout_manager, test_batch, reset_future))
             for key, value in rollout_output.meta_info["metrics"].items():
                 rollout_metric_lists.setdefault(key, []).append(float(value))
             test_batch = self._next_rollout_batch(val_iter)
