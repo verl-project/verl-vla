@@ -51,37 +51,36 @@ class HFRollout(BaseRollout):
 
         if self.module is None:
             logger.info("No shared actor engine provided, loading model from path...")
-            
-            # 像 trainer 那样正确加载模型
-            from verl.utils.transformers_compat import get_auto_model_for_vision2seq
-            from verl.utils.model import get_hf_auto_model_class, update_model_config
+
             from transformers import AutoConfig
-            
-            # 1. 获取正确的 AutoClass
+            from verl.utils.model import update_model_config
+            from verl.utils.transformers_compat import get_auto_model_for_vision2seq
+
+            # 1. Get the correct AutoClass
             AutoModelForVision2Seq = get_auto_model_for_vision2seq()
-            
-            # 2. 加载并应用 override_config 到 hf_config
+
+            # 2. Load and apply override_config to hf_config
             hf_config = AutoConfig.from_pretrained(
                 model_config.path,
                 trust_remote_code=True,
             )
-            
-            # 应用 override_config，确保 sac_enable=True
+
+            # Apply override_config, ensure sac_enable=True
             if hasattr(model_config, "override_config") and model_config.override_config:
                 override_config = (
-                    model_config.override_config["model_config"] 
-                    if "model_config" in model_config.override_config 
+                    model_config.override_config["model_config"]
+                    if "model_config" in model_config.override_config
                     else model_config.override_config
                 )
                 update_model_config(hf_config, override_config)
-            
-            # 确保 sac_enable 为 True（如果需要 critic）
+
+            # Ensure sac_enable is True (if critic is needed)
             if self.output_critic_value:
                 if not getattr(hf_config, "sac_enable", False):
                     logger.info("Setting sac_enable=True for rollout to use critic...")
-                    setattr(hf_config, "sac_enable", True)
-            
-            # 3. 用正确的 config 加载模型
+                    hf_config.sac_enable = True
+
+            # 3. Load model with correct config
             self.module = AutoModelForVision2Seq.from_pretrained(
                 model_config.path,
                 config=hf_config,
@@ -90,15 +89,15 @@ class HFRollout(BaseRollout):
             self.module = self.module.to(get_device_name())
             self.module.eval()
 
-            # 4. 初始化 SAC 组件
+            # 4. Initialize SAC components
             if hasattr(self.module, "sac_init"):
                 logger.info("Initializing SAC components for rollout model...")
                 self.module.sac_init()
-            
-            # 5. 确保 critic_api 被初始化（如果还没有）
-            if self.output_critic_value and not hasattr(self.module, "critic_api"):
+
+                # 5. Ensure critic_api is initialized (if not already)
                 logger.info("Initializing critic_api for rollout...")
                 from verl_vla.models.pi0_torch.modeling_pi0_torch import CRITIC_BACKENDS
+
                 critic_type = getattr(self.module.config, "critic_type", "cross_attn")
                 if critic_type in CRITIC_BACKENDS:
                     self.module.critic_api = CRITIC_BACKENDS[critic_type]
@@ -130,7 +129,7 @@ class HFRollout(BaseRollout):
 
     async def update_weights(self, weights, **kwargs):
         """Update rollout model weights from checkpoint engine.
-        
+
         Args:
             weights: Async generator yielding (name, param) tuples
             **kwargs: Additional arguments (e.g., global_steps)
@@ -138,16 +137,16 @@ class HFRollout(BaseRollout):
         if self.module is None or self.engine is not None:
             logger.info("Skipping weight update: using shared actor module")
             return None
-        
+
         try:
             prefix = "_fsdp_wrapped_module."
             target_state_dict = self.module.state_dict()
             loaded_tensors_count = 0
             skipped_count = 0
-            
+
             async for name, param in weights:
                 cleaned_name = name.replace(prefix, "")
-                
+
                 if cleaned_name in target_state_dict:
                     target_tensor = target_state_dict[cleaned_name]
                     try:
@@ -158,13 +157,15 @@ class HFRollout(BaseRollout):
                 else:
                     skipped_count += 1
                     logger.debug(f"Skipping tensor '{cleaned_name}': not found in rollout model")
-            
-            logger.info(f"Rollout model weights updated. Loaded {loaded_tensors_count} tensors including actor and critic. "
-                       f"Skipped {skipped_count} unmatched tensors.")
+
+            logger.info(
+                f"Rollout model weights updated. Loaded {loaded_tensors_count} tensors including actor and critic. "
+                f"Skipped {skipped_count} unmatched tensors."
+            )
         except Exception as e:
             logger.error(f"Error during weight update: {e}")
             raise
-        
+
         return None
 
     async def release(self):

@@ -151,10 +151,7 @@ class VLAActorRolloutRefWorker(ActorRolloutRefWorker):
             if "actor" in self.role:
                 is_master = torch.distributed.get_rank() == 0
             self.checkpoint_engine = CheckpointEngineRegistry.new(
-                backend, 
-                is_master=is_master, 
-                bucket_size=bucket_size, 
-                **engine_kwargs
+                backend, is_master=is_master, bucket_size=bucket_size, **engine_kwargs
             )
 
         # Free cached GPU memory so colocated vLLM processes can see it via cudaMemGetInfo
@@ -247,12 +244,15 @@ class VLAActorRolloutRefWorker(ActorRolloutRefWorker):
     def execute_checkpoint_engine(self, method: str, *args, **kwargs):
         return getattr(self.checkpoint_engine, method)(*args, **kwargs)
 
+
 class VLAActorWorker(VLAActorRolloutRefWorker):
     def __init__(self, config, role=None):
         super().__init__(config, role="actor")
-        
+
+
 class VLARolloutWorker(VLAActorRolloutRefWorker):
     def __init__(self, config, role=None):
         super().__init__(config, role="rollout")
+
 
 register_vla_models()

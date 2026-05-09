@@ -18,22 +18,23 @@ Tests for sample transfer functionality using real interfaces.
 Run with: python tests/workers/rollout/test_sample_transfer.py
 """
 
-import sys
 import os
+import sys
+
 import torch
 from tensordict import TensorDict
 
 # Add source to path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', '..', 'src'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "..", "src"))
 
 from verl import DataProto
 
 
 def test_dataproto_creation():
     """Test DataProto creation with sample data."""
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("TEST: DataProto Creation")
-    print("="*60)
+    print("=" * 60)
 
     # Create sample data
     params = {
@@ -57,9 +58,9 @@ def test_dataproto_creation():
 
 def test_sample_transfer():
     """Test sample transfer via DataProto."""
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("TEST: Sample Transfer")
-    print("="*60)
+    print("=" * 60)
 
     # Create source data
     source_params = {
@@ -84,9 +85,9 @@ def test_sample_transfer():
 
 def test_sample_data_integrity():
     """Test data integrity during transfer."""
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("TEST: Data Integrity")
-    print("="*60)
+    print("=" * 60)
 
     # Create complex sample
     params = {
@@ -108,20 +109,21 @@ def test_sample_data_integrity():
 
 
 if __name__ == "__main__":
-    print("\n" + "#"*60)
+    print("\n" + "#" * 60)
     print("# Sample Transfer Tests")
-    print("#"*60)
+    print("#" * 60)
 
     try:
         test_dataproto_creation()
         test_sample_transfer()
         test_sample_data_integrity()
 
-        print("\n" + "#"*60)
+        print("\n" + "#" * 60)
         print("# ALL SAMPLE TRANSFER TESTS PASSED!")
-        print("#"*60)
+        print("#" * 60)
     except Exception as e:
         print(f"\n❌ TEST FAILED: {e}")
         import traceback
+
         traceback.print_exc()
         sys.exit(1)

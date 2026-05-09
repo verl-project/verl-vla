@@ -32,10 +32,12 @@ from verl.utils.checkpoint.checkpoint_manager import should_save_ckpt_esi
 from verl.utils.config import omega_conf_to_dataclass
 from verl.utils.debug import marked_timer
 from verl.utils.metric import reduce_metrics
+from verl.utils.tracking import Tracking
 
 from verl_vla.utils.data import add_transition_prefixes, flatten_trajectories
 
 logger = logging.getLogger(__name__)
+
 
 # Define Ray task functions for separate train/inference
 @ray.remote
@@ -174,7 +176,7 @@ class RobRaySACSeparateTrainInference(RayPPOTrainer):
             config=self.config.actor_rollout_ref,
         )
         self.resource_pool_to_cls[resource_pool]["actor"] = actor_cls
-        
+
         resource_pool = self.resource_pool_manager.get_resource_pool(Role.Rollout)
         rollout_cls = RayClassWithInitArgs(
             cls=self.role_worker_mapping[Role.Rollout],
@@ -232,27 +234,24 @@ class RobRaySACSeparateTrainInference(RayPPOTrainer):
             from verl_vla.env_loop.env_loop import EnvLoop
 
             self.async_rollout_mode = True
-            self.async_rollout_manager = EnvLoop(
-                config=self.config, rollout_wg=self.rollout_wg, env_wg=self.env_wg
-            )
+            self.async_rollout_manager = EnvLoop(config=self.config, rollout_wg=self.rollout_wg, env_wg=self.env_wg)
 
-        # 创建 rollout_replicas
+        # Create rollout_replicas
         from verl_vla.workers.rollout.vla_replica import VLARolloutReplica
-        from verl.utils.config import omega_conf_to_dataclass
-        
-        # 只转换 rollout 配置，不转换 model 配置
+
+        # Only convert rollout config, not model config
         rollout_config = omega_conf_to_dataclass(self.config.actor_rollout_ref.rollout)
-        
-        # 直接传递原始的 model 配置对象
+
+        # Pass raw model config object directly
         model_config = self.config.actor_rollout_ref.model
-        
-        # 创建一个 VLA RolloutReplica 实例，使用 rollout_wg 的 workers
+
+        # Create a VLA RolloutReplica instance using rollout_wg's workers
         rollout_replicas = [
             VLARolloutReplica(
                 replica_rank=0,
                 config=rollout_config,
                 model_config=model_config,
-                rollout_workers=self.rollout_wg.workers
+                rollout_workers=self.rollout_wg.workers,
             )
         ]
 
@@ -377,9 +376,6 @@ class RobRaySACSeparateTrainInference(RayPPOTrainer):
         )
 
     def fit(self):
-        from omegaconf import OmegaConf
-        from verl.utils.tracking import Tracking
-
         logger = Tracking(
             project_name=self.config.trainer.project_name,
             experiment_name=self.config.trainer.experiment_name,
@@ -429,17 +425,19 @@ class RobRaySACSeparateTrainInference(RayPPOTrainer):
                 continue
 
             print(f"Starting epoch {epoch}, dataloader length: {len(self.train_dataloader)}")
-            
-            # 初始化第一轮的 rollout
+
+            # Initialize first rollout
             rollout_future = None
             if next_rollout_batch is not None:
                 if reset_future is None:
                     reset_future = self._reset_envs(next_rollout_batch)
-                # 异步启动第一轮 rollout
-                rollout_future = generate_sequences_task.remote(self.async_rollout_manager, next_rollout_batch, reset_future)
-                # 等待第一轮 rollout 完成再进入主循环
+                # Start first rollout asynchronously
+                rollout_future = generate_sequences_task.remote(
+                    self.async_rollout_manager, next_rollout_batch, reset_future
+                )
+                # Wait for first rollout to complete before entering main loop
                 ray.get(rollout_future)
-                # 准备下一轮的 env reset
+                # Prepare env reset for next rollout
                 next_rollout_batch = self._next_rollout_batch(train_iter)
                 if next_rollout_batch is not None:
                     reset_future = self._reset_envs(next_rollout_batch)
@@ -475,18 +473,20 @@ class RobRaySACSeparateTrainInference(RayPPOTrainer):
 
                         if need_rollout:
                             with marked_timer("rollout", timing_raw):
-                                # 等待上一轮的 rollout 结果
+                                # Wait for previous rollout result
                                 with marked_timer("wait_rollout", timing_raw):
                                     rollout_output = ray.get(rollout_future)
 
-                                # 在 rollout 启动前更新参数
+                                # Update weights before starting rollout
                                 self._fit_update_weights()
 
-                                # 异步启动下一轮的 rollout
+                                # Start next rollout asynchronously
                                 next_rollout_future = None
                                 if next_rollout_batch is not None:
-                                    next_rollout_future = generate_sequences_task.remote(self.async_rollout_manager, next_rollout_batch, reset_future)
-                                    # 准备下一轮的 env reset
+                                    next_rollout_future = generate_sequences_task.remote(
+                                        self.async_rollout_manager, next_rollout_batch, reset_future
+                                    )
+                                    # Prepare env reset for next rollout
                                     next_next_rollout_batch = self._next_rollout_batch(train_iter)
                                     if next_next_rollout_batch is not None:
                                         reset_future = self._reset_envs(next_next_rollout_batch)
@@ -494,18 +494,18 @@ class RobRaySACSeparateTrainInference(RayPPOTrainer):
                                 # compute rewards and other metrics, and prepare for actor update
                                 actor_input = self._prepare_actor_input(rollout_output)
 
-                                # 更新 rollout_future 和 next_rollout_batch
+                                # Update rollout_future and next_rollout_batch
                                 rollout_future = next_rollout_future
                                 next_rollout_batch = next_next_rollout_batch
 
                         # === update policy ===
                         with marked_timer("update_actor", timing_raw, color="red"):
                             if actor_input is not None:
-                                # 使用 Ray task 执行 update_actor
+                                # Execute update_actor using Ray task
                                 actor_output_future = update_actor_task.remote(self.actor_wg, actor_input)
                                 actor_output = ray.get(actor_output_future)
                             else:
-                                # 只执行一次 empty batch 更新，同样使用 Ray task
+                                # Perform empty batch update once, also using Ray task
                                 empty_batch = DataProto(
                                     meta_info={
                                         "empty_batch": True,
@@ -518,7 +518,8 @@ class RobRaySACSeparateTrainInference(RayPPOTrainer):
                         actor_output_metrics = reduce_metrics(actor_output.meta_info["metrics"])
                         metrics.update(actor_output_metrics)
 
-                        # === 同步权重到推理 worker ===
+                        # === Sync weights to inference workers ===
+                        # It can be removed to speed up training, but is kept here for safety.
                         with marked_timer("update_weights", timing_raw):
                             self._fit_update_weights()
 
@@ -625,7 +626,9 @@ class RobRaySACSeparateTrainInference(RayPPOTrainer):
 
             test_batch.meta_info["validate"] = True
             reset_future = self._reset_envs(test_batch)
-            rollout_output = ray.get(generate_sequences_task.remote(self.async_rollout_manager, test_batch, reset_future))
+            rollout_output = ray.get(
+                generate_sequences_task.remote(self.async_rollout_manager, test_batch, reset_future)
+            )
             for key, value in rollout_output.meta_info["metrics"].items():
                 rollout_metric_lists.setdefault(key, []).append(float(value))
             test_batch = self._next_rollout_batch(val_iter)
@@ -660,6 +663,7 @@ class RobRaySACSeparateTrainInference(RayPPOTrainer):
             metrics[key] = float(np.mean(values))
 
         return metrics
+
 
 class RobRaySACTrainer(RayPPOTrainer):
     def __init__(
@@ -903,9 +907,6 @@ class RobRaySACTrainer(RayPPOTrainer):
         )
 
     def fit(self):
-        from omegaconf import OmegaConf
-        from verl.utils.tracking import Tracking
-
         logger = Tracking(
             project_name=self.config.trainer.project_name,
             experiment_name=self.config.trainer.experiment_name,

@@ -1,10 +1,6 @@
 set -x
 
-# export NCCL_SOCKET_IFNAME=${NCCL_SOCKET_IFNAME:-eth1}
-# export GLOO_SOCKET_IFNAME=${GLOO_SOCKET_IFNAME:-eth1}
-# export NCCL_IB_DISABLE=${NCCL_IB_DISABLE:-1}
-# export NCCL_NET=${NCCL_NET:-Socket}
-# export MUJOCO_GL=osmesa
+export MUJOCO_GL=osmesa
 
 libero_train_path=$HOME/data/libero_rl/train.parquet
 libero_test_path=$HOME/data/libero_rl/test.parquet
@@ -14,7 +10,7 @@ test_files=$libero_test_path
 
 OUTPUT_DIR=${MLP_MODEL_OUTPUT:-"$HOME/models/vla_libero_grpo"}
 VIDEO_OUTPUT=${MLP_MODEL_OUTPUT:-"$HOME"}/video
-SFT_MODEL_PATH="/root/codes/models/pi05_libero_torch/pi05_libero_torch"
+SFT_MODEL_PATH=${SFT_MODEL_PATH:-"$HOME/codes/models/pi05_libero_torch/pi05_libero_torch"}
 TOKENIZER_PATH="$SFT_MODEL_PATH"
 
 # Physical Node Config
