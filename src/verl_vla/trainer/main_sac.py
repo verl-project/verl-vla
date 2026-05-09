@@ -28,10 +28,10 @@ from verl.trainer.ppo.utils import Role
 from verl.utils import hf_tokenizer
 from verl.utils.fs import copy_local_path_from_hdfs
 
-from verl_vla.workers.engine import VLAActorRolloutRefWorker
+from verl_vla.workers.engine import VLAActorRolloutRefWorker, VLAActorWorker, VLARolloutWorker
 from verl_vla.workers.env.env_worker import EnvWorker
 
-from .sac.sac_ray_trainer import RobRaySACTrainer
+from .sac.sac_ray_trainer import RobRaySACSeparateTrainInference, RobRaySACTrainer
 
 logger = logging.getLogger(__name__)
 
@@ -106,48 +106,101 @@ def main_task(config):
     else:
         raise NotImplementedError
 
-    role_worker_mapping = {
-        Role.ActorRollout: ray.remote(VLAActorRolloutRefWorker),
-        Role.Env: ray.remote(EnvWorker),
-    }
+    # Check if train-inference separation mode is enabled
+    separate_train_inference = config.trainer.separate_train_inference
 
-    # setup resource pool manager
-    train_rollout_gpu_num = config.trainer.n_rollout_gpus_per_node
-    train_rollout_nodes_num = config.trainer.nnodes
-    env_worker_num = config.trainer.get("n_env_workers_per_node", config.trainer.get("n_env_gpus_per_node", 0))
-    env_device = str(config.env.train.get("device", "cuda")).lower()
-    env_use_gpu = env_device != "cpu"
-    env_nodes_num = config.env.disagg_sim.nnodes if config.env.disagg_sim.enable else config.trainer.nnodes
-    env_pool_name = "env_cpu_pool" if not env_use_gpu else "env_gpu_pool"
+    if separate_train_inference:
+        role_worker_mapping = {
+            Role.Actor: ray.remote(VLAActorWorker),
+            Role.Rollout: ray.remote(VLARolloutWorker),
+            Role.ActorRollout: ray.remote(VLAActorRolloutRefWorker),  # for parent class check
+            Role.Env: ray.remote(EnvWorker),
+        }
 
-    resource_pool_spec = {
-        "train_rollout_pool": [train_rollout_gpu_num] * train_rollout_nodes_num,
-        env_pool_name: [env_worker_num] * env_nodes_num,
-    }
-    mapping = {
-        Role.ActorRollout: "train_rollout_pool",
-        Role.Env: env_pool_name,
-    }
-    resource_pool_manager = VLAResourcePoolManager(
-        resource_pool_spec=resource_pool_spec,
-        mapping=mapping,
-        cpu_pool_names={env_pool_name} if not env_use_gpu else set(),
-    )
+        # Setup resource pool manager for separate train and rollout
+        train_gpu_num = config.trainer.n_train_gpus_num
+        rollout_gpu_num = config.trainer.n_rollout_gpus_num
+        train_nodes_num = config.trainer.nnodes
+        rollout_nodes_num = config.trainer.nnodes
+        env_worker_num = config.trainer.get("n_env_workers_per_node", config.trainer.get("n_env_gpus_per_node", 0))
+        env_device = str(config.env.train.get("device", "cuda")).lower()
+        env_use_gpu = env_device != "cpu"
+        env_nodes_num = config.env.disagg_sim.nnodes if config.env.disagg_sim.enable else config.trainer.nnodes
+        env_pool_name = "env_cpu_pool" if not env_use_gpu else "env_gpu_pool"
+
+        resource_pool_spec = {
+            "train_pool": [train_gpu_num] * train_nodes_num,
+            "rollout_pool": [rollout_gpu_num] * rollout_nodes_num,
+            env_pool_name: [env_worker_num] * env_nodes_num,
+        }
+        mapping = {
+            Role.Actor: "train_pool",
+            Role.Rollout: "rollout_pool",
+            Role.ActorRollout: "rollout_pool",  # for parent class check
+            Role.Env: env_pool_name,
+        }
+        resource_pool_manager = VLAResourcePoolManager(
+            resource_pool_spec=resource_pool_spec,
+            mapping=mapping,
+            cpu_pool_names={env_pool_name} if not env_use_gpu else set(),
+        )
+    else:
+        # Combined train/inference mode - use single worker group
+        role_worker_mapping = {
+            Role.ActorRollout: ray.remote(VLAActorRolloutRefWorker),
+            Role.Env: ray.remote(EnvWorker),
+        }
+
+        # setup resource pool manager
+        train_rollout_gpu_num = config.trainer.n_rollout_gpus_per_node
+        train_rollout_nodes_num = config.trainer.nnodes
+        env_worker_num = config.trainer.get("n_env_workers_per_node", config.trainer.get("n_env_gpus_per_node", 0))
+        env_device = str(config.env.train.get("device", "cuda")).lower()
+        env_use_gpu = env_device != "cpu"
+        env_nodes_num = config.env.disagg_sim.nnodes if config.env.disagg_sim.enable else config.trainer.nnodes
+        env_pool_name = "env_cpu_pool" if not env_use_gpu else "env_gpu_pool"
+
+        resource_pool_spec = {
+            "train_rollout_pool": [train_rollout_gpu_num] * train_rollout_nodes_num,
+            env_pool_name: [env_worker_num] * env_nodes_num,
+        }
+        mapping = {
+            Role.ActorRollout: "train_rollout_pool",
+            Role.Env: env_pool_name,
+        }
+        resource_pool_manager = VLAResourcePoolManager(
+            resource_pool_spec=resource_pool_spec,
+            mapping=mapping,
+            cpu_pool_names={env_pool_name} if not env_use_gpu else set(),
+        )
 
     # create datasets
     train_dataset = datasets.load_dataset("parquet", data_files=config.data.train_files)["train"]
     val_dataset = datasets.load_dataset("parquet", data_files=config.data.val_files)["train"]
 
     # instantiate trainer and start training
-    trainer = RobRaySACTrainer(
-        config=config,
-        tokenizer=tokenizer,
-        role_worker_mapping=role_worker_mapping,
-        resource_pool_manager=resource_pool_manager,
-        ray_worker_group_cls=ray_worker_group_cls,
-        train_dataset=train_dataset,
-        val_dataset=val_dataset,
-    )
+    if separate_train_inference:
+        # Use separate train/inference trainer
+        trainer = RobRaySACSeparateTrainInference(
+            config=config,
+            tokenizer=tokenizer,
+            role_worker_mapping=role_worker_mapping,
+            resource_pool_manager=resource_pool_manager,
+            ray_worker_group_cls=ray_worker_group_cls,
+            train_dataset=train_dataset,
+            val_dataset=val_dataset,
+        )
+    else:
+        # Use combined trainer
+        trainer = RobRaySACTrainer(
+            config=config,
+            tokenizer=tokenizer,
+            role_worker_mapping=role_worker_mapping,
+            resource_pool_manager=resource_pool_manager,
+            ray_worker_group_cls=ray_worker_group_cls,
+            train_dataset=train_dataset,
+            val_dataset=val_dataset,
+        )
 
     trainer.init_workers()
     trainer.fit()

@@ -101,10 +101,10 @@ checkpoint_engine:
   _target_: verl.workers.config.CheckpointEngineConfig
 
   # Checkpoint engine backend
-  backend: naive
+  backend: nccl
 
   # Transfer bucket size in MB
-  update_weights_bucket_megabytes: 2048
+  update_weights_bucket_megabytes: 256
 
   # Backend-specific extra kwargs
   engine_kwargs: {}

@@ -12,16 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .engine_workers import VLAActorRolloutRefWorker, VLAActorWorker, VLARolloutWorker
-from .fsdp import FSDPEngineWithActionHEAD
-from .sac import SACTrainingWorker
-from .sft import SFTTrainingWorker
+"""
+Pytest configuration for VLA rollout workers tests.
+"""
 
-__all__ = [
-    "VLAActorRolloutRefWorker",
-    "VLAActorWorker",
-    "VLARolloutWorker",
-    "SACTrainingWorker",
-    "SFTTrainingWorker",
-    "FSDPEngineWithActionHEAD",
-]
+
+def pytest_configure(config):
+    """Configure pytest with custom markers."""
+    config.addinivalue_line("markers", "slow: mark test as slow running")
+    config.addinivalue_line("markers", "integration: mark test as an integration test")

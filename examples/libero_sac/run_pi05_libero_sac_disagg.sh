@@ -19,6 +19,10 @@ SIM_NODES=1                                    # number of nodes for sim
 NUM_ENV_GPUS=4                                 # number of gpus for env workers per node
 NUM_ROLLOUT_GPUS=8                             # number of gpus for rollout workers per node
 
+# Use for separate train and inference
+TRAIN_GPUS=2
+ROLLOUT_GPUS=$((NUM_GPUS - TRAIN_GPUS))
+
 # Rollout Config
 # NOTE: TRAIN_BATCH_SIZE * ROLLOUT_N == NUM_ENV_GPUS * NUM_STAGE * NUM_ENV
 TRAIN_BATCH_SIZE=64                            # batch size for dataloaders per step
@@ -109,6 +113,7 @@ $PYTHON -m verl_vla.trainer.main_sac \
     actor_rollout_ref.rollout.free_cache_engine=False \
     actor_rollout_ref.ref.log_prob_micro_batch_size=16 \
     actor_rollout_ref.ref.fsdp_config.param_offload=True \
+    actor_rollout_ref.rollout.checkpoint_engine.update_weights_bucket_megabytes=1536 \
     trainer.logger=['console'] \
     trainer.project_name=$PROJECT_NAME \
     trainer.experiment_name=$EXPERIMENT_NAME \
@@ -116,6 +121,8 @@ $PYTHON -m verl_vla.trainer.main_sac \
     trainer.n_gpus_per_node=$NUM_GPUS \
     +trainer.n_env_gpus_per_node=$NUM_ENV_GPUS \
     +trainer.n_rollout_gpus_per_node=$NUM_ROLLOUT_GPUS \
+    +trainer.n_train_gpus_num=$TRAIN_GPUS \
+    +trainer.n_rollout_gpus_num=$ROLLOUT_GPUS \
     +trainer.rollout_interval=20 \
     trainer.nnodes=$NUM_NODES \
     trainer.save_freq=500 \

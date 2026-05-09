@@ -13,23 +13,48 @@
 # limitations under the License.
 
 import asyncio
+import logging
 from pprint import pprint
 from typing import Optional
 
 import numpy as np
+import ray
 import torch
 from omegaconf import OmegaConf
 from tqdm import tqdm
 from verl import DataProto
+from verl.checkpoint_engine import CheckpointEngineManager
 from verl.single_controller.ray import RayClassWithInitArgs
 from verl.single_controller.ray.base import create_colocated_worker_cls
 from verl.trainer.ppo.ray_trainer import RayPPOTrainer, ValidationGenerationsLogger
 from verl.trainer.ppo.utils import Role
 from verl.utils.checkpoint.checkpoint_manager import should_save_ckpt_esi
+from verl.utils.config import omega_conf_to_dataclass
 from verl.utils.debug import marked_timer
 from verl.utils.metric import reduce_metrics
+from verl.utils.tracking import Tracking
 
 from verl_vla.utils.data import add_transition_prefixes, flatten_trajectories
+
+logger = logging.getLogger(__name__)
+
+
+# Define Ray task functions for separate train/inference
+@ray.remote
+def generate_sequences_task(async_rollout_manager, rollout_batch, reset_future):
+    """
+    Ray task for generating sequences in parallel
+    """
+    return async_rollout_manager.generate_sequences(rollout_batch, reset_future)
+
+
+@ray.remote
+def update_actor_task(actor_wg, batch):
+    """
+    Ray task for updating actor in parallel
+    """
+    actor_output = actor_wg.update_actor(batch)
+    return actor_output
 
 
 def compute_avg_positive_trajectory_length(batch: DataProto) -> float:
@@ -75,6 +100,569 @@ def compute_per_task_trajectory_metrics(rollout_batch: DataProto, metric_prefix:
         )
 
     return metrics
+
+
+class RobRaySACSeparateTrainInference(RayPPOTrainer):
+    def __init__(
+        self,
+        config,
+        tokenizer,
+        role_worker_mapping,
+        resource_pool_manager,
+        ray_worker_group_cls,
+        processor=None,
+        train_dataset=None,
+        val_dataset=None,
+        collate_fn=None,
+        train_sampler=None,
+        device_name=None,
+    ):
+        self.tokenizer = tokenizer
+        self.processor = processor
+        self.config = config
+
+        self.hybrid_engine = config.actor_rollout_ref.hybrid_engine
+        assert self.hybrid_engine, "Currently, only support hybrid engine"
+        assert Role.ActorRollout in role_worker_mapping, f"{role_worker_mapping.keys()=}"
+
+        self.role_worker_mapping = role_worker_mapping
+        self.resource_pool_manager = resource_pool_manager
+
+        # SAC uses a single actor-rollout worker to manage actor/critic updates.
+        self.use_reference_policy = False
+        self.use_rm = False
+        self.use_critic = False
+
+        self.ray_worker_group_cls = ray_worker_group_cls
+        self.device_name = device_name if device_name else self.config.trainer.device
+        self.validation_generations_logger = ValidationGenerationsLogger(
+            project_name=self.config.trainer.project_name,
+            experiment_name=self.config.trainer.experiment_name,
+        )
+
+        self.ref_in_actor = False
+        self.use_prefix_grouper = False
+        self.use_legacy_worker_impl = config.trainer.get("use_legacy_worker_impl", "auto")
+
+        self._create_dataloader(train_dataset, val_dataset, collate_fn, train_sampler)
+        self.checkpoint_manager = None
+
+    def _start_profiling(self, do_profile: bool) -> None:
+        """Start profiling for all worker groups including env workers."""
+        super()._start_profiling(do_profile)
+        if do_profile and hasattr(self, "env_wg"):
+            self.env_wg.start_profile(role="env", profile_step=self.global_steps)
+
+    def _stop_profiling(self, do_profile: bool) -> None:
+        """Stop profiling for all worker groups including env workers."""
+        super()._stop_profiling(do_profile)
+        if do_profile and hasattr(self, "env_wg"):
+            self.env_wg.stop_profile()
+
+    def init_workers(self):
+        self.resource_pool_manager.create_resource_pool()
+
+        if self.config.env.disagg_sim.enable:
+            # pin EnvWorker to Simulator GPU nodes
+            self.resource_pool_manager.get_resource_pool(Role.Env).accelerator_type = "sim"
+            # In separate mode, we need different resource pools for train and rollout
+            self.resource_pool_manager.get_resource_pool(Role.Actor).accelerator_type = "train"
+            self.resource_pool_manager.get_resource_pool(Role.Rollout).accelerator_type = "rollout"
+
+        self.resource_pool_to_cls = {pool: {} for pool in self.resource_pool_manager.resource_pool_dict.values()}
+        resource_pool = self.resource_pool_manager.get_resource_pool(Role.Actor)
+        actor_cls = RayClassWithInitArgs(
+            cls=self.role_worker_mapping[Role.Actor],
+            config=self.config.actor_rollout_ref,
+        )
+        self.resource_pool_to_cls[resource_pool]["actor"] = actor_cls
+
+        resource_pool = self.resource_pool_manager.get_resource_pool(Role.Rollout)
+        rollout_cls = RayClassWithInitArgs(
+            cls=self.role_worker_mapping[Role.Rollout],
+            config=self.config.actor_rollout_ref,
+        )
+        self.resource_pool_to_cls[resource_pool]["rollout"] = rollout_cls
+
+        assert Role.Env in self.role_worker_mapping
+        if Role.Env in self.role_worker_mapping:
+            resource_pool = self.resource_pool_manager.get_resource_pool(Role.Env)
+            env_cls = RayClassWithInitArgs(self.role_worker_mapping[Role.Env], config=self.config.env)
+            self.resource_pool_to_cls[resource_pool]["env"] = env_cls
+
+        # initialize WorkerGroup
+        # NOTE: if you want to use a different resource pool for each role, which can support different parallel size,
+        # you should not use `create_colocated_worker_cls`.
+        # Instead, directly pass different resource pool to different worker groups.
+        # See https://github.com/verl-project/verl/blob/master/examples/ray/tutorial.ipynb for more information.
+        all_wg = {}
+        wg_kwargs = {}  # Setting up kwargs for RayWorkerGroup
+        if OmegaConf.select(self.config.trainer, "ray_wait_register_center_timeout") is not None:
+            wg_kwargs["ray_wait_register_center_timeout"] = self.config.trainer.ray_wait_register_center_timeout
+        if OmegaConf.select(self.config.global_profiler, "steps") is not None:
+            wg_kwargs["profile_steps"] = OmegaConf.select(self.config.global_profiler, "steps")
+            # Only require nsight worker options when tool is nsys
+            if OmegaConf.select(self.config.global_profiler, "tool") == "nsys":
+                assert (
+                    OmegaConf.select(self.config.global_profiler.global_tool_config.nsys, "worker_nsight_options")
+                    is not None
+                ), "worker_nsight_options must be set when using nsys with profile_steps"
+                wg_kwargs["worker_nsight_options"] = OmegaConf.to_container(
+                    OmegaConf.select(self.config.global_profiler.global_tool_config.nsys, "worker_nsight_options")
+                )
+        wg_kwargs["device_name"] = self.device_name
+
+        for resource_pool, class_dict in self.resource_pool_to_cls.items():
+            for prefix, ray_cls_with_init in class_dict.items():
+                wg = self.ray_worker_group_cls(
+                    resource_pool=resource_pool,
+                    ray_cls_with_init=ray_cls_with_init,
+                    **wg_kwargs,
+                )
+                all_wg[prefix] = wg
+
+        # we should create rollout at the end so that vllm can have a better estimation of kv cache memory
+        self.actor_wg = all_wg["actor"]
+        self.rollout_wg = all_wg["rollout"]
+        self.actor_wg.init_model()
+        self.rollout_wg.init_model()
+        self.env_wg = all_wg["env"]
+
+        # create async rollout manager and request scheduler
+        self.async_rollout_mode = False
+        if self.config.actor_rollout_ref.rollout.mode == "async_envloop":
+            from verl_vla.env_loop.env_loop import EnvLoop
+
+            self.async_rollout_mode = True
+            self.async_rollout_manager = EnvLoop(config=self.config, rollout_wg=self.rollout_wg, env_wg=self.env_wg)
+
+        # Create rollout_replicas
+        from verl_vla.workers.rollout.vla_replica import VLARolloutReplica
+
+        # Only convert rollout config, not model config
+        rollout_config = omega_conf_to_dataclass(self.config.actor_rollout_ref.rollout)
+
+        # Pass raw model config object directly
+        model_config = self.config.actor_rollout_ref.model
+
+        # Create a VLA RolloutReplica instance using rollout_wg's workers
+        rollout_replicas = [
+            VLARolloutReplica(
+                replica_rank=0,
+                config=rollout_config,
+                model_config=model_config,
+                rollout_workers=self.rollout_wg.workers,
+            )
+        ]
+
+        self.checkpoint_manager = CheckpointEngineManager(
+            config=omega_conf_to_dataclass(self.config.actor_rollout_ref.rollout.checkpoint_engine),
+            trainer=self.actor_wg,
+            replicas=rollout_replicas,
+        )
+
+    def _get_gen_batch(self, batch: DataProto) -> DataProto:
+        # pop those keys for generation
+        batch_keys_to_pop = []
+        non_tensor_batch_keys_to_pop = set(batch.non_tensor_batch.keys())
+        gen_batch = batch.pop(
+            batch_keys=batch_keys_to_pop,
+            non_tensor_batch_keys=list(non_tensor_batch_keys_to_pop),
+        )
+
+        return gen_batch
+
+    def _reset_envs(self, gen_batch: DataProto) -> asyncio.Future:
+        initial_state_ids = gen_batch.non_tensor_batch["state_ids"]
+        task_ids = gen_batch.non_tensor_batch["task_ids"]
+        if self.config.env.train.get("single_env_rollout", False):
+            assert self.config.env.rollout.pipeline_stage_num == 1, (
+                "single_env_rollout only supports pipeline_stage_num == 1"
+            )
+            initial_state_ids = initial_state_ids[:1]
+            task_ids = task_ids[:1]
+        reset_prompts = DataProto.from_dict(non_tensors={"state_ids": initial_state_ids, "task_ids": task_ids})
+        reset_future = self.env_wg.reset_envs_to_state_ids(reset_prompts)
+        return reset_future
+
+    def _next_rollout_batch(self, train_iter) -> Optional[DataProto]:
+        try:
+            batch_dict = next(train_iter)
+        except StopIteration:
+            return None
+
+        rollout_batch = DataProto.from_single_dict(batch_dict)
+        rollout_batch = self._get_gen_batch(rollout_batch)
+        rollout_batch = rollout_batch.repeat(repeat_times=self.config.actor_rollout_ref.rollout.n, interleave=True)
+        rollout_batch.meta_info["task_ids"] = np.asarray(rollout_batch.non_tensor_batch["task_ids"], dtype=np.int64)
+        rollout_batch.meta_info["global_steps"] = self.global_steps
+
+        return rollout_batch
+
+    def _prepare_actor_input(self, rollout_output: Optional[DataProto]) -> DataProto:
+        # dones
+        complete_any = rollout_output.batch["feedback.terminations"].any(dim=-1)  # (B, T)
+        dones_step = complete_any.clone()
+        dones_step[:, -2] = True
+        rollout_output.batch["info.dones"] = dones_step.float()
+
+        # reward (sparse reward with step penalty)
+        sparse_rewards = complete_any.float()
+        rollout_output.batch["info.valids"] = (~rollout_output.batch["feedback.terminations"]).any(dim=-1).float()
+        step_penalty = float(self.config.env.train.get("step_penalty", 0.0))
+        rollout_output.batch["info.rewards"] = sparse_rewards - step_penalty * rollout_output.batch["info.valids"]
+        rollout_output.batch["info.rewards"][:, -2] = -1.0
+
+        # mark samples in successful trajectories as positive samples
+        rollout_output.batch["info.positive_sample_mask"] = (
+            sparse_rewards.any(dim=-1)
+            .unsqueeze(-1)
+            .repeat_interleave(rollout_output.batch["action.action"].shape[1], dim=-1)
+        )
+
+        # task id
+        task_ids = rollout_output.meta_info["task_ids"]
+        if self.config.env.train.get("single_env_rollout", False):
+            task_ids = task_ids[:1]
+        rollout_output.batch["info.task_ids"] = torch.as_tensor(
+            task_ids,
+            dtype=torch.long,
+            device=rollout_output.batch["action.action"].device,
+        )
+
+        rollout_output.meta_info["global_token_num"] = [0]
+        rollout_output.meta_info["data/trajectory_avg_reward"] = (
+            sparse_rewards.any(dim=-1).mean(dtype=torch.float32).item()
+        )
+        rollout_output.meta_info["data/avg_positive_trajectory_length"] = compute_avg_positive_trajectory_length(
+            rollout_output
+        )
+
+        rollout_output = add_transition_prefixes(rollout_output)
+        rollout_output = flatten_trajectories(rollout_output)
+
+        return rollout_output
+
+    @staticmethod
+    def _pad_validation_batch(batch: DataProto, target_batch_size: int) -> DataProto:
+        valid_batch_size = len(batch)
+        if valid_batch_size >= target_batch_size:
+            return batch
+
+        pad_size = target_batch_size - valid_batch_size
+        pad_part = batch.select_idxs([0]).repeat(pad_size)
+
+        padded_batch = None
+        if batch.batch is not None:
+            padded_batch = torch.cat([batch.batch, pad_part.batch], dim=0)
+
+        padded_non_tensor_batch = {
+            key: np.concatenate([value, pad_part.non_tensor_batch[key]], axis=0)
+            for key, value in batch.non_tensor_batch.items()
+        }
+
+        padded_meta_info = dict(batch.meta_info)
+        task_ids = padded_meta_info.get("task_ids")
+        if isinstance(task_ids, np.ndarray):
+            padded_meta_info["task_ids"] = np.concatenate(
+                [task_ids, np.repeat(task_ids[:1], pad_size, axis=0)],
+                axis=0,
+            )
+
+        return DataProto(
+            batch=padded_batch,
+            non_tensor_batch=padded_non_tensor_batch,
+            meta_info=padded_meta_info,
+        )
+
+    def fit(self):
+        logger = Tracking(
+            project_name=self.config.trainer.project_name,
+            experiment_name=self.config.trainer.experiment_name,
+            default_backend=self.config.trainer.logger,
+            config=OmegaConf.to_container(self.config, resolve=True),
+        )
+
+        self.global_steps = 0
+
+        # load checkpoint before doing anything
+        self._load_checkpoint()
+        self._fit_update_weights()
+
+        # perform validation before training
+        # currently, we only support validation using the reward_function.
+        if self.config.trainer.get("val_before_train", True):
+            val_metrics = self._validate()
+            assert val_metrics, f"{val_metrics=}"
+            pprint(f"Initial validation metrics: {val_metrics}")
+            logger.log(data=val_metrics, step=self.global_steps)
+            if self.config.trainer.get("val_only", False):
+                return
+
+        # add tqdm
+        self.total_training_steps = (
+            self.config.trainer.total_epochs * len(self.train_dataloader) * self.config.trainer.rollout_interval
+        )
+        progress_bar = tqdm(total=self.total_training_steps, initial=self.global_steps, desc="Training Progress")
+
+        self.global_steps += 1
+        last_val_metrics = None
+        self.max_steps_duration = 0
+
+        prev_step_profile = False
+        curr_step_profile = (
+            self.global_steps in self.config.global_profiler.steps
+            if self.config.global_profiler.steps is not None
+            else False
+        )
+        next_step_profile = False
+
+        for epoch in range(self.config.trainer.total_epochs):
+            train_iter = iter(self.train_dataloader)
+            reset_future = None
+            next_rollout_batch = self._next_rollout_batch(train_iter)
+            if next_rollout_batch is None:
+                continue
+
+            print(f"Starting epoch {epoch}, dataloader length: {len(self.train_dataloader)}")
+
+            # Initialize first rollout
+            rollout_future = None
+            if next_rollout_batch is not None:
+                if reset_future is None:
+                    reset_future = self._reset_envs(next_rollout_batch)
+                # Start first rollout asynchronously
+                rollout_future = generate_sequences_task.remote(
+                    self.async_rollout_manager, next_rollout_batch, reset_future
+                )
+                # Wait for first rollout to complete before entering main loop
+                ray.get(rollout_future)
+                # Prepare env reset for next rollout
+                next_rollout_batch = self._next_rollout_batch(train_iter)
+                if next_rollout_batch is not None:
+                    reset_future = self._reset_envs(next_rollout_batch)
+                print("First rollout step completed")
+
+            while rollout_future is not None:
+                for training_step in range(self.config.trainer.rollout_interval):
+                    metrics = {}
+                    timing_raw = {}
+
+                    # === start profiling ===
+                    with marked_timer("start_profile", timing_raw):
+                        self._start_profiling(
+                            not prev_step_profile and curr_step_profile
+                            if self.config.global_profiler.profile_continuous_steps
+                            else curr_step_profile
+                        )
+
+                    with marked_timer("step", timing_raw):
+                        # === rollout ===
+                        # Determine whether to perform rollout:
+                        # enable at start and early warmup, disable during critic warmup phase
+                        warm_rollout_steps = int(getattr(self.config.actor_rollout_ref.actor, "warm_rollout_steps", 0))
+                        need_rollout = (training_step == 0) or self.global_steps < warm_rollout_steps
+                        if (
+                            warm_rollout_steps
+                            <= self.global_steps
+                            < self.config.actor_rollout_ref.actor.critic_warmup_steps
+                        ):
+                            need_rollout = False
+
+                        actor_input = None
+
+                        if need_rollout:
+                            with marked_timer("rollout", timing_raw):
+                                # Wait for previous rollout result
+                                with marked_timer("wait_rollout", timing_raw):
+                                    rollout_output = ray.get(rollout_future)
+
+                                # Update weights before starting rollout
+                                self._fit_update_weights()
+
+                                # Start next rollout asynchronously
+                                next_rollout_future = None
+                                if next_rollout_batch is not None:
+                                    next_rollout_future = generate_sequences_task.remote(
+                                        self.async_rollout_manager, next_rollout_batch, reset_future
+                                    )
+                                    # Prepare env reset for next rollout
+                                    next_next_rollout_batch = self._next_rollout_batch(train_iter)
+                                    if next_next_rollout_batch is not None:
+                                        reset_future = self._reset_envs(next_next_rollout_batch)
+
+                                # compute rewards and other metrics, and prepare for actor update
+                                actor_input = self._prepare_actor_input(rollout_output)
+
+                                # Update rollout_future and next_rollout_batch
+                                rollout_future = next_rollout_future
+                                next_rollout_batch = next_next_rollout_batch
+
+                        # === update policy ===
+                        with marked_timer("update_actor", timing_raw, color="red"):
+                            if actor_input is not None:
+                                # Execute update_actor using Ray task
+                                actor_output_future = update_actor_task.remote(self.actor_wg, actor_input)
+                                actor_output = ray.get(actor_output_future)
+                            else:
+                                # Perform empty batch update once, also using Ray task
+                                empty_batch = DataProto(
+                                    meta_info={
+                                        "empty_batch": True,
+                                        "global_steps": self.global_steps,
+                                        "global_token_num": [0],
+                                    }
+                                )
+                                actor_output_future = update_actor_task.remote(self.actor_wg, empty_batch)
+                                actor_output = ray.get(actor_output_future)
+                        actor_output_metrics = reduce_metrics(actor_output.meta_info["metrics"])
+                        metrics.update(actor_output_metrics)
+
+                        # === Sync weights to inference workers ===
+                        # It can be removed to speed up training, but is kept here for safety.
+                        with marked_timer("update_weights", timing_raw):
+                            self._fit_update_weights()
+
+                    # === validate ===
+                    is_last_step = self.global_steps >= self.total_training_steps
+                    if (
+                        self.config.trainer.test_freq > 0
+                        and (is_last_step or self.global_steps % self.config.trainer.test_freq == 0)
+                        and self.global_steps >= self.config.actor_rollout_ref.actor.critic_warmup_steps
+                    ):
+                        with marked_timer("testing", timing_raw, color="green"):
+                            val_metrics: dict = self._validate()
+                            if is_last_step:
+                                last_val_metrics = val_metrics
+                        metrics.update(val_metrics)
+                        reset_future = None
+
+                    # === save checkpoint ===
+                    # Check if the ESI (Elastic Server Instance)/training plan is close to expiration.
+                    esi_close_to_expiration = should_save_ckpt_esi(
+                        max_steps_duration=self.max_steps_duration,
+                        redundant_time=self.config.trainer.esi_redundant_time,
+                    )
+                    # Check if the conditions for saving a checkpoint are met.
+                    # The conditions include a mandatory condition (1) and
+                    # one of the following optional conditions (2/3/4):
+                    # 1. The save frequency is set to a positive value.
+                    # 2. It's the last training step.
+                    # 3. The current step number is a multiple of the save frequency.
+                    # 4. The ESI(Elastic Server Instance)/training plan is close to expiration.
+                    if self.config.trainer.save_freq > 0 and (
+                        is_last_step
+                        or self.global_steps % self.config.trainer.save_freq == 0
+                        or esi_close_to_expiration
+                    ):
+                        if esi_close_to_expiration:
+                            print("Force saving checkpoint: ESI instance expiration approaching.")
+                        with marked_timer("save_checkpoint", timing_raw, color="green"):
+                            self._save_checkpoint()
+
+                    # === stop profiling ===
+                    with marked_timer("stop_profile", timing_raw):
+                        next_step_profile = (
+                            self.global_steps + 1 in self.config.global_profiler.steps
+                            if self.config.global_profiler.steps is not None
+                            else False
+                        )
+                        self._stop_profiling(
+                            curr_step_profile and not next_step_profile
+                            if self.config.global_profiler.profile_continuous_steps
+                            else curr_step_profile
+                        )
+                        prev_step_profile = curr_step_profile
+                        curr_step_profile = next_step_profile
+
+                    steps_duration = timing_raw["step"]
+                    self.max_steps_duration = max(self.max_steps_duration, steps_duration)
+
+                    # === training metrics ===
+                    metrics.update(
+                        {
+                            "training/global_step": self.global_steps,
+                            "training/epoch": epoch,
+                        }
+                    )
+                    metrics.update({f"timing_s/{name}": value for name, value in timing_raw.items()})
+                    if actor_input is not None:
+                        metrics["data/trajectory_avg_reward"] = actor_input.meta_info["data/trajectory_avg_reward"]
+                        metrics["data/avg_positive_trajectory_length"] = actor_input.meta_info[
+                            "data/avg_positive_trajectory_length"
+                        ]
+                    logger.log(data=metrics, step=self.global_steps)
+
+                    progress_bar.update(1)
+                    self.global_steps += 1
+
+                    if (
+                        hasattr(self.config.actor_rollout_ref.actor, "profiler")
+                        and self.config.actor_rollout_ref.actor.profiler.tool == "torch_memory"
+                    ):
+                        self.actor_wg.dump_memory_snapshot(
+                            tag=f"post_update_step{self.global_steps}", sub_dir=f"step{self.global_steps}"
+                        )
+
+                    if is_last_step:
+                        pprint(f"Final validation metrics: {last_val_metrics}")
+                        progress_bar.close()
+                        return
+
+    def _fit_update_weights(self):
+        self.checkpoint_manager.update_weights(self.global_steps)
+
+    def _validate(self) -> dict:
+        metric_list = []
+        rollout_metric_lists = {}
+        per_task_metric_lists = {}
+        val_iter = iter(self.val_dataloader)
+        test_batch = self._next_rollout_batch(val_iter)
+        while test_batch is not None:
+            valid_batch_size = len(test_batch)
+            target_batch_size = self.config.data.val_batch_size
+            if valid_batch_size < target_batch_size:
+                test_batch = self._pad_validation_batch(test_batch, target_batch_size)
+
+            test_batch.meta_info["validate"] = True
+            reset_future = self._reset_envs(test_batch)
+            rollout_output = ray.get(
+                generate_sequences_task.remote(self.async_rollout_manager, test_batch, reset_future)
+            )
+            for key, value in rollout_output.meta_info["metrics"].items():
+                rollout_metric_lists.setdefault(key, []).append(float(value))
+            test_batch = self._next_rollout_batch(val_iter)
+            valid_rollout_output = rollout_output[:valid_batch_size]
+            valid_rollout_output.meta_info = dict(valid_rollout_output.meta_info)
+            if "task_ids" in valid_rollout_output.meta_info:
+                valid_rollout_output.meta_info["task_ids"] = valid_rollout_output.meta_info["task_ids"][
+                    :valid_batch_size
+                ]
+            per_task_metrics = compute_per_task_trajectory_metrics(valid_rollout_output, metric_prefix="val")
+            for key, value in per_task_metrics.items():
+                per_task_metric_lists.setdefault(key, []).append(value)
+
+            actor_input = self._prepare_actor_input(valid_rollout_output)
+
+            metric_list.append(
+                {
+                    "val/avg_reward": actor_input.meta_info["data/trajectory_avg_reward"],
+                    "val/avg_positive_trajectory_length": actor_input.meta_info["data/avg_positive_trajectory_length"],
+                }
+            )
+
+        metrics = {}
+        if metric_list:
+            metrics["val/avg_reward"] = np.mean([m["val/avg_reward"] for m in metric_list])
+            metrics["val/avg_positive_trajectory_length"] = np.mean(
+                [m["val/avg_positive_trajectory_length"] for m in metric_list]
+            )
+        for key, values in per_task_metric_lists.items():
+            metrics[key] = float(np.mean(values))
+        for key, values in rollout_metric_lists.items():
+            metrics[key] = float(np.mean(values))
+
+        return metrics
 
 
 class RobRaySACTrainer(RayPPOTrainer):
@@ -319,9 +907,6 @@ class RobRaySACTrainer(RayPPOTrainer):
         )
 
     def fit(self):
-        from omegaconf import OmegaConf
-        from verl.utils.tracking import Tracking
-
         logger = Tracking(
             project_name=self.config.trainer.project_name,
             experiment_name=self.config.trainer.experiment_name,

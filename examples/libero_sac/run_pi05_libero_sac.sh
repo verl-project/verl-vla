@@ -1,13 +1,16 @@
 set -x
-libero_train_path=$HOME/data/libero_rl/libero_spatial/train.parquet
-libero_test_path=$HOME/data/libero_rl/libero_spatial/test.parquet
+
+export MUJOCO_GL=osmesa
+
+libero_train_path=$HOME/data/libero_rl/train.parquet
+libero_test_path=$HOME/data/libero_rl/test.parquet
 
 train_files=$libero_train_path
 test_files=$libero_test_path
 
 OUTPUT_DIR=${MLP_MODEL_OUTPUT:-"$HOME/models/vla_libero_grpo"}
 VIDEO_OUTPUT=${MLP_MODEL_OUTPUT:-"$HOME"}/video
-SFT_MODEL_PATH=${SFT_MODEL_PATH:-"$HOME/data/pi05_libero_torch"}
+SFT_MODEL_PATH=${SFT_MODEL_PATH:-"$HOME/codes/models/pi05_libero_torch/pi05_libero_torch"}
 TOKENIZER_PATH="$SFT_MODEL_PATH"
 
 # Physical Node Config
@@ -18,6 +21,10 @@ NUM_GPUS=4                                     # total number of gpus per node
 ENV_DEVICE=cpu                                 # env worker device: cpu or cuda
 NUM_ENV_WORKERS=16                              # number of CPU env workers per node
 NUM_ROLLOUT_GPUS=4                             # number of gpus for actor/rollout workers per node
+
+# Use for separate train and inference
+TRAIN_GPUS=2
+ROLLOUT_GPUS=$((NUM_GPUS - TRAIN_GPUS))
 
 # Rollout Config
 # NOTE: BATCH_SIZE * ROLLOUT_N == NUM_ENV_WORKERS * NUM_STAGE * NUM_ENV
@@ -66,6 +73,8 @@ $PYTHON -m verl_vla.trainer.main_sac \
     data.val_files="$test_files" \
     data.train_batch_size=$BATCH_SIZE \
     data.val_batch_size=$BATCH_SIZE \
+    data.max_prompt_length=256 \
+    data.max_response_length=128 \
     actor_rollout_ref.rollout.n=$ROLLOUT_N \
     env.train.num_envs=$NUM_ENV \
     env.rollout.pipeline_stage_num=$NUM_STAGE \
@@ -96,6 +105,7 @@ $PYTHON -m verl_vla.trainer.main_sac \
     actor_rollout_ref.rollout.name=hf \
     actor_rollout_ref.rollout.gpu_memory_utilization=0.9 \
     actor_rollout_ref.rollout.free_cache_engine=False \
+    actor_rollout_ref.rollout.checkpoint_engine.update_weights_bucket_megabytes=1536 \
     actor_rollout_ref.rollout.output_critic_value=False \
     trainer.logger=['console'] \
     trainer.project_name=$PROJECT_NAME \
@@ -104,6 +114,8 @@ $PYTHON -m verl_vla.trainer.main_sac \
     trainer.n_gpus_per_node=$NUM_GPUS \
     trainer.n_env_workers_per_node=$NUM_ENV_WORKERS \
     trainer.n_rollout_gpus_per_node=$NUM_ROLLOUT_GPUS \
+    +trainer.n_train_gpus_num=$TRAIN_GPUS \
+    +trainer.n_rollout_gpus_num=$ROLLOUT_GPUS \
     trainer.rollout_interval=20 \
     trainer.nnodes=$NUM_NODES \
     trainer.save_freq=300 \
