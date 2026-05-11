@@ -31,7 +31,8 @@ from verl.utils.fs import copy_local_path_from_hdfs
 from verl_vla.workers.engine import VLAActorRolloutRefWorker, VLAActorWorker, VLARolloutWorker
 from verl_vla.workers.env.env_worker import EnvWorker
 
-from .sac.sac_ray_trainer import RobRaySACSeparateTrainInference, RobRaySACTrainer
+from .sac.sac_ray_trainer import RobRaySACTrainer
+from .sac.sac_separate_trainer import RobRaySACSeparateTrainInference
 
 logger = logging.getLogger(__name__)
 

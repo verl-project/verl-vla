@@ -46,7 +46,7 @@ class HFRollout(BaseRollout):
         super().__init__(config=config, model_config=model_config, device_mesh=device_mesh)
         self.engine = engine
         self.module = module if module is not None else (engine.module if engine is not None else None)
-        self.tokenizer = tokenizer if tokenizer is not None else model_config.tokenizer
+        self.tokenizer = tokenizer if tokenizer is not None else getattr(model_config, "tokenizer", None)
         self.output_critic_value = bool(config.output_critic_value)
 
         if self.module is None:
@@ -93,17 +93,6 @@ class HFRollout(BaseRollout):
             if hasattr(self.module, "sac_init"):
                 logger.info("Initializing SAC components for rollout model...")
                 self.module.sac_init()
-
-                # 5. Ensure critic_api is initialized (if not already)
-                logger.info("Initializing critic_api for rollout...")
-                from verl_vla.models.pi0_torch.modeling_pi0_torch import CRITIC_BACKENDS
-
-                critic_type = getattr(self.module.config, "critic_type", "cross_attn")
-                if critic_type in CRITIC_BACKENDS:
-                    self.module.critic_api = CRITIC_BACKENDS[critic_type]
-                    self.module.critic_api.init(self.module)
-                else:
-                    raise ValueError(f"Unsupported critic_type: {critic_type}")
 
         from torch.distributed.fsdp import register_fsdp_forward_method
 

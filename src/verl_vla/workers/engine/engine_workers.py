@@ -25,7 +25,6 @@ from verl.single_controller.base.decorator import Dispatch, make_nd_compute_data
 from verl.utils.config import omega_conf_to_dataclass
 from verl.utils.device import get_device_id, get_device_name
 from verl.utils.memory_utils import aggressive_empty_cache
-from verl.utils.profiler import log_gpu_memory_usage
 from verl.workers.config import HFModelConfig, TrainingWorkerConfig
 from verl.workers.engine_workers import ActorRolloutRefWorker
 from verl.workers.rollout.base import BaseRollout, get_rollout_class
@@ -188,8 +187,6 @@ class VLAActorRolloutRefWorker(ActorRolloutRefWorker):
             await self.rollout.update_weights(weights, global_steps=global_steps)
             return
 
-        assert self.checkpoint_engine is not None
-
         # Actor-only worker: send weights via checkpoint engine
         if self._is_actor and not self._is_rollout:
             if self.config.rollout.checkpoint_engine.backend != "naive":
@@ -197,48 +194,8 @@ class VLAActorRolloutRefWorker(ActorRolloutRefWorker):
                 await self.checkpoint_engine.send_weights(per_tensor_param)
             return
 
-        # Colocated worker (actor + rollout)
-        if self.config.rollout.checkpoint_engine.backend != "naive":
-            per_tensor_param, _ = self.actor.engine.get_per_tensor_param()
-            await self.checkpoint_engine.send_weights(per_tensor_param)
-            return
-
-        from verl.utils.device import set_expandable_segments
-
-        set_expandable_segments(False)
-
-        if self.config.rollout.free_cache_engine:
-            await self.rollout.resume(tags=["weights"])
-        log_gpu_memory_usage("After resume weights", logger=logger)
-
-        per_tensor_param, peft_config = self.actor.engine.get_per_tensor_param(
-            layered_summon=self.layered_summon, base_sync_done=True
-        )
-
-        await self.rollout.update_weights(per_tensor_param, peft_config=peft_config, base_sync_done=True)
-
-        do_lora_base_sync = False
-        if not self.peft_merge and peft_config is not None:
-            self.rollout.sleep_level = 1
-            do_lora_base_sync = not self.base_sync_done or self.rollout.sleep_level != 1
-
-        if do_lora_base_sync:
-            per_tensor_base_params, _ = self.actor.engine.get_per_tensor_param(
-                layered_summon=self.layered_summon, base_sync_done=False
-            )
-            await self.rollout.update_weights(per_tensor_base_params, peft_config=peft_config, base_sync_done=False)
-
-        log_gpu_memory_usage("After update_weights", logger=logger)
-
-        self.actor.engine.to("cpu", model=True, optimizer=False, grad=False)
-        aggressive_empty_cache(force_sync=True)
-
-        if self.config.rollout.free_cache_engine:
-            await self.rollout.resume(tags=["kv_cache"])
-        log_gpu_memory_usage("After resume kv_cache", logger=logger)
-
-        self.base_sync_done = True
-        set_expandable_segments(True)
+        # Colocated worker (actor + rollout): use base class implementation
+        await super().update_weights(global_steps=global_steps)
 
     @register(dispatch_mode=Dispatch.DP_COMPUTE, blocking=False)
     def execute_checkpoint_engine(self, method: str, *args, **kwargs):

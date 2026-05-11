@@ -13,23 +13,47 @@
 # limitations under the License.
 
 import asyncio
+import logging
 from pprint import pprint
 from typing import Optional
 
 import numpy as np
+import ray
 import torch
 from omegaconf import OmegaConf
 from tqdm import tqdm
 from verl import DataProto
+from verl.checkpoint_engine import CheckpointEngineManager
 from verl.single_controller.ray import RayClassWithInitArgs
-from verl.single_controller.ray.base import create_colocated_worker_cls
 from verl.trainer.ppo.ray_trainer import RayPPOTrainer, ValidationGenerationsLogger
 from verl.trainer.ppo.utils import Role
 from verl.utils.checkpoint.checkpoint_manager import should_save_ckpt_esi
+from verl.utils.config import omega_conf_to_dataclass
 from verl.utils.debug import marked_timer
 from verl.utils.metric import reduce_metrics
+from verl.utils.tracking import Tracking
 
 from verl_vla.utils.data import add_transition_prefixes, flatten_trajectories
+
+logger = logging.getLogger(__name__)
+
+
+# Define Ray task functions for separate train/inference
+@ray.remote
+def generate_sequences_task(async_rollout_manager, rollout_batch, reset_future):
+    """
+    Ray task for generating sequences in parallel
+    """
+    return async_rollout_manager.generate_sequences(rollout_batch, reset_future)
+
+
+@ray.remote
+def update_actor_task(actor_wg, batch):
+    """
+    Ray task for updating actor in parallel
+    """
+    actor_output = actor_wg.update_actor(batch)
+    return actor_output
 
 
 def compute_avg_positive_trajectory_length(batch: DataProto) -> float:
@@ -77,7 +101,7 @@ def compute_per_task_trajectory_metrics(rollout_batch: DataProto, metric_prefix:
     return metrics
 
 
-class RobRaySACTrainer(RayPPOTrainer):
+class RobRaySACSeparateTrainInference(RayPPOTrainer):
     def __init__(
         self,
         config,
@@ -140,16 +164,24 @@ class RobRaySACTrainer(RayPPOTrainer):
         if self.config.env.disagg_sim.enable:
             # pin EnvWorker to Simulator GPU nodes
             self.resource_pool_manager.get_resource_pool(Role.Env).accelerator_type = "sim"
-            self.resource_pool_manager.get_resource_pool(Role.ActorRollout).accelerator_type = "train_rollout"
+            # In separate mode, we need different resource pools for train and rollout
+            self.resource_pool_manager.get_resource_pool(Role.Actor).accelerator_type = "train"
+            self.resource_pool_manager.get_resource_pool(Role.Rollout).accelerator_type = "rollout"
 
         self.resource_pool_to_cls = {pool: {} for pool in self.resource_pool_manager.resource_pool_dict.values()}
-        resource_pool = self.resource_pool_manager.get_resource_pool(Role.ActorRollout)
-        actor_rollout_cls = RayClassWithInitArgs(
-            cls=self.role_worker_mapping[Role.ActorRollout],
+        resource_pool = self.resource_pool_manager.get_resource_pool(Role.Actor)
+        actor_cls = RayClassWithInitArgs(
+            cls=self.role_worker_mapping[Role.Actor],
             config=self.config.actor_rollout_ref,
-            role="actor_rollout",
         )
-        self.resource_pool_to_cls[resource_pool]["actor_rollout"] = actor_rollout_cls
+        self.resource_pool_to_cls[resource_pool]["actor"] = actor_cls
+
+        resource_pool = self.resource_pool_manager.get_resource_pool(Role.Rollout)
+        rollout_cls = RayClassWithInitArgs(
+            cls=self.role_worker_mapping[Role.Rollout],
+            config=self.config.actor_rollout_ref,
+        )
+        self.resource_pool_to_cls[resource_pool]["rollout"] = rollout_cls
 
         assert Role.Env in self.role_worker_mapping
         if Role.Env in self.role_worker_mapping:
@@ -180,18 +212,19 @@ class RobRaySACTrainer(RayPPOTrainer):
         wg_kwargs["device_name"] = self.device_name
 
         for resource_pool, class_dict in self.resource_pool_to_cls.items():
-            worker_dict_cls = create_colocated_worker_cls(class_dict=class_dict)
-            wg_dict = self.ray_worker_group_cls(
-                resource_pool=resource_pool,
-                ray_cls_with_init=worker_dict_cls,
-                **wg_kwargs,
-            )
-            spawn_wg = wg_dict.spawn(prefix_set=class_dict.keys())
-            all_wg.update(spawn_wg)
+            for prefix, ray_cls_with_init in class_dict.items():
+                wg = self.ray_worker_group_cls(
+                    resource_pool=resource_pool,
+                    ray_cls_with_init=ray_cls_with_init,
+                    **wg_kwargs,
+                )
+                all_wg[prefix] = wg
 
         # we should create rollout at the end so that vllm can have a better estimation of kv cache memory
-        self.actor_rollout_wg = all_wg["actor_rollout"]
-        self.actor_rollout_wg.init_model()
+        self.actor_wg = all_wg["actor"]
+        self.rollout_wg = all_wg["rollout"]
+        self.actor_wg.init_model()
+        self.rollout_wg.init_model()
         self.env_wg = all_wg["env"]
 
         # create async rollout manager and request scheduler
@@ -200,9 +233,32 @@ class RobRaySACTrainer(RayPPOTrainer):
             from verl_vla.env_loop.env_loop import EnvLoop
 
             self.async_rollout_mode = True
-            self.async_rollout_manager = EnvLoop(
-                config=self.config, rollout_wg=self.actor_rollout_wg, env_wg=self.env_wg
+            self.async_rollout_manager = EnvLoop(config=self.config, rollout_wg=self.rollout_wg, env_wg=self.env_wg)
+
+        # Create rollout_replicas
+        from verl_vla.workers.rollout.vla_replica import VLARolloutReplica
+
+        # Only convert rollout config, not model config
+        rollout_config = omega_conf_to_dataclass(self.config.actor_rollout_ref.rollout)
+
+        # Pass raw model config object directly
+        model_config = self.config.actor_rollout_ref.model
+
+        # Create a VLA RolloutReplica instance using rollout_wg's workers
+        rollout_replicas = [
+            VLARolloutReplica(
+                replica_rank=0,
+                config=rollout_config,
+                model_config=model_config,
+                rollout_workers=self.rollout_wg.workers,
             )
+        ]
+
+        self.checkpoint_manager = CheckpointEngineManager(
+            config=omega_conf_to_dataclass(self.config.actor_rollout_ref.rollout.checkpoint_engine),
+            trainer=self.actor_wg,
+            replicas=rollout_replicas,
+        )
 
     def _get_gen_batch(self, batch: DataProto) -> DataProto:
         # pop those keys for generation
@@ -319,9 +375,6 @@ class RobRaySACTrainer(RayPPOTrainer):
         )
 
     def fit(self):
-        from omegaconf import OmegaConf
-        from verl.utils.tracking import Tracking
-
         logger = Tracking(
             project_name=self.config.trainer.project_name,
             experiment_name=self.config.trainer.experiment_name,
@@ -333,6 +386,7 @@ class RobRaySACTrainer(RayPPOTrainer):
 
         # load checkpoint before doing anything
         self._load_checkpoint()
+        self._fit_update_weights()
 
         # perform validation before training
         # currently, we only support validation using the reward_function.
@@ -370,7 +424,22 @@ class RobRaySACTrainer(RayPPOTrainer):
                 continue
 
             print(f"Starting epoch {epoch}, dataloader length: {len(self.train_dataloader)}")
-            while next_rollout_batch is not None:
+
+            # Initialize first rollout
+            rollout_future = None
+            if next_rollout_batch is not None:
+                if reset_future is None:
+                    reset_future = self._reset_envs(next_rollout_batch)
+                # Start first rollout asynchronously (don't block here, main loop will wait)
+                rollout_future = generate_sequences_task.remote(
+                    self.async_rollout_manager, next_rollout_batch, reset_future
+                )
+                # Prepare env reset for next rollout while first rollout is running
+                next_rollout_batch = self._next_rollout_batch(train_iter)
+                if next_rollout_batch is not None:
+                    reset_future = self._reset_envs(next_rollout_batch)
+
+            while rollout_future is not None:
                 for training_step in range(self.config.trainer.rollout_interval):
                     metrics = {}
                     timing_raw = {}
@@ -395,50 +464,62 @@ class RobRaySACTrainer(RayPPOTrainer):
                             < self.config.actor_rollout_ref.actor.critic_warmup_steps
                         ):
                             need_rollout = False
-                        if need_rollout and next_rollout_batch is None:
-                            break
 
                         actor_input = None
+
                         if need_rollout:
                             with marked_timer("rollout", timing_raw):
-                                # execute rollout
-                                rollout_batch = next_rollout_batch
-                                assert rollout_batch is not None
-                                if reset_future is None:
-                                    reset_future = self._reset_envs(rollout_batch)
-                                with marked_timer("generate", timing_raw, color="red"):
-                                    rollout_output = self.async_rollout_manager.generate_sequences(
-                                        rollout_batch, reset_future
-                                    )
+                                # Wait for previous rollout result
+                                with marked_timer("wait_rollout", timing_raw):
+                                    rollout_output = ray.get(rollout_future)
 
-                                # prepare for next batch's env reset
-                                next_rollout_batch = self._next_rollout_batch(train_iter)
+                                # Update weights before starting rollout
+                                self._fit_update_weights()
+
+                                # Start next rollout asynchronously
+                                next_rollout_future = None
                                 if next_rollout_batch is not None:
-                                    reset_future = self._reset_envs(next_rollout_batch)
+                                    # Ensure reset_future is not None before starting rollout
+                                    if reset_future is None:
+                                        reset_future = self._reset_envs(next_rollout_batch)
+                                    next_rollout_future = generate_sequences_task.remote(
+                                        self.async_rollout_manager, next_rollout_batch, reset_future
+                                    )
+                                    # Prepare env reset for next rollout
+                                    next_next_rollout_batch = self._next_rollout_batch(train_iter)
+                                    if next_next_rollout_batch is not None:
+                                        reset_future = self._reset_envs(next_next_rollout_batch)
 
                                 # compute rewards and other metrics, and prepare for actor update
-                                metrics.update(
-                                    compute_per_task_trajectory_metrics(rollout_output, metric_prefix="data")
-                                )
-                                metrics.update(rollout_output.meta_info["metrics"])
                                 actor_input = self._prepare_actor_input(rollout_output)
+
+                                # Update rollout_future and next_rollout_batch
+                                rollout_future = next_rollout_future
+                                next_rollout_batch = next_next_rollout_batch
 
                         # === update policy ===
                         with marked_timer("update_actor", timing_raw, color="red"):
                             if actor_input is not None:
-                                actor_output = self.actor_rollout_wg.update_actor(actor_input)
+                                # Execute update_actor using Ray task
+                                actor_output_future = update_actor_task.remote(self.actor_wg, actor_input)
+                                actor_output = ray.get(actor_output_future)
                             else:
-                                actor_output = self.actor_rollout_wg.update_actor(
-                                    DataProto(
-                                        meta_info={
-                                            "empty_batch": True,
-                                            "global_steps": self.global_steps,
-                                            "global_token_num": [0],
-                                        }
-                                    )
+                                # Perform empty batch update once, also using Ray task
+                                empty_batch = DataProto(
+                                    meta_info={
+                                        "empty_batch": True,
+                                        "global_steps": self.global_steps,
+                                        "global_token_num": [0],
+                                    }
                                 )
+                                actor_output_future = update_actor_task.remote(self.actor_wg, empty_batch)
+                                actor_output = ray.get(actor_output_future)
                         actor_output_metrics = reduce_metrics(actor_output.meta_info["metrics"])
                         metrics.update(actor_output_metrics)
+
+                        # === Sync weights to inference workers ===
+                        with marked_timer("update_weights", timing_raw):
+                            self._fit_update_weights()
 
                     # === validate ===
                     is_last_step = self.global_steps >= self.total_training_steps
@@ -517,7 +598,7 @@ class RobRaySACTrainer(RayPPOTrainer):
                         hasattr(self.config.actor_rollout_ref.actor, "profiler")
                         and self.config.actor_rollout_ref.actor.profiler.tool == "torch_memory"
                     ):
-                        self.actor_rollout_wg.dump_memory_snapshot(
+                        self.actor_wg.dump_memory_snapshot(
                             tag=f"post_update_step{self.global_steps}", sub_dir=f"step{self.global_steps}"
                         )
 
@@ -525,6 +606,9 @@ class RobRaySACTrainer(RayPPOTrainer):
                         pprint(f"Final validation metrics: {last_val_metrics}")
                         progress_bar.close()
                         return
+
+    def _fit_update_weights(self):
+        self.checkpoint_manager.update_weights(self.global_steps)
 
     def _validate(self) -> dict:
         metric_list = []
@@ -540,7 +624,9 @@ class RobRaySACTrainer(RayPPOTrainer):
 
             test_batch.meta_info["validate"] = True
             reset_future = self._reset_envs(test_batch)
-            rollout_output = self.async_rollout_manager.generate_sequences(test_batch, reset_future)
+            rollout_output = ray.get(
+                generate_sequences_task.remote(self.async_rollout_manager, test_batch, reset_future)
+            )
             for key, value in rollout_output.meta_info["metrics"].items():
                 rollout_metric_lists.setdefault(key, []).append(float(value))
             test_batch = self._next_rollout_batch(val_iter)
