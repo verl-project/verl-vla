@@ -129,7 +129,7 @@ trainer:
   # Device to run training on (e.g., "cuda", "cpu")
   device: cuda
 
-  separate_train_inference: True
+  separate_train_inference: False
 
 # profiler configs
 global_profiler:

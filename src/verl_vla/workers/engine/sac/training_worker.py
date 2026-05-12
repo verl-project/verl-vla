@@ -28,7 +28,6 @@ from verl.workers.engine_workers import TrainingWorker
 
 from verl_vla.utils.data import get_dataproto_from_prefix, split_nested_dicts_or_tuples, valid_mean
 from verl_vla.utils.replay_pool import SACReplayPool
-from verl_vla.utils.scalar_schedule import ScheduledScalar
 from verl_vla.workers.config import ActorConfig
 
 logger = logging.getLogger(__name__)
@@ -88,21 +87,6 @@ class SACTrainingWorker(TrainingWorker):
         self.actor_ema_decay = float(self.actor_config.actor_ema_decay)
         self.actor_ema_shadow: dict[str, torch.Tensor] = {}
         self.actor_ema_initialized = False
-        self.actor_ema_scheduler = ScheduledScalar(
-            base_value=self.actor_ema_decay,
-            enabled=bool(self.actor_config.actor_ema_dynamic_enabled),
-            initial_value=float(self.actor_config.actor_ema_strength_initial),
-            final_value=float(self.actor_config.actor_ema_strength_final),
-            method=self.actor_config.actor_ema_schedule_method,
-        )
-        critic_target_strength_default = ScheduledScalar(base_value=1.0 - float(self.sac_config.tau)).base_value
-        self.critic_target_ema_scheduler = ScheduledScalar(
-            base_value=critic_target_strength_default,
-            enabled=bool(self.sac_config.critic_target_ema_dynamic_enabled),
-            initial_value=float(self.sac_config.critic_target_ema_strength_initial),
-            final_value=float(self.sac_config.critic_target_ema_strength_final),
-            method=self.sac_config.critic_target_ema_schedule_method,
-        )
         self.td3_enabled = bool(self.sac_config.get("td3_enabled", False))
         self.td3_bc_alpha = float(self.sac_config.get("td3_bc_alpha", 2.5))
         self.cql_enabled = bool(self.sac_config.get("cql_enabled", False))
@@ -143,9 +127,9 @@ class SACTrainingWorker(TrainingWorker):
     def _update_actor_ema(self):
         if not self.actor_ema_enabled:
             return
-        one_minus_decay = 1.0 - self.actor_ema_scheduler.current_value
+        one_minus_decay = 1.0 - self.actor_ema_decay
         for name, param in self.engine.module.sac_get_named_actor_parameters():
-            self.actor_ema_shadow[name].mul_(self.actor_ema_scheduler.current_value).add_(
+            self.actor_ema_shadow[name].mul_(self.actor_ema_decay).add_(
                 param.detach().to(dtype=torch.float32), alpha=one_minus_decay
             )
 
@@ -354,10 +338,6 @@ class SACTrainingWorker(TrainingWorker):
             self._init_actor_ema()
 
         global_steps = data.meta_info["global_steps"]
-        rollout_success_rate = self.actor_ema_scheduler.control_value
-        if "data/trajectory_avg_reward" in data.meta_info:
-            rollout_success_rate = float(data.meta_info["data/trajectory_avg_reward"])
-        self.actor_ema_scheduler.refresh(rollout_success_rate)
         critic_only_update = bool(data.meta_info.get("critic_only_update", False))
 
         self._force_set_lr(self.engine.optimizer, 5e-6)
@@ -417,7 +397,6 @@ class SACTrainingWorker(TrainingWorker):
             if global_steps < self.actor_config.critic_warmup_steps:
                 self.critic_optimizer.step()
                 self.critic_scheduler.step()
-                self._update_critic_ema()
 
         actor_replay_sample_info = {"actual_positive_sample_ratio": 0.0}
         if update_actor:
@@ -464,7 +443,7 @@ class SACTrainingWorker(TrainingWorker):
         critic_target_tau = (
             1.0
             if force_tau_one_in_warmup and global_steps < self.actor_config.critic_warmup_steps
-            else (1.0 - self.critic_target_ema_scheduler.current_value)
+            else float(self.sac_config.tau)
         )
         if not skip_critic_update:
             self.engine.module.sac_update_target_network(critic_target_tau)
@@ -521,17 +500,8 @@ class SACTrainingWorker(TrainingWorker):
             "sac/replay_pool_negative_size": critic_replay_sample_info["negative_size"],
             "sac/replay_task_count": critic_replay_sample_info["task_count"],
             "sac/alpha": self._get_alpha().detach().item(),
-            "sac/rollout_success_rate": self.actor_ema_scheduler.control_value,
             "sac/actor_ema_enabled": float(self.actor_ema_enabled),
-            "sac/actor_ema_dynamic_enabled": float(self.actor_ema_scheduler.enabled),
-            "sac/actor_ema_decay": self.actor_ema_scheduler.current_value,
-            "sac/actor_ema_strength_initial": self.actor_ema_scheduler.initial_value,
-            "sac/actor_ema_strength_final": self.actor_ema_scheduler.final_value,
-            "sac/critic_ema_enabled": float(self.critic_ema_enabled),
-            "sac/critic_ema_dynamic_enabled": float(self.critic_ema_scheduler.enabled),
-            "sac/critic_ema_decay": self.critic_ema_scheduler.current_value,
-            "sac/critic_ema_strength_initial": self.critic_ema_scheduler.initial_value,
-            "sac/critic_ema_strength_final": self.critic_ema_scheduler.final_value,
+            "sac/actor_ema_decay": self.actor_ema_decay,
             "sac/critic_target_tau": critic_target_tau,
             "sac/replay_pool_size": len(self.replay_pool),
             "critic/loss": sum(critic_loss_list) / len(critic_loss_list) if critic_loss_list else 0.0,
