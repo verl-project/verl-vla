@@ -478,12 +478,12 @@ class RobRaySACSeparateTrainInference(RayPPOTrainer):
                     with marked_timer("wait_rollout", timing_raw):
                         if rollout_future is not None:
                             ray.get(rollout_future)
-                            rollout_future = None
 
                 # === Execute rollout_interval training steps ===
                 for training_step in range(self.config.trainer.rollout_interval):
                     metrics = {}
-                    timing_raw.clear()
+                    if training_step > 0:
+                        timing_raw.clear()
 
                     # === start profiling ===
                     with marked_timer("start_profile", timing_raw):
