@@ -440,9 +440,50 @@ class RobRaySACSeparateTrainInference(RayPPOTrainer):
                     reset_future = self._reset_envs(next_rollout_batch)
 
             while rollout_future is not None:
+                actor_input = None
+                timing_raw = {}
+
+                # === Determine whether to perform rollout ===
+                warm_rollout_steps = int(getattr(self.config.actor_rollout_ref.actor, "warm_rollout_steps", 0))
+                need_rollout = True
+                if warm_rollout_steps <= self.global_steps < self.config.actor_rollout_ref.actor.critic_warmup_steps:
+                    need_rollout = False
+
+                if need_rollout:
+                    # === Wait for rollout to complete ===
+                    with marked_timer("rollout", timing_raw):
+                        with marked_timer("wait_rollout", timing_raw):
+                            rollout_output = ray.get(rollout_future)
+
+                        # compute rewards and other metrics, and prepare for actor update
+                        actor_input = self._prepare_actor_input(rollout_output)
+
+                        # Start next rollout asynchronously
+                        next_rollout_future = None
+                        if next_rollout_batch is not None:
+                            if reset_future is None:
+                                reset_future = self._reset_envs(next_rollout_batch)
+                            next_rollout_future = generate_sequences_task.remote(
+                                self.async_rollout_manager, next_rollout_batch, reset_future
+                            )
+                            next_next_rollout_batch = self._next_rollout_batch(train_iter)
+                            if next_next_rollout_batch is not None:
+                                reset_future = self._reset_envs(next_next_rollout_batch)
+
+                        # Update rollout_future and next_rollout_batch
+                        rollout_future = next_rollout_future
+                        next_rollout_batch = next_next_rollout_batch
+                else:
+                    # Skip rollout during critic warmup phase
+                    with marked_timer("wait_rollout", timing_raw):
+                        if rollout_future is not None:
+                            ray.get(rollout_future)
+                            rollout_future = None
+
+                # === Execute rollout_interval training steps ===
                 for training_step in range(self.config.trainer.rollout_interval):
                     metrics = {}
-                    timing_raw = {}
+                    timing_raw.clear()
 
                     # === start profiling ===
                     with marked_timer("start_profile", timing_raw):
@@ -453,50 +494,6 @@ class RobRaySACSeparateTrainInference(RayPPOTrainer):
                         )
 
                     with marked_timer("step", timing_raw):
-                        # === rollout ===
-                        # Determine whether to perform rollout:
-                        # enable at start and early warmup, disable during critic warmup phase
-                        warm_rollout_steps = int(getattr(self.config.actor_rollout_ref.actor, "warm_rollout_steps", 0))
-                        need_rollout = (training_step == 0) or self.global_steps < warm_rollout_steps
-                        if (
-                            warm_rollout_steps
-                            <= self.global_steps
-                            < self.config.actor_rollout_ref.actor.critic_warmup_steps
-                        ):
-                            need_rollout = False
-
-                        actor_input = None
-
-                        if need_rollout:
-                            with marked_timer("rollout", timing_raw):
-                                # Wait for previous rollout result
-                                with marked_timer("wait_rollout", timing_raw):
-                                    rollout_output = ray.get(rollout_future)
-
-                                # Update weights before starting rollout
-                                self._fit_update_weights()
-
-                                # Start next rollout asynchronously
-                                next_rollout_future = None
-                                if next_rollout_batch is not None:
-                                    # Ensure reset_future is not None before starting rollout
-                                    if reset_future is None:
-                                        reset_future = self._reset_envs(next_rollout_batch)
-                                    next_rollout_future = generate_sequences_task.remote(
-                                        self.async_rollout_manager, next_rollout_batch, reset_future
-                                    )
-                                    # Prepare env reset for next rollout
-                                    next_next_rollout_batch = self._next_rollout_batch(train_iter)
-                                    if next_next_rollout_batch is not None:
-                                        reset_future = self._reset_envs(next_next_rollout_batch)
-
-                                # compute rewards and other metrics, and prepare for actor update
-                                actor_input = self._prepare_actor_input(rollout_output)
-
-                                # Update rollout_future and next_rollout_batch
-                                rollout_future = next_rollout_future
-                                next_rollout_batch = next_next_rollout_batch
-
                         # === update policy ===
                         with marked_timer("update_actor", timing_raw, color="red"):
                             if actor_input is not None:
@@ -517,9 +514,9 @@ class RobRaySACSeparateTrainInference(RayPPOTrainer):
                         actor_output_metrics = reduce_metrics(actor_output.meta_info["metrics"])
                         metrics.update(actor_output_metrics)
 
-                        # === Sync weights to inference workers ===
-                        with marked_timer("update_weights", timing_raw):
-                            self._fit_update_weights()
+                    # === Sync weights to inference workers ===
+                    if training_step == self.config.trainer.rollout_interval - 1:
+                        self._fit_update_weights()
 
                     # === validate ===
                     is_last_step = self.global_steps >= self.total_training_steps

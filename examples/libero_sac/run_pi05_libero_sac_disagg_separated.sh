@@ -21,7 +21,7 @@ NUM_ROLLOUT_GPUS=8                             # number of gpus for rollout work
 
 # Use for separate train and inference
 TRAIN_GPUS=2
-ROLLOUT_GPUS=$((NUM_GPUS - TRAIN_GPUS))
+ROLLOUT_GPUS=2
 
 # Rollout Config
 # NOTE: TRAIN_BATCH_SIZE * ROLLOUT_N == NUM_ENV_GPUS * NUM_STAGE * NUM_ENV
