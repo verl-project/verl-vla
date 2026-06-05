@@ -18,9 +18,15 @@ import numpy as np
 from omegaconf import DictConfig
 
 from verl_vla.teleop.config import load_teleop_config
-from verl_vla.teleop.devices import DeviceBase, KeyboardDevice, KeyboardDeviceCfg
+from verl_vla.teleop.devices import (
+    DeviceBase,
+    KeyboardDevice,
+    KeyboardDeviceCfg,
+    XRControllerDevice,
+    XRControllerDeviceCfg,
+)
 from verl_vla.teleop.obs_server.teleop_server import TeleopServer
-from verl_vla.teleop.strategies import InterventionStrategyBase, InterventionStrategyCfg, get_strategy
+from verl_vla.teleop.strategies import InterventionStrategyBase, get_strategy
 
 
 class TeleopController:
@@ -120,25 +126,30 @@ class TeleopController:
 
     def _get_teleop_info(self) -> dict[str, Any]:
         device_infos = []
-        active_info = {}
+        active_info = None
+        is_intervening = False
         for device_type, input_device in self.input_devices.items():
             strategy = self.strategies[device_type]
+            device_is_intervening = strategy.is_intervening(input_device)
             info = {
                 "device_type": device_type,
                 **input_device.snapshot(),
                 **strategy.snapshot(input_device),
+                "is_intervening": device_is_intervening,
+                "active": device_is_intervening,
             }
             device_infos.append(info)
-            if not active_info and info.get("is_intervening"):
+            is_intervening = is_intervening or device_is_intervening
+            if not active_info and device_is_intervening:
                 active_info = info
-        if not active_info and device_infos:
-            active_info = device_infos[0]
         return {
             "env_id": self.env_id,
             "port": self._teleop_server.port() if self._teleop_server is not None else None,
             "devices": device_infos,
             "device_types": list(self.input_devices),
-            **active_info,
+            "active_device": active_info,
+            "is_intervening": is_intervening,
+            "active": is_intervening,
         }
 
     def reset(self) -> None:
@@ -155,16 +166,13 @@ class TeleopController:
     def _create_input_device(self, device_type: str) -> DeviceBase:
         if device_type == "keyboard":
             return KeyboardDevice(KeyboardDeviceCfg())
+        if device_type == "xr_controller":
+            return XRControllerDevice(XRControllerDeviceCfg(max_events=self.teleop_cfg.xr_controller.max_events))
         raise NotImplementedError(f"Teleop device {device_type} is not implemented")
 
     def _create_strategy(self, device_type: str) -> InterventionStrategyBase:
         if device_type == "keyboard":
-            return get_strategy(
-                self.env_type,
-                device_type,
-                InterventionStrategyCfg(
-                    pos_sensitivity=self.teleop_cfg.keyboard.pos_sensitivity,
-                    rot_sensitivity=self.teleop_cfg.keyboard.rot_sensitivity,
-                ),
-            )
+            return get_strategy(self.env_type, device_type, self.teleop_cfg.keyboard)
+        if device_type == "xr_controller":
+            return get_strategy(self.env_type, device_type, self.teleop_cfg.xr_controller)
         raise NotImplementedError(f"Teleop strategy for device {device_type} is not implemented")

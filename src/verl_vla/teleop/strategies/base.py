@@ -13,25 +13,17 @@
 # limitations under the License.
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
 from typing import Any
 
 from verl_vla.teleop.devices import DeviceBase
-
-
-@dataclass(frozen=True)
-class InterventionStrategyCfg:
-    pos_sensitivity: float = 0.05
-    rot_sensitivity: float = 0.12
-    gripper_term: bool = True
 
 
 class InterventionStrategyBase(ABC):
     env_type: str = "base"
     device_type: str = "base"
 
-    def __init__(self, cfg: InterventionStrategyCfg | None = None):
-        self.cfg = cfg or InterventionStrategyCfg()
+    def __init__(self, cfg: Any):
+        self.cfg = cfg
 
     @abstractmethod
     def reset(self) -> None:

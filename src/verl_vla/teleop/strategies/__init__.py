@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from verl_vla.teleop.strategies.base import InterventionStrategyBase, InterventionStrategyCfg
+from verl_vla.teleop.strategies.base import InterventionStrategyBase
 from verl_vla.teleop.strategies.registry import InterventionStrategyRegistry, get_strategy
 
-__all__ = ["InterventionStrategyBase", "InterventionStrategyCfg", "InterventionStrategyRegistry", "get_strategy"]
+__all__ = ["InterventionStrategyBase", "InterventionStrategyRegistry", "get_strategy"]

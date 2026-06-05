@@ -18,16 +18,20 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 from typing_extensions import override
 
+from verl_vla.teleop.config import KeyboardTeleopConfig
 from verl_vla.teleop.devices import DeviceBase
-from verl_vla.teleop.strategies.base import InterventionStrategyBase, InterventionStrategyCfg
+from verl_vla.teleop.strategies.base import InterventionStrategyBase
 
 
 class LiberoKeyboardStrategy(InterventionStrategyBase):
     env_type = "libero"
     device_type = "keyboard"
+    _GRIPPER_TERM = True
 
-    def __init__(self, cfg: InterventionStrategyCfg | None = None):
-        super().__init__(cfg)
+    def __init__(self, cfg: KeyboardTeleopConfig | None = None):
+        keyboard_cfg = cfg or KeyboardTeleopConfig()
+        super().__init__(keyboard_cfg)
+        self.cfg = keyboard_cfg
         self._active = False
         self._close_gripper = False
         self._gripper_active = False
@@ -86,7 +90,7 @@ class LiberoKeyboardStrategy(InterventionStrategyBase):
                 delta_rot += self._key_mapping[key_name]
         rot_vec = Rotation.from_euler("XYZ", delta_rot).as_rotvec()
         command = np.concatenate([delta_pos, rot_vec]).astype(np.float32)
-        if self.cfg.gripper_term:
+        if self._GRIPPER_TERM:
             gripper = 0.0
             if self._gripper_active:
                 gripper = 1.0 if self._close_gripper else -1.0
@@ -117,7 +121,7 @@ class LiberoKeyboardStrategy(InterventionStrategyBase):
 
     def _default_command(self) -> np.ndarray:
         command = np.zeros(6, dtype=np.float32)
-        if self.cfg.gripper_term:
+        if self._GRIPPER_TERM:
             command = np.append(command, 0.0).astype(np.float32)
         return command
 

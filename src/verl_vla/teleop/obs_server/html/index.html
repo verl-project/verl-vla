@@ -1,0 +1,420 @@
+<!--
+Copyright 2026 Bytedance Ltd. and/or its affiliates
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    https://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+-->
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>VERL-VLA Teleop Obs</title>
+  <style>
+    body { margin: 0; background: #111; color: #f4f4f4; font-family: Arial, sans-serif; }
+    header { display: flex; gap: 18px; align-items: center; padding: 10px 14px; background: #202020; }
+    main { display: grid; grid-template-columns: 1fr 1fr 320px; gap: 10px; padding: 10px; }
+    section { min-width: 0; }
+    #image-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; align-content: start; }
+    img { width: 100%; background: #050505; object-fit: contain; border: 1px solid #333; }
+    pre { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; font-size: 12px; }
+    .label { color: #aaa; font-size: 12px; margin-bottom: 6px; }
+    .panel { display: grid; gap: 12px; align-content: start; }
+    .status-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 4px 0;
+      border-bottom: 1px solid #2a2a2a;
+      font-size: 13px;
+    }
+    .status-row span:first-child { color: #aaa; }
+    .status-row span:last-child { text-align: right; overflow-wrap: anywhere; }
+    @media (max-width: 1300px) { #image-grid { grid-template-columns: 1fr; } }
+    @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <header>
+    <strong>VERL-VLA Teleop Obs</strong>
+    <span>env: <span id="env-id">-</span></span>
+    <span>step: <span id="step">-</span></span>
+    <span>fps: <span id="fps">-</span></span>
+    <span>ws: <span id="ws-status">connecting</span></span>
+    <span>input: <span id="input-status">connecting</span></span>
+    <span>intervention: <span id="intervention-status">off</span></span>
+  </header>
+  <main>
+    <section id="image-grid"></section>
+    <section>
+      <div class="label">State</div>
+      <pre id="state">{}</pre>
+    </section>
+    <section class="panel">
+      <div>
+        <div class="label">Teleop</div>
+        <div class="status-row"><span>device</span><span id="teleop-device">-</span></div>
+        <div class="status-row"><span>strategy</span><span id="teleop-strategy">-</span></div>
+        <div class="status-row"><span>pressed</span><span id="pressed-keys">-</span></div>
+        <div class="status-row"><span>active</span><span id="teleop-active">false</span></div>
+        <div class="status-row"><span>gripper</span><span id="teleop-gripper">neutral</span></div>
+      </div>
+      <div id="xr-panel" style="display:none;">
+        <div class="label">XR</div>
+        <button id="xr-enter" type="button">Enter XR</button>
+        <div class="status-row"><span>status</span><span id="xr-status">idle</span></div>
+        <div class="status-row"><span>secure</span><span id="xr-secure">-</span></div>
+        <div class="status-row"><span>hand</span><span id="xr-hand">-</span></div>
+        <div class="status-row"><span>trigger</span><span id="xr-trigger">0</span></div>
+        <div class="status-row"><span>squeeze</span><span id="xr-squeeze">0</span></div>
+      </div>
+      <div>
+        <div class="label">Command</div>
+        <pre id="teleop-command">[]</pre>
+      </div>
+      <div>
+        <div class="label">Devices</div>
+        <pre id="devices-info">[]</pre>
+      </div>
+      <div>
+        <div class="label">Key Bindings</div>
+        <pre id="key-bindings">{}</pre>
+      </div>
+    </section>
+  </main>
+  <script src="/static/keyboard_device.js"></script>
+  <script src="/static/xr_renderer.js"></script>
+  <script>
+    const TELEOP_DEVICE_TYPES = __TELEOP_DEVICE_TYPES__;
+    let frames = 0;
+    let lastFpsAt = performance.now();
+    let inputSocket = null;
+    let xrSession = null;
+    let xrReferenceSpace = null;
+    const keyboardDevice = new TeleopKeyboardDevice(() => inputSocket);
+    const xrRenderer = new TeleopXRRenderer();
+
+    function renderObs(obs) {
+      document.getElementById("env-id").textContent = obs.env_id ?? "-";
+      document.getElementById("step").textContent = obs.step ?? "-";
+      document.getElementById("state").textContent = JSON.stringify({
+        task_description: obs.task_description,
+        state: obs.state,
+        extra: obs.extra,
+        timestamp: obs.timestamp
+      }, null, 2);
+      if (obs.teleop) {
+        renderInput(obs.teleop);
+      }
+      const imageGrid = document.getElementById("image-grid");
+      const images = obs.images || {};
+      let firstImageDataUrl = null;
+      for (const [name, data] of Object.entries(images)) {
+        let image = document.getElementById(`image-${name}`);
+        if (!image) {
+          const wrapper = document.createElement("div");
+          const label = document.createElement("div");
+          image = document.createElement("img");
+          label.className = "label";
+          label.textContent = name;
+          image.id = `image-${name}`;
+          wrapper.appendChild(label);
+          wrapper.appendChild(image);
+          imageGrid.appendChild(wrapper);
+        }
+        const dataUrl = "data:image/jpeg;base64," + data;
+        image.src = dataUrl;
+        if (!firstImageDataUrl) {
+          firstImageDataUrl = dataUrl;
+        }
+      }
+      if (firstImageDataUrl) {
+        updateXRObsImage(firstImageDataUrl);
+      }
+      frames += 1;
+      const now = performance.now();
+      if (now - lastFpsAt > 1000) {
+        document.getElementById("fps").textContent = frames.toString();
+        frames = 0;
+        lastFpsAt = now;
+      }
+    }
+
+    function connectObsStream() {
+      const protocol = window.location.protocol === "https:" ? "wss" : "ws";
+      const socket = new WebSocket(`${protocol}://${window.location.host}/ws/obs`);
+      const status = document.getElementById("ws-status");
+
+      socket.onopen = () => {
+        status.textContent = "connected";
+      };
+      socket.onmessage = (event) => {
+        renderObs(JSON.parse(event.data));
+      };
+      socket.onerror = () => {
+        status.textContent = "error";
+      };
+      socket.onclose = () => {
+        status.textContent = "reconnecting";
+        setTimeout(connectObsStream, 1000);
+      };
+    }
+
+    function updateXRObsImage(dataUrl) {
+      xrRenderer.setImage(dataUrl);
+    }
+
+    function connectInputStream() {
+      const protocol = window.location.protocol === "https:" ? "wss" : "ws";
+      inputSocket = new WebSocket(`${protocol}://${window.location.host}/ws/input`);
+      const status = document.getElementById("input-status");
+
+      inputSocket.onopen = () => {
+        status.textContent = "connected";
+        fetch("/api/input/latest", {cache: "no-store"})
+          .then((response) => response.json())
+          .then(renderInput)
+          .catch(() => {});
+      };
+      inputSocket.onmessage = (event) => {
+        renderInput(JSON.parse(event.data));
+      };
+      inputSocket.onerror = () => {
+        status.textContent = "error";
+      };
+      inputSocket.onclose = () => {
+        status.textContent = "reconnecting";
+        setTimeout(connectInputStream, 1000);
+      };
+    }
+
+    function setInterventionStatus(isActive) {
+      document.getElementById("intervention-status").textContent = isActive ? "on" : "off";
+      document.getElementById("teleop-active").textContent = isActive ? "true" : "false";
+    }
+
+    function asBool(value) {
+      if (typeof value === "boolean") {
+        return value;
+      }
+      if (typeof value === "number") {
+        return value !== 0;
+      }
+      if (typeof value === "string") {
+        const normalized = value.trim().toLowerCase();
+        if (normalized === "true" || normalized === "1" || normalized === "yes" || normalized === "on") {
+          return true;
+        }
+        if (
+          normalized === "false" ||
+          normalized === "0" ||
+          normalized === "no" ||
+          normalized === "off" ||
+          normalized === ""
+        ) {
+          return false;
+        }
+      }
+      return false;
+    }
+
+    function isDeviceIntervening(device) {
+      return asBool(device.active) || asBool(device.is_intervening);
+    }
+
+    function renderInput(input) {
+      const devices = input.devices || [];
+      let activeDevice = input.active_device || {};
+      for (const device of devices) {
+        if (!activeDevice.device && isDeviceIntervening(device)) {
+          activeDevice = device;
+          break;
+        }
+      }
+      const isActive = asBool(input.is_intervening) || asBool(input.active) || isDeviceIntervening(activeDevice);
+      setInterventionStatus(isActive);
+      document.getElementById("teleop-device").textContent = activeDevice.device || input.device || "-";
+      document.getElementById("teleop-strategy").textContent = activeDevice.strategy || input.strategy || "-";
+      document.getElementById("pressed-keys").textContent = (input.pressed_keys || []).join(", ") || "-";
+      const gripperState = input.gripper_active
+        ? (input.close_gripper ? "close" : "open")
+        : "neutral";
+      document.getElementById("teleop-gripper").textContent = gripperState;
+      document.getElementById("teleop-command").textContent = JSON.stringify(
+        activeDevice.command || input.command || [],
+        null,
+        2
+      );
+      document.getElementById("key-bindings").textContent = JSON.stringify(input.key_bindings || {}, null, 2);
+      document.getElementById("devices-info").textContent = JSON.stringify(devices, null, 2);
+      let xrDevice = {};
+      for (const device of devices) {
+        if (device.device === "xr_controller") {
+          xrDevice = device;
+          break;
+        }
+      }
+      const controllerHand = input.controller_hand || xrDevice.controller_hand || "right";
+      const controller = ((xrDevice.controllers || {})[controllerHand]) || {};
+      const buttons = controller.buttons || {};
+      document.getElementById("xr-hand").textContent = controllerHand;
+      document.getElementById("xr-trigger").textContent = String((buttons.trigger || {}).value || 0);
+      document.getElementById("xr-squeeze").textContent = String((buttons.squeeze || {}).value || 0);
+    }
+
+    function poseToJson(pose) {
+      if (!pose) {
+        return null;
+      }
+      const transform = pose.transform;
+      return {
+        position: [
+          transform.position.x,
+          transform.position.y,
+          transform.position.z
+        ],
+        orientation: [
+          transform.orientation.x,
+          transform.orientation.y,
+          transform.orientation.z,
+          transform.orientation.w
+        ],
+        matrix: Array.from(transform.matrix)
+      };
+    }
+
+    function buttonToJson(button) {
+      return {
+        pressed: Boolean(button.pressed),
+        touched: Boolean(button.touched),
+        value: Number(button.value || 0)
+      };
+    }
+
+    function gamepadToJson(gamepad) {
+      const buttons = Array.from(gamepad.buttons || []).map(buttonToJson);
+      return {
+        axes: Array.from(gamepad.axes || []),
+        raw_buttons: buttons,
+        buttons: {
+          trigger: buttons[0] || {pressed: false, touched: false, value: 0},
+          squeeze: buttons[1] || {pressed: false, touched: false, value: 0},
+          thumbstick: buttons[3] || {pressed: false, touched: false, value: 0}
+        }
+      };
+    }
+
+    function sendXRFrame(time, frame) {
+      if (!inputSocket || inputSocket.readyState !== WebSocket.OPEN || !xrSession || !xrReferenceSpace) {
+        return;
+      }
+      const controllers = {};
+      for (const inputSource of xrSession.inputSources) {
+        const hand = inputSource.handedness || "none";
+        if (!inputSource.gamepad && !inputSource.gripSpace && !inputSource.targetRaySpace) {
+          continue;
+        }
+        controllers[hand] = {
+          handedness: hand,
+          profiles: Array.from(inputSource.profiles || []),
+          target_ray_mode: inputSource.targetRayMode,
+          grip_pose: poseToJson(inputSource.gripSpace ? frame.getPose(inputSource.gripSpace, xrReferenceSpace) : null),
+          target_ray_pose: poseToJson(
+            inputSource.targetRaySpace ? frame.getPose(inputSource.targetRaySpace, xrReferenceSpace) : null
+          ),
+          ...(inputSource.gamepad ? gamepadToJson(inputSource.gamepad) : {axes: [], raw_buttons: [], buttons: {}})
+        };
+      }
+      const payload = {
+        event_type: "xr_frame",
+        timestamp: Date.now() / 1000,
+        xr_time: time,
+        reference_space: xrReferenceSpace ? xrReferenceSpace.constructor.name : null,
+        input_source_count: xrSession.inputSources.length,
+        controllers
+      };
+      inputSocket.send(JSON.stringify({
+        type: "xr_frame",
+        device: "xr_controller",
+        payload
+      }));
+    }
+
+    function onXRFrame(time, frame) {
+      xrRenderer.drawFrame(frame, xrSession, xrReferenceSpace);
+      sendXRFrame(time, frame);
+      if (xrSession) {
+        xrSession.requestAnimationFrame(onXRFrame);
+      }
+    }
+
+    async function prepareXRRenderLayer(session) {
+      await xrRenderer.prepareSession(session);
+    }
+
+    async function startXR() {
+      const status = document.getElementById("xr-status");
+      if (!window.isSecureContext) {
+        status.textContent = "need HTTPS";
+        return;
+      }
+      if (!navigator.xr) {
+        status.textContent = "WebXR unavailable";
+        return;
+      }
+      try {
+        status.textContent = "requesting";
+        xrSession = await navigator.xr.requestSession("immersive-vr", {
+          optionalFeatures: ["local-floor", "bounded-floor"]
+        });
+        xrSession.addEventListener("end", () => {
+          xrSession = null;
+          xrReferenceSpace = null;
+          status.textContent = "ended";
+        });
+        await prepareXRRenderLayer(xrSession);
+        xrReferenceSpace = await xrSession.requestReferenceSpace("local-floor")
+          .catch(() => xrSession.requestReferenceSpace("local"));
+        status.textContent = "running";
+        xrSession.requestAnimationFrame(onXRFrame);
+      } catch (error) {
+        status.textContent = `error: ${error.message || error}`;
+      }
+    }
+
+    if (TELEOP_DEVICE_TYPES.includes("keyboard")) {
+      keyboardDevice.attach();
+    }
+    if (TELEOP_DEVICE_TYPES.includes("xr_controller")) {
+      document.getElementById("xr-panel").style.display = "block";
+      document.getElementById("xr-secure").textContent = window.isSecureContext ? "yes" : "no";
+      document.getElementById("xr-enter").addEventListener("click", startXR);
+      if (!window.isSecureContext) {
+        document.getElementById("xr-status").textContent = "need HTTPS";
+      } else if (navigator.xr) {
+        navigator.xr.isSessionSupported("immersive-vr")
+          .then((supported) => {
+            document.getElementById("xr-status").textContent = supported ? "ready" : "unsupported";
+          })
+          .catch(() => {
+            document.getElementById("xr-status").textContent = "unknown";
+          });
+      } else {
+        document.getElementById("xr-status").textContent = "WebXR unavailable";
+      }
+    }
+
+    connectObsStream();
+    connectInputStream();
+  </script>
+</body>
+</html>

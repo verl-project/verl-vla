@@ -202,6 +202,8 @@ class TeleopServer:
             input_devices=self.input_devices,
             log_level=self.cfg.log_level,
             latest_input_fn=self.latest_input_fn,
+            ssl_certfile=self.cfg.ssl_certfile,
+            ssl_keyfile=self.cfg.ssl_keyfile,
         )
         server.start()
         self._store = store

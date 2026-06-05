@@ -26,6 +26,8 @@ class TeleopServerConfig:
     stage_stride: int = 1000
     jpeg_quality: int = 80
     log_level: str = "warning"
+    ssl_certfile: str | None = None
+    ssl_keyfile: str | None = None
 
 
 @dataclass(frozen=True)
@@ -35,12 +37,24 @@ class KeyboardTeleopConfig:
 
 
 @dataclass(frozen=True)
+class XRControllerTeleopConfig:
+    hand: str = "right"
+    pos_sensitivity: float = 25.0
+    rot_sensitivity: float = 2.0
+    intervention_button: str = "squeeze"
+    gripper_button: str = "trigger"
+    button_threshold: float = 0.5
+    max_events: int = 256
+
+
+@dataclass(frozen=True)
 class TeleopConfig:
     enable: bool = False
     device: str | None = "keyboard"
     devices: tuple[str, ...] = ("keyboard",)
     server: TeleopServerConfig = field(default_factory=TeleopServerConfig)
     keyboard: KeyboardTeleopConfig = field(default_factory=KeyboardTeleopConfig)
+    xr_controller: XRControllerTeleopConfig = field(default_factory=XRControllerTeleopConfig)
 
 
 def load_teleop_config(cfg: DictConfig | Any, device: str | None = None) -> TeleopConfig:
@@ -75,6 +89,13 @@ def load_teleop_config(cfg: DictConfig | Any, device: str | None = None) -> Tele
     keyboard_cfg = KeyboardTeleopConfig(
         **{key: keyboard_raw[key] for key in KeyboardTeleopConfig.__annotations__ if key in keyboard_raw}
     )
+    xr_controller_raw = raw.get("xr_controller", {})
+    if isinstance(xr_controller_raw, DictConfig):
+        xr_controller_raw = OmegaConf.to_container(xr_controller_raw, resolve=True)
+    xr_controller_raw = dict(xr_controller_raw or {})
+    xr_controller_cfg = XRControllerTeleopConfig(
+        **{key: xr_controller_raw[key] for key in XRControllerTeleopConfig.__annotations__ if key in xr_controller_raw}
+    )
     devices = raw.get("devices")
     if devices is None:
         devices = [raw.get("device", TeleopConfig.device)]
@@ -92,4 +113,5 @@ def load_teleop_config(cfg: DictConfig | Any, device: str | None = None) -> Tele
         devices=devices,
         server=server_cfg,
         keyboard=keyboard_cfg,
+        xr_controller=xr_controller_cfg,
     )
