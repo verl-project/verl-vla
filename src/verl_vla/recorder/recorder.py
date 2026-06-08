@@ -21,6 +21,7 @@ from typing import Any
 
 from typing_extensions import override
 
+from verl_vla.recorder.async_recorder import AsyncRecorder
 from verl_vla.recorder.base import BaseRecorder
 from verl_vla.recorder.config import RecorderConfig
 from verl_vla.recorder.impl.lerobot import LeRobotDatasetRecorder
@@ -74,7 +75,10 @@ class MultiRecorder(BaseRecorder):
             )
         if not recorders:
             return None
-        return cls(recorders)
+        recorder = cls(recorders)
+        if cfg.async_enable:
+            return AsyncRecorder(recorder, queue_size=cfg.async_queue_size)
+        return recorder
 
     @override
     def record_once(

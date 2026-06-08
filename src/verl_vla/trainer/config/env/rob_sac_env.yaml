@@ -48,6 +48,12 @@ train:
     # If True, create the selected recorder implementations per environment worker.
     enable: True
 
+    # If True, run recorder writes on a background thread.
+    async_enable: True
+
+    # Maximum pending recorder commands before env stepping blocks.
+    async_queue_size: 256
+
     # Recorder implementations to enable. Available: lerobot, video.
     recorders:
       - lerobot
@@ -134,9 +140,15 @@ train:
       # Uvicorn log level for each small obs server.
       log_level: warning
 
+      # WebXR immersive sessions require a secure context on remote browsers.
+      # Fill both paths to serve HTTPS/WSS for XR headsets.
+      ssl_certfile: /file_system/liujincheng/Projects/verl-vla/certs/teleop.crt
+      ssl_keyfile: /file_system/liujincheng/Projects/verl-vla/certs/teleop.key
+
     # Human intervention input devices enabled in the browser and backend.
     devices:
       - keyboard
+      - xr_controller
 
     # Keyboard SE(3) relative action sensitivities for LIBERO.
     keyboard:

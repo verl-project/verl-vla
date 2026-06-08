@@ -14,6 +14,7 @@
 
 """Dataset recording utilities for VERL-VLA."""
 
+from .async_recorder import AsyncRecorder
 from .base import BaseRecorder
 from .config import (
     LeRobotRecorderConfig,
@@ -28,6 +29,7 @@ from .recorder import MultiRecorder
 
 __all__ = [
     "BaseRecorder",
+    "AsyncRecorder",
     "LeRobotDatasetRecorder",
     "LeRobotRecorder",
     "LeRobotRecorderConfig",

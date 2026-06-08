@@ -47,6 +47,8 @@ class VideoRecorderConfig:
 @dataclass(frozen=True)
 class RecorderConfig:
     enable: bool = True
+    async_enable: bool = False
+    async_queue_size: int = 256
     recorders: tuple[str, ...] = ("lerobot", "video")
     lerobot: LeRobotRecorderConfig = field(default_factory=LeRobotRecorderConfig)
     video: VideoRecorderConfig = field(default_factory=VideoRecorderConfig)
@@ -64,6 +66,8 @@ def load_recorder_config(cfg: DictConfig | Any) -> RecorderConfig:
 
     return RecorderConfig(
         enable=bool(raw.get("enable", RecorderConfig.enable)),
+        async_enable=bool(raw.get("async_enable", RecorderConfig.async_enable)),
+        async_queue_size=int(raw.get("async_queue_size", RecorderConfig.async_queue_size)),
         recorders=recorders,
         lerobot=_load_lerobot_recorder_config_from_raw(lerobot_raw),
         video=VideoRecorderConfig(
