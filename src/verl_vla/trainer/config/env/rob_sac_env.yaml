@@ -42,6 +42,29 @@ train:
     # Output directory for saved rollout videos.
     video_base_dir: /tmp/videos
 
+  # Optional LeRobot recorder for simulator rollouts.
+  dataset_recorder:
+
+    # If True, create one LeRobotRecorder per environment worker.
+    enable: False
+
+    # Base local root used for per-env recorder directories.
+    root: /tmp/verl_vla_lerobot_records
+
+    # Base repo id. Rank and stage id are appended per recorder.
+    repo_id: local/verl_vla_libero
+
+    # Whether LeRobot should encode image observations as videos.
+    use_videos: True
+
+    # LeRobot image writer settings.
+    image_writer_processes: 0
+    image_writer_threads: 0
+    batch_encoding_size: 1
+    vcodec: libsvtav1
+    # Keep each episode in a separate video shard to avoid PyAV concat time_base issues.
+    video_files_size_in_mb: 1e-6
+
   # Number of simulator environments hosted by each env worker.
   num_envs: 16
 
