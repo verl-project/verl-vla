@@ -64,6 +64,7 @@ class AsyncRecorder(BaseRecorder):
         next_done: Any = False,
         next_truncated: Any = False,
         is_intervention: Any = False,
+        critic_value: Any = None,
     ) -> None:
         self._enqueue(
             "record_once",
@@ -75,6 +76,7 @@ class AsyncRecorder(BaseRecorder):
             next_done=_copy_value(next_done),
             next_truncated=_copy_value(next_truncated),
             is_intervention=_copy_value(is_intervention),
+            critic_value=_copy_value(critic_value),
         )
 
     @override

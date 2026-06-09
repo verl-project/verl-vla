@@ -64,6 +64,7 @@ class VideoRecorder(BaseRecorder):
         next_done: Any = False,
         next_truncated: Any = False,
         is_intervention: Any = False,
+        critic_value: Any = None,
     ) -> None:
         frame = self.strategy.make_frame(
             observation=observation,
@@ -74,6 +75,8 @@ class VideoRecorder(BaseRecorder):
             next_truncated=next_truncated,
             is_intervention=is_intervention,
         )
+        if critic_value is not None:
+            frame["critic_value"] = critic_value
         images = [value for key, value in frame.items() if key.startswith("observation.images.")]
         if len(images) == 0:
             return

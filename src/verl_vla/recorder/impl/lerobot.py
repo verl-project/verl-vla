@@ -89,8 +89,10 @@ class LeRobotDatasetRecorder(BaseRecorder):
         next_done: Any = False,
         next_truncated: Any = False,
         is_intervention: Any = False,
+        critic_value: Any = None,
     ) -> None:
         """Record one environment step into the pending episode buffer."""
+        del critic_value
         if self.dataset is None:
             self.dataset = self._create_dataset()
         self._pending_frames[env_id].append(

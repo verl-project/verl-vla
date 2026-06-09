@@ -30,8 +30,8 @@ class LiberoPi0Input(Pi0Input):
         input = cls()
 
         # Process images
-        images = env_obs.batch["full_image"]
-        wrist_images = env_obs.batch["wrist_image"]
+        images = env_obs.batch["observation.images.image"]
+        wrist_images = env_obs.batch["observation.images.wrist_image"]
         device = images.device
 
         batch_size = images.shape[0]
@@ -55,9 +55,9 @@ class LiberoPi0Input(Pi0Input):
         ]
 
         # Process other data
-        input.task = list(env_obs.non_tensor_batch["task_descriptions"])
+        input.task = list(env_obs.non_tensor_batch["task"])
 
-        state = env_obs.batch["state"]
+        state = env_obs.batch["observation.state"]
         input.state = torch.nn.functional.pad(
             state, (0, max(0, PI0_MAX_STATE_DIM - state.shape[-1])), "constant", 0
         ).to(device=device, dtype=torch.float32)

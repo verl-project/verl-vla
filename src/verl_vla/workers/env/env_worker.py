@@ -13,8 +13,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import itertools
+from pathlib import Path
 
+import numpy as np
 import torch
 from omegaconf import DictConfig
 from torch.distributed.device_mesh import init_device_mesh
@@ -27,6 +28,9 @@ from verl.utils.device import (
 )
 from verl.utils.distributed import initialize_global_process_group_ray
 from verl.utils.profiler import DistProfiler, DistProfilerExtension, ProfilerConfig
+
+from verl_vla.recorder import load_recorder_config
+from verl_vla.utils.recorder import merge_lerobot_datasets
 
 from .env_manager import EnvManager
 
@@ -49,33 +53,33 @@ def create_env_batch(obs, rews, dones, infos, meta=None):
     return ret_dict
 
 
-def create_env_batch_dataproto(obs, rews, terminations, truncations, infos, meta=None):
-    ret_dict = {"obs": obs, "rewards": rews, "terminations": terminations, "truncations": truncations, "infos": infos}
+def create_env_batch_dataproto(obs, rewards, dones, truncations, infos, meta=None):
+    step_result = {
+        "observation": obs["observation"],
+        "task": obs["task"],
+        "next.reward": rewards,
+        "next.done": dones,
+        "next.truncated": truncations,
+        "info": infos,
+    }
     if meta is not None:
-        ret_dict.update(meta=meta)
+        step_result["meta"] = meta
 
-    ret_dict = put_tensor_cpu(ret_dict)
-    obs_tensor_batch = {f"obs.{key}": value for key, value in ret_dict["obs"]["images_and_states"].items()}
+    step_result = put_tensor_cpu(step_result)
+    obs_tensor_batch = {}
+    observations = step_result["observation"]
+    if observations:
+        for key in observations[0]:
+            obs_tensor_batch[f"obs.{key}"] = torch.as_tensor(
+                np.stack([observation[key] for observation in observations])
+            )
     tensor_batch = {
         **obs_tensor_batch,
-        "feedback.rewards": ret_dict["rewards"],
-        "feedback.terminations": ret_dict["terminations"],
-        "feedback.truncations": ret_dict["truncations"],
+        "next.reward": step_result["next.reward"],
+        "next.done": step_result["next.done"],
+        "next.truncated": step_result["next.truncated"],
     }
-    non_tensor_batch = {"obs.task_descriptions": obs["task_descriptions"]}
-    if "intervention_info" in infos:
-        intervention_batch = {
-            f"intervention_info.{key}": value
-            for key, value in infos["intervention_info"].items()
-            if isinstance(value, torch.Tensor)
-        }
-        intervention_non_tensor_batch = {
-            f"intervention_info.{key}": value
-            for key, value in infos["intervention_info"].items()
-            if not isinstance(value, torch.Tensor)
-        }
-        tensor_batch.update(intervention_batch)
-        non_tensor_batch.update(intervention_non_tensor_batch)
+    non_tensor_batch = {"obs.task": step_result["task"]}
     output = DataProto.from_dict(tensors=tensor_batch, non_tensors=non_tensor_batch)
 
     return output
@@ -201,21 +205,21 @@ class EnvWorker(Worker, DistProfilerExtension):
 
         env_info_list = {}
 
-        extracted_obs, chunk_rewards, chunk_terminations, chunk_truncations, infos = self.simulator_list[
-            stage_id
-        ].chunk_step(chunk_actions, chunk_values=chunk_values)
-        chunk_dones = torch.logical_or(chunk_terminations, chunk_truncations)
+        extracted_obs, chunk_rewards, chunk_dones, chunk_truncations, infos = self.simulator_list[stage_id].step(
+            chunk_actions, chunk_values=chunk_values
+        )
+        chunk_completes = torch.logical_or(chunk_dones, chunk_truncations)
 
-        if chunk_dones.any():
+        if chunk_completes.any():
             if "final_info" in infos:
                 final_info = infos["final_info"]
                 for key in final_info["episode"]:
-                    env_info_list[key] = final_info["episode"][key][chunk_dones[:, -1]].cpu()
+                    env_info_list[key] = final_info["episode"][key][chunk_completes[:, -1]].cpu()
 
         env_batch = create_env_batch_dataproto(
             obs=extracted_obs,
-            rews=chunk_rewards,
-            terminations=chunk_terminations,
+            rewards=chunk_rewards,
+            dones=chunk_dones,
             truncations=chunk_truncations,
             infos=infos,
             meta=env_info_list,
@@ -260,25 +264,22 @@ class EnvWorker(Worker, DistProfilerExtension):
             if self.cfg.train.simulator_type == "isaac":
                 assert len(set(stage_state_ids)) == 1, "rollout.n should equal to num_envs for isaac"
 
-            if self.cfg.train.get("async_reset", True):
-                result = self.simulator_list[stage_id].reset()
-            else:
-                result = self.simulator_list[stage_id].reset_envs_to_state_ids(stage_state_ids, stage_task_ids)
+            result = self.simulator_list[stage_id].reset(
+                options={
+                    "env_idx": list(range(len(stage_state_ids))),
+                    "reset_state_ids": stage_state_ids,
+                    "task_ids": stage_task_ids,
+                }
+            )
             result_list.append(result)
         output_tensor_dict = {}
         output_non_tensor_dict = {}
 
-        # Handle nested 'images_and_states'
-        images_and_states_list = [d[0]["images_and_states"] for d in result_list]
-        if images_and_states_list:
-            # Assuming all dicts in the list have the same keys
-            for k in images_and_states_list[0].keys():
-                if isinstance(images_and_states_list[0][k], torch.Tensor):
-                    output_tensor_dict[k] = torch.cat([d[k] for d in images_and_states_list])
-
-        # Handle 'task_descriptions'
-        task_descriptions_list = [d[0]["task_descriptions"] for d in result_list]
-        output_non_tensor_dict["task_descriptions"] = list(itertools.chain.from_iterable(task_descriptions_list))
+        observations = [observation for obs, _info in result_list for observation in obs["observation"]]
+        if observations:
+            for key in observations[0]:
+                output_tensor_dict[key] = torch.as_tensor(np.stack([observation[key] for observation in observations]))
+        output_non_tensor_dict["task"] = [task for obs, _info in result_list for task in obs["task"]]
 
         output = DataProto.from_dict(tensors=output_tensor_dict, non_tensors=output_non_tensor_dict)
         return output
@@ -286,8 +287,30 @@ class EnvWorker(Worker, DistProfilerExtension):
     @register(dispatch_mode=Dispatch.ONE_TO_ALL)
     @DistProfiler.annotate(color="gray", role="env_finish_rollout")
     def finish_rollout(self, mode="train"):
-        # reset
-        if mode == "train":
-            if self.cfg.train.video_cfg.save_video:
-                for i in range(self.stage_num):
-                    self.simulator_list[i].flush_video(video_sub_dir=f"stage_{i}")
+        for simulator in self.simulator_list:
+            simulator.finish_rollout()
+
+    @register(dispatch_mode=Dispatch.ONE_TO_ALL)
+    @DistProfiler.annotate(color="gray", role="env_pop_lerobot_dataset")
+    def pop_lerobot_dataset(self):
+        recorder_cfg = load_recorder_config(self.cfg.train)
+        if not recorder_cfg.enable or not recorder_cfg.lerobot.enable:
+            return None
+
+        datasets = []
+        for simulator in self.simulator_list:
+            dataset = simulator.pop_completed_dataset()
+            if dataset is not None:
+                datasets.append(dataset)
+        if not datasets:
+            return None
+
+        root = Path(recorder_cfg.lerobot.root)
+        repo_id = f"{recorder_cfg.lerobot.repo_id}_rank_{self._rank}"
+        return merge_lerobot_datasets(
+            roots=[dataset["root"] for dataset in datasets],
+            output_root=root / repo_id,
+            repo_id=repo_id,
+            repo_ids=[dataset["repo_id"] for dataset in datasets],
+            append=True,
+        )

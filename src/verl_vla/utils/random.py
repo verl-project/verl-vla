@@ -12,6 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-OBS_KEY = "obs"
-ACTION_KEY = "action"
-FEEDBACK_KEY = "next"
+"""Randomness utilities."""
+
+from __future__ import annotations
+
+
+def compose_seed(*fields: int, modulo: int = 2**31 - 1) -> int:
+    """Compose a deterministic seed from an ordered list of integer fields."""
+    mixed_seed = 0
+    for field in fields:
+        mixed_seed = mixed_seed * 1000003 + int(field)
+    return int(mixed_seed % modulo)

@@ -16,6 +16,7 @@ import asyncio
 import logging
 import os
 import time
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -23,13 +24,12 @@ from omegaconf import DictConfig
 from verl import DataProto
 from verl.single_controller.ray import RayWorkerGroup
 
-from verl_vla.utils.data import get_dataproto_from_prefix, slice_dataproto_batch, stack_dataproto_with_padding
-from verl_vla.utils.keys import ACTION_KEY, FEEDBACK_KEY, INTERVENTION_INFO_KEY, OBS_KEY
+from verl_vla.utils.data import get_dataproto_from_prefix, stack_dataproto_with_padding
+from verl_vla.utils.keys import ACTION_KEY, FEEDBACK_KEY, OBS_KEY
+from verl_vla.utils.recorder import merge_lerobot_datasets
 
 logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
-
-INTERVENTION_ACTION_KEY = "action"
 
 
 class EnvLoop:
@@ -61,65 +61,12 @@ class EnvLoop:
         self.env_wg.init_worker()
         self.env_wg.init_simulator()
 
-    def _extract_intervention_obs_at(self, intervention_info: DataProto, obs_idx: int) -> DataProto:
-        tensor_batch = {
-            key.removeprefix(f"{OBS_KEY}."): value[:, obs_idx]
-            for key, value in intervention_info.batch.items()
-            if key.startswith(f"{OBS_KEY}.")
-        }
-        non_tensor_batch = {
-            key.removeprefix(f"{OBS_KEY}."): value[:, obs_idx]
-            for key, value in intervention_info.non_tensor_batch.items()
-            if key.startswith(f"{OBS_KEY}.")
-        }
-        return DataProto.from_dict(tensors=tensor_batch, non_tensors=non_tensor_batch)
-
     def _strip_meta_info(self, data: DataProto) -> DataProto:
         return DataProto(
             batch=data.batch,
             non_tensor_batch=data.non_tensor_batch,
             meta_info={},
         )
-
-    def _expand_single_env_intervention_steps(
-        self,
-        current_obs: DataProto,
-        rollout_action: DataProto,
-        feedback: DataProto,
-        intervention_info: DataProto,
-        max_chunks: int,
-    ) -> list[dict]:
-        total_steps = intervention_info.batch[INTERVENTION_ACTION_KEY].shape[1]
-        aligned_steps = (total_steps // self.num_action_chunks) * self.num_action_chunks
-        if aligned_steps == 0 or max_chunks <= 0:
-            return []
-
-        num_chunks = min(aligned_steps // self.num_action_chunks, max_chunks)
-        expanded_steps = []
-        chunk_obs = current_obs
-        for chunk_idx in range(num_chunks):
-            start = chunk_idx * self.num_action_chunks
-            end = start + self.num_action_chunks
-
-            action_chunk = intervention_info.batch[INTERVENTION_ACTION_KEY][:, start:end].clone()
-            if start == 0:
-                intervention_mask = intervention_info.batch["is_intervention"][:, start:end].to(torch.bool)
-                rollout_action_chunk = rollout_action.batch[ACTION_KEY][
-                    :1, : action_chunk.shape[1], : action_chunk.shape[2]
-                ]
-                action_chunk = torch.where(
-                    intervention_mask.unsqueeze(-1).to(action_chunk.device),
-                    action_chunk,
-                    rollout_action_chunk.to(device=action_chunk.device, dtype=action_chunk.dtype),
-                )
-            action_dp = DataProto.from_dict(tensors={INTERVENTION_ACTION_KEY: action_chunk})
-            feedback_dp = slice_dataproto_batch(feedback, start, end)
-            expanded_steps.append({OBS_KEY: chunk_obs, ACTION_KEY: action_dp, FEEDBACK_KEY: feedback_dp})
-
-            if chunk_idx < num_chunks - 1:
-                chunk_obs = self._extract_intervention_obs_at(intervention_info, chunk_idx)
-
-        return expanded_steps
 
     def generate_sequences(self, prompts: DataProto, reset_future: asyncio.Future) -> DataProto:
         total_start_t = time.perf_counter()
@@ -217,39 +164,15 @@ class EnvLoop:
                 stage_timing[stage_id]["env_wait_s"] += time.perf_counter() - env_wait_start_t
                 stage_timing[stage_id]["env_wait_calls"] += 1.0
 
-                feedback = self._strip_meta_info(get_dataproto_from_prefix(env_result, FEEDBACK_KEY, "."))
-                intervention_info = self._strip_meta_info(
-                    get_dataproto_from_prefix(env_result, INTERVENTION_INFO_KEY, ".")
-                )
+                next_step = self._strip_meta_info(get_dataproto_from_prefix(env_result, FEEDBACK_KEY, "."))
                 next_obs = self._strip_meta_info(get_dataproto_from_prefix(env_result, OBS_KEY, "."))
 
-                expanded_steps = []
-                effective_steps = 1
                 current_slot = trajectories[stage_id].pop()
-                has_intervention = (
-                    self.single_env_rollout
-                    and intervention_info.batch is not None
-                    and INTERVENTION_ACTION_KEY in intervention_info.batch.keys()
-                )
-                if has_intervention:
-                    expanded_steps = self._expand_single_env_intervention_steps(
-                        current_obs=current_slot[OBS_KEY],
-                        rollout_action=action_result,
-                        feedback=feedback,
-                        intervention_info=intervention_info,
-                        max_chunks=self.max_interactions - step_idx,
-                    )
+                current_slot[FEEDBACK_KEY] = next_step
+                trajectories[stage_id].append(current_slot)
 
-                if expanded_steps:
-                    trajectories[stage_id].extend(expanded_steps)
-                    effective_steps = len(expanded_steps)
-                else:
-                    current_slot[FEEDBACK_KEY] = feedback
-                    current_slot[INTERVENTION_INFO_KEY] = intervention_info
-                    trajectories[stage_id].append(current_slot)
-
-                stage_timing[stage_id]["effective_steps"] += float(effective_steps)
-                step_idx += effective_steps
+                stage_timing[stage_id]["effective_steps"] += 1.0
+                step_idx += 1
                 if step_idx < self.max_interactions:
                     trajectories[stage_id].append({OBS_KEY: next_obs})
 
@@ -266,6 +189,7 @@ class EnvLoop:
 
         await asyncio.gather(*[asyncio.create_task(_stage_loop(sid)) for sid in range(self.stage_num)])
         self.env_wg.finish_rollout()
+        # lerobot_dataset = self._pop_lerobot_dataset()
 
         collated_state_ids = np.concatenate(staged_state_ids, axis=0)
         collated_meta_info = dict(prompts.meta_info)
@@ -295,6 +219,25 @@ class EnvLoop:
             "count/env_loop_rollout_wait_calls": rollout_wait_calls,
         }
         return output, run_metrics
+
+    def _pop_lerobot_dataset(self):
+        recorder_cfg = self.config.env.train.get("dataset_recorder", {})
+        if not recorder_cfg.get("enable", False):
+            return None
+
+        rank_datasets = [dataset for dataset in self.env_wg.pop_lerobot_dataset() if dataset is not None]
+        if not rank_datasets:
+            return None
+
+        root = Path(recorder_cfg.get("root", "/tmp/verl_vla_lerobot_records"))
+        repo_id = recorder_cfg.get("repo_id", "local/verl_vla_libero")
+        return merge_lerobot_datasets(
+            roots=[dataset["root"] for dataset in rank_datasets],
+            output_root=root / repo_id,
+            repo_id=repo_id,
+            repo_ids=[dataset["repo_id"] for dataset in rank_datasets],
+            append=True,
+        )
 
     def _restructure_obs_data(self, data_proto: DataProto) -> list[DataProto]:
         num_workers = self.env_wg.world_size
@@ -341,7 +284,7 @@ class EnvLoop:
 
     def _collate_trajectories(self, trajectories: dict, initial_state_ids: np.ndarray, meta_info) -> DataProto:
         flat_trajs = [{} for _ in range(len(trajectories[0]))]
-        mergeable_keys = {OBS_KEY, ACTION_KEY, FEEDBACK_KEY, INTERVENTION_INFO_KEY}
+        mergeable_keys = {OBS_KEY, ACTION_KEY, FEEDBACK_KEY}
         for stage_id in range(self.stage_num):
             for step_idx, step_data in enumerate(trajectories[stage_id]):
                 if not flat_trajs[step_idx]:
@@ -360,8 +303,8 @@ class EnvLoop:
         batch_dict = {}
         for field_key in [OBS_KEY, ACTION_KEY, FEEDBACK_KEY]:
             batch_dict.update(stack_dataproto_with_padding([step[field_key] for step in flat_trajs], field_key))
-        if "feedback.terminations" in batch_dict:
-            batch_dict["complete"] = batch_dict["feedback.terminations"].clone()
+        if "next.done" in batch_dict:
+            batch_dict["complete"] = batch_dict["next.done"].clone()
         batch_dict["env_state_id"] = torch.from_numpy(initial_state_ids.astype(int))
 
         return DataProto.from_single_dict(batch_dict, meta_info=meta_info)

@@ -92,6 +92,7 @@ class MultiRecorder(BaseRecorder):
         next_done: Any = False,
         next_truncated: Any = False,
         is_intervention: Any = False,
+        critic_value: Any = None,
     ) -> None:
         for recorder in self.recorders:
             recorder.record_once(
@@ -103,6 +104,7 @@ class MultiRecorder(BaseRecorder):
                 next_done=next_done,
                 next_truncated=next_truncated,
                 is_intervention=is_intervention,
+                critic_value=critic_value,
             )
 
     @override

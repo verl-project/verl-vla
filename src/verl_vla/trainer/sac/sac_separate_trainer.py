@@ -76,7 +76,7 @@ def compute_per_task_trajectory_metrics(rollout_batch: DataProto, metric_prefix:
     if task_ids is None:
         return {}
 
-    complete_any = rollout_batch.batch["feedback.terminations"].any(dim=-1)  # (B, T)
+    complete_any = rollout_batch.batch["next.done"].any(dim=-1)  # (B, T)
     success_np = complete_any.any(dim=-1).detach().float().cpu().numpy()  # (B,)
 
     dones = complete_any.detach().cpu()
@@ -300,14 +300,14 @@ class RobRaySACSeparateTrainInference(RayPPOTrainer):
 
     def _prepare_actor_input(self, rollout_output: Optional[DataProto]) -> DataProto:
         # dones
-        complete_any = rollout_output.batch["feedback.terminations"].any(dim=-1)  # (B, T)
+        complete_any = rollout_output.batch["next.done"].any(dim=-1)  # (B, T)
         dones_step = complete_any.clone()
         dones_step[:, -2] = True
         rollout_output.batch["info.dones"] = dones_step.float()
 
         # reward (sparse reward with step penalty)
         sparse_rewards = complete_any.float()
-        rollout_output.batch["info.valids"] = (~rollout_output.batch["feedback.terminations"]).any(dim=-1).float()
+        rollout_output.batch["info.valids"] = (~rollout_output.batch["next.done"]).any(dim=-1).float()
         step_penalty = float(self.config.env.train.get("step_penalty", 0.0))
         rollout_output.batch["info.rewards"] = sparse_rewards - step_penalty * rollout_output.batch["info.valids"]
         rollout_output.batch["info.rewards"][:, -2] = -1.0

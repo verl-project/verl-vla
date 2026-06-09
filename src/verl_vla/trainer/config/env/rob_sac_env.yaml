@@ -24,8 +24,9 @@ train:
   # Maximum number of environment steps per episode.
   max_episode_steps: 512
 
-  # Multiplier applied to positive task reward.
-  reward_coef: 1.0
+  # If True, reset completed envs immediately inside BaseEnv.step instead of
+  # waiting for the next worker-level reset call.
+  async_reset: False
 
   # Per-step penalty used to encourage shorter successful trajectories.
   step_penalty: 0.0
@@ -99,6 +100,9 @@ train:
 
   # LIBERO task suite name.
   task_suite_name: libero_spatial
+
+  # Number of zero-action simulator steps after reset to settle observations.
+  reset_warmup_steps: 10
 
   # Simulator-specific initialization parameters.
   init_params:

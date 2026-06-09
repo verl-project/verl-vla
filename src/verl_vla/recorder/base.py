@@ -36,6 +36,7 @@ class BaseRecorder(ABC):
         next_done: Any = False,
         next_truncated: Any = False,
         is_intervention: Any = False,
+        critic_value: Any = None,
     ) -> None:
         """Record one environment step."""
 
