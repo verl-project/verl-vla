@@ -13,9 +13,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import itertools
 from pathlib import Path
 
+import numpy as np
 import torch
 from omegaconf import DictConfig
 from torch.distributed.device_mesh import init_device_mesh
@@ -59,27 +59,20 @@ def create_env_batch_dataproto(obs, rews, terminations, truncations, infos, meta
         ret_dict.update(meta=meta)
 
     ret_dict = put_tensor_cpu(ret_dict)
-    obs_tensor_batch = {f"obs.{key}": value for key, value in ret_dict["obs"]["images_and_states"].items()}
+    obs_tensor_batch = {}
+    observations = ret_dict["obs"]["observation"]
+    if observations:
+        for key in observations[0]:
+            obs_tensor_batch[f"obs.{key}"] = torch.as_tensor(
+                np.stack([observation[key] for observation in observations])
+            )
     tensor_batch = {
         **obs_tensor_batch,
         "feedback.rewards": ret_dict["rewards"],
         "feedback.terminations": ret_dict["terminations"],
         "feedback.truncations": ret_dict["truncations"],
     }
-    non_tensor_batch = {"obs.task_descriptions": obs["task_descriptions"]}
-    if "intervention_info" in infos:
-        intervention_batch = {
-            f"intervention_info.{key}": value
-            for key, value in infos["intervention_info"].items()
-            if isinstance(value, torch.Tensor)
-        }
-        intervention_non_tensor_batch = {
-            f"intervention_info.{key}": value
-            for key, value in infos["intervention_info"].items()
-            if not isinstance(value, torch.Tensor)
-        }
-        tensor_batch.update(intervention_batch)
-        non_tensor_batch.update(intervention_non_tensor_batch)
+    non_tensor_batch = {"obs.task": obs["task"]}
     output = DataProto.from_dict(tensors=tensor_batch, non_tensors=non_tensor_batch)
 
     return output
@@ -205,9 +198,9 @@ class EnvWorker(Worker, DistProfilerExtension):
 
         env_info_list = {}
 
-        extracted_obs, chunk_rewards, chunk_terminations, chunk_truncations, infos = self.simulator_list[
-            stage_id
-        ].chunk_step(chunk_actions, chunk_values=chunk_values)
+        extracted_obs, chunk_rewards, chunk_terminations, chunk_truncations, infos = self.simulator_list[stage_id].step(
+            chunk_actions, chunk_values=chunk_values
+        )
         chunk_dones = torch.logical_or(chunk_terminations, chunk_truncations)
 
         if chunk_dones.any():
@@ -264,22 +257,22 @@ class EnvWorker(Worker, DistProfilerExtension):
             if self.cfg.train.simulator_type == "isaac":
                 assert len(set(stage_state_ids)) == 1, "rollout.n should equal to num_envs for isaac"
 
-            result = self.simulator_list[stage_id].reset_envs_to_state_ids(stage_state_ids, stage_task_ids)
+            result = self.simulator_list[stage_id].reset(
+                options={
+                    "env_idx": list(range(len(stage_state_ids))),
+                    "reset_state_ids": stage_state_ids,
+                    "task_ids": stage_task_ids,
+                }
+            )
             result_list.append(result)
         output_tensor_dict = {}
         output_non_tensor_dict = {}
 
-        # Handle nested 'images_and_states'
-        images_and_states_list = [d[0]["images_and_states"] for d in result_list]
-        if images_and_states_list:
-            # Assuming all dicts in the list have the same keys
-            for k in images_and_states_list[0].keys():
-                if isinstance(images_and_states_list[0][k], torch.Tensor):
-                    output_tensor_dict[k] = torch.cat([d[k] for d in images_and_states_list])
-
-        # Handle 'task_descriptions'
-        task_descriptions_list = [d[0]["task_descriptions"] for d in result_list]
-        output_non_tensor_dict["task_descriptions"] = list(itertools.chain.from_iterable(task_descriptions_list))
+        observations = [observation for obs, _info in result_list for observation in obs["observation"]]
+        if observations:
+            for key in observations[0]:
+                output_tensor_dict[key] = torch.as_tensor(np.stack([observation[key] for observation in observations]))
+        output_non_tensor_dict["task"] = [task for obs, _info in result_list for task in obs["task"]]
 
         output = DataProto.from_dict(tensors=output_tensor_dict, non_tensors=output_non_tensor_dict)
         return output

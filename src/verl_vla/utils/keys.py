@@ -15,4 +15,3 @@
 OBS_KEY = "obs"
 ACTION_KEY = "action"
 FEEDBACK_KEY = "feedback"
-INTERVENTION_INFO_KEY = "intervention_info"

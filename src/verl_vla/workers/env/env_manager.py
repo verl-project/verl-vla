@@ -262,28 +262,6 @@ class EnvManager:
             raise Exception(result["error"])
         return result["data"]
 
-    def reset_envs_to_state_ids(self, state_ids_list, task_ids_list):
-        """Reset environments to specified state IDs."""
-        if self.process is None or not self.process.is_alive():
-            raise RuntimeError("Simulator not running")
-
-        state_ids_list = recursive_to_own(state_ids_list)
-        task_ids_list = recursive_to_own(task_ids_list)
-
-        self.command_queue.put(
-            {
-                "method": "reset_envs_to_state_ids",
-                "args": [state_ids_list, task_ids_list],
-                "kwargs": {},
-            }
-        )
-
-        result = self.result_queue.get()
-        result = recursive_to_own(result)
-        if result["status"] == "error":
-            raise Exception(result["error"])
-        return result["data"]
-
     def __setattr__(self, name, value):
         # Handle special attributes that should be set on self
         if name in [

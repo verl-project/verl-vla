@@ -44,12 +44,6 @@ class BaseEnv(gym.Env):
         pop_completed_dataset(): Return a completed recorder dataset root for
             worker-side aggregation, if one exists.
 
-        Compatibility wrappers:
-            (chunk_step(chunk_actions, **kwargs)): Alias for
-                ``step(chunk_actions, **kwargs)`` used by the current env worker.
-            (reset_envs_to_state_ids(state_ids_list, task_ids_list=None)):
-                Converts state ids into ``reset(options=...)``.
-
     Hooks implemented by subclasses:
         env_type: Class attribute used for teleop and recorder strategy lookup.
         env_reset(env_ids, reset_state_ids=None, task_ids=None): Reset
@@ -82,12 +76,13 @@ class BaseEnv(gym.Env):
 
         Args:
             action: Action array or tensor with shape ``[B, T, D]``.
-            **kwargs: Additional arguments passed to
-                step_with_teleop_and_recording. ``chunk_values`` is accepted for
-                caller compatibility and ignored by this base env path.
+            **kwargs: Optional gym-compatible side inputs. ``chunk_values`` is
+                consumed as per-env values passed to video and teleop.
         """
-        action = self._to_numpy_action(action)
-        kwargs.pop("chunk_values", None)
+        action = self._to_numpy(action, copy=True)
+        chunk_values = self._to_numpy(kwargs.pop("chunk_values", None))
+        if chunk_values is None:
+            chunk_values = np.zeros(action.shape[0], dtype=np.float32)
         num_chunk_steps = action.shape[1]
 
         reward_chunks = []
@@ -97,12 +92,13 @@ class BaseEnv(gym.Env):
         infos = None
         for step_idx in range(num_chunk_steps):
             step_actions = action[:, step_idx]
+            step_values = chunk_values if chunk_values.ndim <= 1 else chunk_values[:, step_idx]
 
-            step_result = self.step_with_teleop_and_recording(
-                step_actions,
-                **kwargs,
-            )
-            obs = self.make_policy_observation(step_result)
+            step_result = self.step_with_teleop_and_recording(step_actions, critic_value=step_values)
+            obs = {
+                "observation": step_result["observation"],
+                "task": step_result["task"],
+            }
             infos = step_result.get("info", {})
 
             reward_chunks.append(step_result["next.reward"])
@@ -115,19 +111,6 @@ class BaseEnv(gym.Env):
             torch.stack([torch.as_tensor(chunk) for chunk in done_chunks], dim=1),
             torch.stack([torch.as_tensor(chunk) for chunk in truncated_chunks], dim=1),
             infos,
-        )
-
-    def chunk_step(self, chunk_actions, **kwargs):
-        return self.step(chunk_actions, **kwargs)
-
-    def reset_envs_to_state_ids(self, state_ids_list, task_ids_list=None):
-        env_ids = np.arange(len(state_ids_list))
-        return self.reset(
-            options={
-                "env_idx": env_ids,
-                "reset_state_ids": state_ids_list,
-                "task_ids": task_ids_list,
-            }
         )
 
     @override
@@ -190,9 +173,6 @@ class BaseEnv(gym.Env):
     def env_close(self) -> None:
         """Close subclass-owned simulator resources."""
 
-    def make_policy_observation(self, step_result):
-        return step_result.get("policy_observation", step_result["observation"])
-
     def _reset_kwargs_from_options(self, options: dict[str, Any] | None) -> dict[str, Any]:
         options = options or {}
         env_ids = options.get("env_idx")
@@ -204,35 +184,54 @@ class BaseEnv(gym.Env):
             "task_ids": options.get("task_ids"),
         }
 
-    def mask_step(self, action, execute_mask, is_intervention, **kwargs):
+    def mask_step(self, action, execute_mask, is_intervention, critic_value=None):
         is_intervention = np.asarray(is_intervention, dtype=bool)
         env_ids = np.flatnonzero(execute_mask)
         action = action[env_ids]
         result = self.env_step(action, env_ids=env_ids)
-        self.publish_to_teleop(result, env_ids=env_ids)
-        self.record_step_result(result, action, env_ids=env_ids, is_intervention=is_intervention)
+        critic_value = critic_value[env_ids]
+        self.publish_to_teleop(result, env_ids=env_ids, critic_value=critic_value)
+        self.record_step_result(
+            result,
+            action,
+            env_ids=env_ids,
+            is_intervention=is_intervention,
+            critic_value=critic_value,
+        )
         return result
 
-    def step_with_teleop_and_recording(self, action, **kwargs):
+    def step_with_teleop_and_recording(self, action, critic_value=None):
+        critic_value = self._to_numpy(critic_value)
+        if critic_value is None:
+            critic_value = np.zeros(self.num_envs, dtype=np.float32)
         is_intervened = np.zeros(self.num_envs, dtype=bool)
 
         while self.is_intervening():
             next_action, intervention_mask = self.apply_teleop_action(action)
             need_execute = is_intervened & intervention_mask
             if need_execute.any():
-                self.mask_step(action, need_execute, is_intervention=intervention_mask, **kwargs)
+                self.mask_step(
+                    action,
+                    need_execute,
+                    is_intervention=intervention_mask,
+                    critic_value=critic_value,
+                )
 
             action[intervention_mask] = next_action[intervention_mask]
             is_intervened |= intervention_mask
 
         execute_mask = np.ones(self.num_envs, dtype=bool)
-        return self.mask_step(action, execute_mask, is_intervention=is_intervened, **kwargs)
+        return self.mask_step(action, execute_mask, is_intervention=is_intervened, critic_value=critic_value)
 
     @staticmethod
-    def _to_numpy_action(action):
-        if isinstance(action, torch.Tensor):
-            return action.detach().cpu().numpy().copy()
-        return np.asarray(action).copy()
+    def _to_numpy(value, *, copy: bool = False):
+        if value is None:
+            return None
+        if isinstance(value, torch.Tensor):
+            value = value.detach().cpu().numpy()
+        else:
+            value = np.asarray(value)
+        return value.copy() if copy else value
 
     ### Teleop Control ###
 
@@ -254,30 +253,28 @@ class BaseEnv(gym.Env):
         ]
 
     def is_intervening(self) -> bool:
-        return any(teleop is not None and teleop.is_intervening() for teleop in self.teleops)
+        return any(teleop.is_intervening() for teleop in self.teleops)
 
     def apply_teleop_action(self, action):
         action = np.asarray(action).copy()
         intervention_mask = np.zeros(self.num_envs, dtype=bool)
         for env_id, teleop in enumerate(self.teleops):
-            if teleop is not None and teleop.is_intervening():
+            if teleop.is_intervening():
                 intervention_mask[env_id] = True
                 action[env_id] = teleop.apply_action(action[env_id])
         return action, intervention_mask
 
     def reset_teleops(self) -> None:
         for teleop in self.teleops:
-            if teleop is not None:
-                teleop.reset()
+            teleop.reset()
 
     def close_teleops(self) -> None:
         for teleop in self.teleops:
-            if teleop is not None:
-                teleop.close()
+            teleop.close()
         self.teleops = []
 
-    def publish_to_teleop(self, step_result, env_ids) -> None:
-        if not self.teleops or not isinstance(step_result, dict):
+    def publish_to_teleop(self, step_result, env_ids, critic_value=None) -> None:
+        if not self.teleops:
             return
 
         observations = step_result["observation"]
@@ -287,11 +284,7 @@ class BaseEnv(gym.Env):
         truncations = step_result["next.truncated"]
 
         for local_id, env_id in enumerate(env_ids):
-            if env_id >= len(self.teleops):
-                continue
             teleop = self.teleops[env_id]
-            if teleop is None:
-                continue
 
             observation = observations[local_id]
             images = {key: value for key, value in observation.items() if key.startswith("observation.images.")}
@@ -302,6 +295,7 @@ class BaseEnv(gym.Env):
                 "reward": rewards[local_id],
                 "done": dones[local_id],
                 "truncated": truncations[local_id],
+                "critic_value": critic_value[local_id],
             }
             teleop.publish_obs(
                 images=images,
@@ -336,8 +330,8 @@ class BaseEnv(gym.Env):
             self._recorder_episode_done[int(env_id)] = False
             self.recorder.clear_episode(int(env_id))
 
-    def record_step_result(self, step_result, actions, env_ids, is_intervention) -> None:
-        if self.recorder is None or not isinstance(step_result, dict):
+    def record_step_result(self, step_result, actions, env_ids, is_intervention, critic_value=None) -> None:
+        if self.recorder is None:
             return
 
         observations = step_result["observation"]
@@ -359,6 +353,7 @@ class BaseEnv(gym.Env):
                 next_done=done,
                 next_truncated=truncations[local_id],
                 is_intervention=is_intervention[env_id],
+                critic_value=critic_value[local_id],
             )
             if done:
                 self.recorder.save_episode(env_id)

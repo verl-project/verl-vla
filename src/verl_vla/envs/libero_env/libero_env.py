@@ -277,20 +277,6 @@ class LiberoEnv(LiberoResetStateMixin, BaseEnv):
             )
         return observations
 
-    def make_policy_observation(self, step_result):
-        images_and_states = [
-            {
-                "full_image": observation["observation.images.image"],
-                "wrist_image": observation["observation.images.wrist_image"],
-                "state": observation["observation.state"],
-            }
-            for observation in step_result["observation"]
-        ]
-        return {
-            "images_and_states": to_tensor(list_of_dict_to_dict_of_list(images_and_states)),
-            "task_descriptions": step_result["task"],
-        }
-
     def get_recorder_strategy_kwargs(self):
         return {
             "image_shape": (
@@ -330,12 +316,10 @@ class LiberoEnv(LiberoResetStateMixin, BaseEnv):
         for _ in range(reset_warmup_steps):
             zero_actions = np.zeros((self.num_envs, LIBERO_ACTION_DIM))
             raw_obs, _reward, terminations, info_lists = self.env.step(zero_actions)
-        obs = self.make_policy_observation(
-            {
-                "observation": self._make_observations(raw_obs),
-                "task": self.task_descriptions,
-            }
-        )
+        obs = {
+            "observation": self._make_observations(raw_obs),
+            "task": self.task_descriptions,
+        }
         self._reset_metrics(env_ids)
 
         return obs, {}
