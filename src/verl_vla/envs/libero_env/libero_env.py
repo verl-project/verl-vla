@@ -61,8 +61,10 @@ class LiberoEnv(gym.Env):
         self.seed = int(self.cfg.seed)
         self.rollout_id = 0
         self.num_envs = self.cfg.num_envs
+        self.stage_num = self.cfg.pipeline_stage_num
 
         self.ignore_terminations = False
+        self.async_reset_enabled = bool(cfg.get("async_reset", True))
 
         self._generator = np.random.default_rng(seed=self._compose_seed(env_id=0, rollout_id=0, stream_id=0))
         self._generator_ordered = np.random.default_rng(seed=self._compose_seed(env_id=0, rollout_id=0, stream_id=1))
@@ -85,6 +87,8 @@ class LiberoEnv(gym.Env):
         self.video_cfg = cfg.video_cfg
         self.video_cnt = 0
         self.render_images = []
+        self.trajectory_ids = np.zeros(self.num_envs, dtype=int)
+        self.trajectory_frames = {}
 
     def _compose_seed(self, env_id: int, rollout_id: Optional[int] = None, stream_id: int = 0) -> int:
         if rollout_id is None:
@@ -167,7 +171,10 @@ class LiberoEnv(gym.Env):
         self.cumsum_trial_id_bins = np.cumsum(self.trial_id_bins)
 
     def _init_task_and_trial_ids(self):
-        self.task_ids, self.trial_ids = self._get_task_and_trial_ids_from_reset_state_ids(self.reset_state_ids)
+        num_tasks = self.task_suite.get_num_tasks()
+        base_global_idx = (self.rank * self.stage_num + self.stage_id) * self.num_envs
+        self.task_ids = np.array([(base_global_idx + i) % num_tasks for i in range(self.num_envs)])
+        self.trial_ids = np.zeros(self.num_envs, dtype=int)
 
     def _get_random_reset_state_ids(self, num_reset_states):
         reset_state_ids = self._generator.integers(low=0, high=self.total_num_group_envs, size=(num_reset_states,))
@@ -247,7 +254,14 @@ class LiberoEnv(gym.Env):
         episode_info["success_once"] = self.success_once.copy()
         episode_info["return"] = self.returns.copy()
         episode_info["episode_len"] = self.elapsed_steps.copy()
-        episode_info["reward"] = episode_info["return"] / episode_info["episode_len"]
+
+        episode_info["reward"] = np.divide(
+            episode_info["return"],
+            episode_info["episode_len"],
+            out=np.zeros_like(episode_info["return"]),
+            where=episode_info["episode_len"] != 0,
+        )
+
         infos["episode"] = to_tensor(episode_info)
         return infos
 
@@ -276,7 +290,53 @@ class LiberoEnv(gym.Env):
         }
         return obs
 
-    def _reconfigure(self, reset_state_ids, env_idx):
+    def _get_global_state_id(self, task_id, trial_id):
+        if task_id == 0:
+            return trial_id
+        return self.cumsum_trial_id_bins[task_id - 1] + trial_id
+
+    def _reconfigure_random_trial(self, env_idx):
+        trial_ids = []
+        for env_id in env_idx:
+            task_id = self.task_ids[env_id]
+            num_trials = self.trial_id_bins[task_id]
+            trial_ids.append(self._generator.integers(low=0, high=num_trials))
+        trial_ids = np.array(trial_ids)
+
+        for j, env_id in enumerate(env_idx):
+            self.trial_ids[env_id] = trial_ids[j]
+            self.reset_state_ids[env_id] = self._get_global_state_id(self.task_ids[env_id], trial_ids[j])
+
+        seed_list = [self._compose_seed(env_id=int(env_id)) for env_id in env_idx]
+        self.env.seed(seed_list)
+        self.env.reset(id=env_idx)
+        init_state = self._get_reset_states(env_idx=env_idx)
+        self.env.set_init_state(init_state=init_state, id=env_idx)
+
+    def _reconfigure_single_env(self, env_id):
+        """Reset a single environment to a random trial_id under its fixed task"""
+        task_id = self.task_ids[env_id]
+        num_trials = self.trial_id_bins[task_id]
+        trial_id = self._generator.integers(0, num_trials)
+        self.trial_ids[env_id] = trial_id
+        self.reset_state_ids[env_id] = self._get_global_state_id(task_id, trial_id)
+        self.trajectory_ids[env_id] += 1
+
+        seed = self._compose_seed(env_id=int(env_id))
+        self.env.seed(seed)
+        self.env.reset(id=[env_id])
+
+        init_state = self.task_suite.get_task_init_states(task_id)[trial_id]
+        self.env.set_init_state(init_state=[init_state], id=[env_id])
+
+        for _ in range(10):
+            zero_action = np.zeros((self.num_envs, 7))
+            raw_obs, _, _, _ = self.env.step(zero_action)
+
+        self._reset_metrics(env_idx=[env_id])
+        return raw_obs[env_id]
+
+    def _reconfigure_from_state_ids(self, reset_state_ids, env_idx):
         reconfig_env_idx = []
         task_ids, trial_ids = self._get_task_and_trial_ids_from_reset_state_ids(reset_state_ids)
         for j, env_id in enumerate(env_idx):
@@ -284,6 +344,7 @@ class LiberoEnv(gym.Env):
                 reconfig_env_idx.append(env_id)
             self.task_ids[env_id] = task_ids[j]
             self.trial_ids[env_id] = trial_ids[j]
+            self.reset_state_ids[env_id] = reset_state_ids[j]
         if reconfig_env_idx:
             env_fn_params = self.get_env_fn_params(reconfig_env_idx)
             self.env.reconfigure_env_fns(env_fn_params, reconfig_env_idx)
@@ -305,10 +366,9 @@ class LiberoEnv(gym.Env):
             env_idx = np.arange(self.num_envs)
 
         if reset_state_ids is None:
-            num_reset_states = len(env_idx)
-            reset_state_ids = self._get_random_reset_state_ids(num_reset_states)
-
-        self._reconfigure(reset_state_ids, env_idx)
+            self._reconfigure_random_trial(env_idx)
+        else:
+            self._reconfigure_from_state_ids(reset_state_ids, env_idx)
 
         for _ in range(10):
             zero_actions = np.zeros((self.num_envs, 7))
@@ -337,6 +397,13 @@ class LiberoEnv(gym.Env):
         raw_obs, _reward, terminations, info_lists = self.env.step(actions)
         infos = list_of_dict_to_dict_of_list(info_lists)
         truncations = self.elapsed_steps >= self.cfg.max_episode_steps
+
+        dones = np.logical_or(terminations, truncations)
+
+        if dones.any() and self.async_reset_enabled:
+            for env_id in np.where(dones)[0]:
+                reset_obs = self._reconfigure_single_env(env_id)
+                raw_obs[env_id] = reset_obs
 
         obs = self._wrap_obs(raw_obs)
         step_reward = self._calc_step_reward(terminations)
@@ -409,6 +476,24 @@ class LiberoEnv(gym.Env):
             return reward
 
     def add_new_frames(self, raw_obs, plot_infos):
+        # Async mode: save frames separately by environment and trajectory
+        for env_id, raw_single_obs in enumerate(raw_obs):
+            traj_id = self.trajectory_ids[env_id]
+            traj_key = (env_id, traj_id)
+
+            info_item = {k: v if np.size(v) == 1 else v[env_id] for k, v in plot_infos.items()}
+
+            agentview_img = raw_single_obs["agentview_image"][::-1, ::-1]
+            wrist_img = raw_single_obs["robot0_eye_in_hand_image"][::-1, ::-1]
+
+            agentview_img_with_info = put_info_on_image(agentview_img, info_item)
+
+            combined_img = np.hstack([agentview_img_with_info, wrist_img])
+
+            if traj_key not in self.trajectory_frames:
+                self.trajectory_frames[traj_key] = []
+            self.trajectory_frames[traj_key].append(combined_img)
+
         images = []
         for env_id, raw_single_obs in enumerate(raw_obs):
             info_item = {k: v if np.size(v) == 1 else v[env_id] for k, v in plot_infos.items()}
@@ -419,16 +504,26 @@ class LiberoEnv(gym.Env):
         self.render_images.append(full_image)
 
     def flush_video(self, video_sub_dir: Optional[str] = None):
-        output_dir = os.path.join(self.video_cfg.video_base_dir, f"rank_{self.rank}")
-        if video_sub_dir is not None:
-            output_dir = os.path.join(output_dir, f"{video_sub_dir}")
-        save_rollout_video(
-            self.render_images,
-            output_dir=output_dir,
-            video_name=f"{self.video_cnt}",
-        )
+        base_output_dir = os.path.join(self.video_cfg.video_base_dir, f"rank_{self.rank}")
+
+        if self.trajectory_frames:
+            for (env_id, traj_id), frames in self.trajectory_frames.items():
+                if len(frames) == 0:
+                    continue
+
+                env_output_dir = os.path.join(base_output_dir, f"env_{env_id}")
+                if video_sub_dir is not None:
+                    env_output_dir = os.path.join(base_output_dir, f"{video_sub_dir}", f"env_{env_id}")
+
+                save_rollout_video(
+                    frames,
+                    output_dir=env_output_dir,
+                    video_name=f"{traj_id}",
+                )
+
         self.video_cnt += 1
         self.render_images = []
+        self.trajectory_frames.clear()
 
     def reset_envs_to_state_ids(self, state_ids_list, task_ids_list):
         """Reset environments to specified state IDs.

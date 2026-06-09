@@ -430,7 +430,12 @@ class RobRaySACSeparateTrainInference(RayPPOTrainer):
             if next_rollout_batch is not None:
                 if reset_future is None:
                     reset_future = self._reset_envs(next_rollout_batch)
-                # Start first rollout asynchronously (don't block here, main loop will wait)
+
+                if self.global_steps < self.config.actor_rollout_ref.actor.critic_warmup_steps:
+                    self.async_rollout_manager.warmup_max_interactions = True
+                else:
+                    self.async_rollout_manager.warmup_max_interactions = False
+
                 rollout_future = generate_sequences_task.remote(
                     self.async_rollout_manager, next_rollout_batch, reset_future
                 )
@@ -463,6 +468,12 @@ class RobRaySACSeparateTrainInference(RayPPOTrainer):
                         if next_rollout_batch is not None:
                             if reset_future is None:
                                 reset_future = self._reset_envs(next_rollout_batch)
+
+                            if self.global_steps < self.config.actor_rollout_ref.actor.critic_warmup_steps:
+                                self.async_rollout_manager.warmup_max_interactions = True
+                            else:
+                                self.async_rollout_manager.warmup_max_interactions = False
+
                             next_rollout_future = generate_sequences_task.remote(
                                 self.async_rollout_manager, next_rollout_batch, reset_future
                             )

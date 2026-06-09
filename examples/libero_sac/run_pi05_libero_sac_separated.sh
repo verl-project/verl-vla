@@ -35,7 +35,8 @@ NUM_ENV=2                                      # number of envs per env worker
 
 NUM_ACTION_CHUNKS=10                           # number of action chunks
 MAX_EPISODE_STEPS=256                           # max episode steps for each env
-                                               # max_interactions = MAX_EPISODE_STEPS / num_action_chunks
+                                               # default max_interactions = MAX_EPISODE_STEPS / NUM_ACTION_CHUNKS = 25
+MAX_INTERACTIONS=100                           # max model inference calls per rollout
 
 # Training Config
 MINI_BATCH_SIZE=1024                           # mini batch size (batch size per GPU, automatically multiplied by ROLLOUT_N)
@@ -46,6 +47,16 @@ PYTHON=python
 SIM_TYPE=${SIM_TYPE:-"libero"}
 PROJECT_NAME="vla_libero_RL"
 EXPERIMENT_NAME="sac_libero_pi05"
+
+# Async reset configuration
+ASYNC_RESET=false
+
+# Determine max_interactions config based on async_reset
+if [ "$ASYNC_RESET" = "false" ]; then
+    MAX_INTERACTIONS_CONFIG=""
+else
+    MAX_INTERACTIONS_CONFIG="+env.train.max_interactions=$MAX_INTERACTIONS"
+fi
 
 # avoiding warnings
 mkdir /root/LIBERO/libero/libero/../datasets
@@ -83,6 +94,9 @@ $PYTHON -m verl_vla.trainer.main_sac \
     env.actor.model.action_dim=7 \
     env.train.device=$ENV_DEVICE \
     env.train.max_episode_steps=$MAX_EPISODE_STEPS \
+    +env.train.async_reset=$ASYNC_RESET \
+    $MAX_INTERACTIONS_CONFIG \
+    +env.train.pipeline_stage_num=$NUM_STAGE \
     env.train.video_cfg.save_video=True \
     env.train.video_cfg.video_base_dir=${VIDEO_OUTPUT} \
     env.train.seed=42 \
@@ -93,6 +107,9 @@ $PYTHON -m verl_vla.trainer.main_sac \
     actor_rollout_ref.actor.sac_mini_batch_size=$MINI_BATCH_SIZE \
     actor_rollout_ref.actor.sac_micro_batch_size_per_gpu=$MICRO_BATCH_SIZE \
     actor_rollout_ref.actor.strategy=fsdp2 \
+    actor_rollout_ref.actor.critic_warmup_steps=200 \
+    actor_rollout_ref.actor.actor_update_interval=1 \
+    actor_rollout_ref.actor.warm_rollout_steps=5 \
     actor_rollout_ref.model.path=$SFT_MODEL_PATH \
     actor_rollout_ref.model.tokenizer_path=$TOKENIZER_PATH \
     actor_rollout_ref.model.enable_gradient_checkpointing=False \
@@ -122,4 +139,4 @@ $PYTHON -m verl_vla.trainer.main_sac \
     trainer.test_freq=100 \
     trainer.total_epochs=100 \
     trainer.val_only=False \
-    trainer.val_before_train=True
+    trainer.val_before_train=False \

@@ -260,7 +260,10 @@ class EnvWorker(Worker, DistProfilerExtension):
             if self.cfg.train.simulator_type == "isaac":
                 assert len(set(stage_state_ids)) == 1, "rollout.n should equal to num_envs for isaac"
 
-            result = self.simulator_list[stage_id].reset_envs_to_state_ids(stage_state_ids, stage_task_ids)
+            if self.cfg.train.simulator_type == "libero":
+                result = self.simulator_list[stage_id].reset()
+            else:
+                result = self.simulator_list[stage_id].reset_envs_to_state_ids(stage_state_ids, stage_task_ids)
             result_list.append(result)
         output_tensor_dict = {}
         output_non_tensor_dict = {}

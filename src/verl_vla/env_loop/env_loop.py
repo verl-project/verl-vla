@@ -40,7 +40,6 @@ class EnvLoop:
         self.rollout_wg = rollout_wg
         self.config = config
 
-        self.max_interactions = config.env.train.max_episode_steps // config.env.actor.model.num_action_chunks
         self.stage_num = config.env.rollout.pipeline_stage_num
         self.num_envs_per_worker = config.env.train.num_envs
         self.action_dim = config.env.actor.model.action_dim
@@ -53,6 +52,11 @@ class EnvLoop:
         if self.total_envs % self.stage_num != 0:
             raise ValueError(f"Total envs ({self.total_envs}) must be divisible by stage_num ({self.stage_num})")
         self.envs_per_stage = self.total_envs // self.stage_num
+
+        self.default_max_interactions = config.env.train.max_episode_steps // config.env.actor.model.num_action_chunks
+        self.configured_max_interactions = config.env.train.get("max_interactions", self.default_max_interactions)
+        self.max_interactions = self.configured_max_interactions
+        self.warmup_max_interactions = False
 
         self.env_wg.init_worker()
         self.env_wg.init_simulator()
@@ -122,6 +126,11 @@ class EnvLoop:
         reset_wait_start_t = time.perf_counter()
         reset_results = reset_future.get()
         reset_wait_s = time.perf_counter() - reset_wait_start_t
+
+        if self.warmup_max_interactions:
+            self.max_interactions = self.default_max_interactions
+        else:
+            self.max_interactions = self.configured_max_interactions
 
         loop = asyncio.get_event_loop()
 
