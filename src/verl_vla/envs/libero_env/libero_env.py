@@ -330,11 +330,11 @@ class LiberoEnv(gym.Env):
         self.env.set_init_state(init_state=[init_state], id=[env_id])
 
         for _ in range(10):
-            zero_action = np.zeros((self.num_envs, 7))
-            raw_obs, _, _, _ = self.env.step(zero_action)
+            self.env.workers[env_id].parent_remote.send(("step", np.zeros(7)))
+            raw_obs_single, _, _, _ = self.env.workers[env_id].parent_remote.recv()
 
         self._reset_metrics(env_idx=[env_id])
-        return raw_obs[env_id]
+        return raw_obs_single
 
     def _reconfigure_from_state_ids(self, reset_state_ids, env_idx):
         reconfig_env_idx = []
@@ -506,20 +506,30 @@ class LiberoEnv(gym.Env):
     def flush_video(self, video_sub_dir: Optional[str] = None):
         base_output_dir = os.path.join(self.video_cfg.video_base_dir, f"rank_{self.rank}")
 
-        if self.trajectory_frames:
-            for (env_id, traj_id), frames in self.trajectory_frames.items():
-                if len(frames) == 0:
-                    continue
+        if self.async_reset_enabled:
+            if self.trajectory_frames:
+                for (env_id, traj_id), frames in self.trajectory_frames.items():
+                    if len(frames) == 0:
+                        continue
 
-                env_output_dir = os.path.join(base_output_dir, f"env_{env_id}")
-                if video_sub_dir is not None:
-                    env_output_dir = os.path.join(base_output_dir, f"{video_sub_dir}", f"env_{env_id}")
+                    env_output_dir = os.path.join(base_output_dir, f"env_{env_id}")
+                    if video_sub_dir is not None:
+                        env_output_dir = os.path.join(base_output_dir, f"{video_sub_dir}", f"env_{env_id}")
 
-                save_rollout_video(
-                    frames,
-                    output_dir=env_output_dir,
-                    video_name=f"{traj_id}",
-                )
+                    save_rollout_video(
+                        frames,
+                        output_dir=env_output_dir,
+                        video_name=f"{traj_id}",
+                    )
+        else:
+            output_dir = base_output_dir
+            if video_sub_dir is not None:
+                output_dir = os.path.join(output_dir, f"{video_sub_dir}")
+            save_rollout_video(
+                self.render_images,
+                output_dir=output_dir,
+                video_name=f"{self.video_cnt}",
+            )
 
         self.video_cnt += 1
         self.render_images = []
