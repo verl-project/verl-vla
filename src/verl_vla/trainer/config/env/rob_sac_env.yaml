@@ -24,6 +24,10 @@ train:
   # Maximum number of environment steps per episode.
   max_episode_steps: 512
 
+  # Maximum model/env interaction rounds per rollout. Defaults to
+  # max_episode_steps / num_action_chunks when left null.
+  max_interactions: null
+
   # If True, reset completed envs immediately inside BaseEnv.step instead of
   # waiting for the next worker-level reset call.
   async_reset: False

@@ -381,6 +381,7 @@ class LiberoEnv(LiberoResetStateMixin, BaseEnv):
         raw_obs, _reward, terminations, info_lists = self.env.step(actions, id=env_ids)
         infos = list_of_dict_to_dict_of_list(info_lists)
         truncations = self._elapsed_steps[env_ids] >= self.cfg.max_episode_steps
+        dones = np.logical_or(terminations, truncations)
 
         step_reward = np.asarray(_reward)
         infos = self._record_metrics(step_reward, terminations, infos, env_ids)
@@ -389,7 +390,7 @@ class LiberoEnv(LiberoResetStateMixin, BaseEnv):
             "observation": self._make_observations(raw_obs),
             "task": [self.task_descriptions[env_id] for env_id in env_ids],
             "next.reward": to_tensor(step_reward),
-            "next.done": to_tensor(np.asarray(terminations, dtype=bool)),
+            "next.done": to_tensor(np.asarray(dones, dtype=bool)),
             "next.truncated": to_tensor(np.asarray(truncations, dtype=bool)),
             "info": infos,
         }

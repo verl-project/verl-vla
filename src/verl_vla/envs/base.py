@@ -245,8 +245,7 @@ class BaseEnv(gym.Env):
             return step_result
 
         dones = self._to_numpy(step_result["next.done"]).astype(bool)
-        truncations = self._to_numpy(step_result["next.truncated"]).astype(bool)
-        reset_local_ids = np.flatnonzero(dones | truncations)
+        reset_local_ids = np.flatnonzero(dones)
         if len(reset_local_ids) == 0:
             return step_result
 

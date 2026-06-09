@@ -18,6 +18,7 @@ env:
   train:
     simulator_type: libero
     max_episode_steps: 512
+    max_interactions: null
     async_reset: False
     reward_coef: 1.0
     only_eval: False
