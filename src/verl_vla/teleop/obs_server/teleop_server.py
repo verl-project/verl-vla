@@ -21,6 +21,7 @@ from typing import Any, Callable
 
 import cv2
 import numpy as np
+import torch
 
 from verl_vla.teleop.config import TeleopServerConfig
 from verl_vla.teleop.devices import DeviceBase
@@ -30,6 +31,11 @@ logger = logging.getLogger(__name__)
 
 
 def _as_jsonable(value: Any) -> Any:
+    if isinstance(value, torch.Tensor):
+        value = value.detach().cpu()
+        if value.ndim == 0:
+            return value.item()
+        return value.tolist()
     if isinstance(value, np.ndarray):
         return value.tolist()
     if isinstance(value, np.generic):

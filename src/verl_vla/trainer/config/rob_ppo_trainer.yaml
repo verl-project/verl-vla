@@ -26,6 +26,7 @@ env:
     num_envs: 16
     seed: 42
     task_suite_name: libero_10
+    reset_warmup_steps: 10
     init_params:
       camera_depths: False
       camera_heights: 256

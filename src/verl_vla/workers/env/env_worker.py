@@ -14,6 +14,7 @@
 # limitations under the License.
 
 import itertools
+from pathlib import Path
 
 import torch
 from omegaconf import DictConfig
@@ -27,6 +28,9 @@ from verl.utils.device import (
 )
 from verl.utils.distributed import initialize_global_process_group_ray
 from verl.utils.profiler import DistProfiler, DistProfilerExtension, ProfilerConfig
+
+from verl_vla.recorder import load_recorder_config
+from verl_vla.utils.recorder import merge_lerobot_datasets
 
 from .env_manager import EnvManager
 
@@ -283,8 +287,30 @@ class EnvWorker(Worker, DistProfilerExtension):
     @register(dispatch_mode=Dispatch.ONE_TO_ALL)
     @DistProfiler.annotate(color="gray", role="env_finish_rollout")
     def finish_rollout(self, mode="train"):
-        # reset
-        if mode == "train":
-            if self.cfg.train.video_cfg.save_video:
-                for i in range(self.stage_num):
-                    self.simulator_list[i].flush_video(video_sub_dir=f"stage_{i}")
+        for simulator in self.simulator_list:
+            simulator.finish_rollout()
+
+    @register(dispatch_mode=Dispatch.ONE_TO_ALL)
+    @DistProfiler.annotate(color="gray", role="env_pop_lerobot_dataset")
+    def pop_lerobot_dataset(self):
+        recorder_cfg = load_recorder_config(self.cfg.train)
+        if not recorder_cfg.enable or not recorder_cfg.lerobot.enable:
+            return None
+
+        datasets = []
+        for simulator in self.simulator_list:
+            dataset = simulator.pop_completed_dataset()
+            if dataset is not None:
+                datasets.append(dataset)
+        if not datasets:
+            return None
+
+        root = Path(recorder_cfg.lerobot.root)
+        repo_id = f"{recorder_cfg.lerobot.repo_id}_rank_{self._rank}"
+        return merge_lerobot_datasets(
+            roots=[dataset["root"] for dataset in datasets],
+            output_root=root / repo_id,
+            repo_id=repo_id,
+            repo_ids=[dataset["repo_id"] for dataset in datasets],
+            append=True,
+        )
