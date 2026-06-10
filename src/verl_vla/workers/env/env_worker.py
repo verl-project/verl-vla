@@ -166,6 +166,19 @@ class EnvWorker(Worker, DistProfilerExtension):
                         stage_id=stage_id,
                     )
                 )
+        elif self.cfg.train.simulator_type == "arena":
+            from verl_vla.envs.arena_env.arena_env import IsaacLabArenaEnv
+
+            for stage_id in range(self.stage_num):
+                self.simulator_list.append(
+                    EnvManager(
+                        self.cfg.train,
+                        rank=self._rank,
+                        world_size=self._world_size,
+                        env_cls=IsaacLabArenaEnv,
+                        stage_id=stage_id,
+                    )
+                )
         else:
             raise NotImplementedError(f"Simulator type {self.cfg.train.simulator_type} not implemented")
 
