@@ -27,15 +27,17 @@ env:
       video_base_dir: /tmp/videos
     num_envs: 16
     seed: 42
-    task_suite_name: libero_10
-    reset_warmup_steps: 10
-    init_params:
-      camera_depths: False
-      camera_heights: 256
-      camera_widths: 256
-      camera_names: 
-        - agentview
-        - robot0_eye_in_hand
+
+    libero:
+      task_suite_name: libero_10
+      reset_warmup_steps: 10
+      init_params:
+        camera_depths: False
+        camera_heights: 256
+        camera_widths: 256
+        camera_names:
+          - agentview
+          - robot0_eye_in_hand
     
     # Profile the env worker
     profiler:

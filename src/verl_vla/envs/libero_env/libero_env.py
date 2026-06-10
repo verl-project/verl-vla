@@ -22,9 +22,9 @@ import torch
 from libero.libero import get_libero_path
 from libero.libero.benchmark import Benchmark, get_benchmark
 from libero.libero.envs import OffScreenRenderEnv
-from omegaconf.omegaconf import OmegaConf
 
 from verl_vla.envs.base import BaseEnv
+from verl_vla.envs.libero_env.config import load_libero_config
 from verl_vla.envs.libero_env.utils import get_libero_image, get_libero_wrist_image, quat2axisangle
 from verl_vla.envs.libero_env.venv import ReconfigureSubprocEnv
 from verl_vla.utils.envs.action import (
@@ -55,8 +55,9 @@ class LiberoResetStateMixin:
     """LIBERO benchmark reset-state and task reconfiguration helpers."""
 
     def init_libero_env(self, cfg, *, async_reset: bool = False):
+        del cfg
         self.init_random()
-        self.task_suite: Benchmark = get_benchmark(cfg.task_suite_name)()
+        self.task_suite: Benchmark = get_benchmark(self.libero_cfg.task_suite_name)()
         self.init_reset_states(async_reset=async_reset)
         self._init_env()
 
@@ -87,13 +88,7 @@ class LiberoResetStateMixin:
 
     def get_env_fn_params(self, env_idx=None):
         env_fn_params = []
-        raw_base_env_args = OmegaConf.to_container(self.cfg.init_params, resolve=True)
-        if raw_base_env_args is None:
-            base_env_args = {}
-        elif isinstance(raw_base_env_args, dict):
-            base_env_args = raw_base_env_args
-        else:
-            raise TypeError(f"Expected init_params to be a mapping, got {type(raw_base_env_args)}")
+        base_env_args = self.libero_cfg.init_params.to_env_kwargs()
 
         task_descriptions = []
         if env_idx is None:
@@ -251,6 +246,7 @@ class LiberoEnv(LiberoResetStateMixin, BaseEnv):
     env_type = "libero"
 
     def __init__(self, cfg, rank, world_size, stage_id: int = 0):
+        self.libero_cfg = load_libero_config(cfg)
         super().__init__(cfg, rank, world_size, stage_id=stage_id)
         self._init_metrics()
 
@@ -320,8 +316,8 @@ class LiberoEnv(LiberoResetStateMixin, BaseEnv):
     def get_recorder_strategy_kwargs(self):
         return {
             "image_shape": (
-                int(self.cfg.init_params.camera_heights),
-                int(self.cfg.init_params.camera_widths),
+                int(self.libero_cfg.init_params.camera_heights),
+                int(self.libero_cfg.init_params.camera_widths),
                 3,
             )
         }
@@ -355,7 +351,7 @@ class LiberoEnv(LiberoResetStateMixin, BaseEnv):
 
         # Perform extra warmup steps after reset to let the observations settle.
         raw_obs = None
-        reset_warmup_steps = int(getattr(self.cfg, "reset_warmup_steps", 10))
+        reset_warmup_steps = int(self.libero_cfg.reset_warmup_steps)
         if async_reset:
             zero_actions = np.zeros((len(env_ids), LIBERO_ACTION_DIM))
             for _ in range(reset_warmup_steps):

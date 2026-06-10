@@ -102,28 +102,31 @@ train:
   # Random seed for env initialization and reset sampling.
   seed: 42
 
-  # LIBERO task suite name.
-  task_suite_name: libero_spatial
+  # LIBERO-specific simulator settings.
+  libero:
 
-  # Number of zero-action simulator steps after reset to settle observations.
-  reset_warmup_steps: 10
+    # LIBERO task suite name.
+    task_suite_name: libero_spatial
 
-  # Simulator-specific initialization parameters.
-  init_params:
+    # Number of zero-action simulator steps after reset to settle observations.
+    reset_warmup_steps: 10
 
-    # Whether to render depth images from cameras.
-    camera_depths: False
+    # LIBERO OffScreenRenderEnv initialization parameters.
+    init_params:
 
-    # Camera image height.
-    camera_heights: 256
+      # Whether to render depth images from cameras.
+      camera_depths: False
 
-    # Camera image width.
-    camera_widths: 256
+      # Camera image height.
+      camera_heights: 256
 
-    # Camera views included in each observation.
-    camera_names:
-      - agentview
-      - robot0_eye_in_hand
+      # Camera image width.
+      camera_widths: 256
+
+      # Camera views included in each observation.
+      camera_names:
+        - agentview
+        - robot0_eye_in_hand
 
   # Lightweight web service for human teleoperation and observation streaming.
   teleop:

@@ -21,6 +21,7 @@ import numpy as np
 import omni
 import torch
 
+from verl_vla.envs.libero_env.config import load_libero_config
 from verl_vla.utils.envs.action import (
     put_info_on_image,
     save_rollout_video,
@@ -40,10 +41,11 @@ class IsaacEnv(gym.Env):
         self.num_envs = self.cfg.num_envs
         self.action_dim = self.cfg.get("action_dim", 7)
         self.device = self.cfg.get("device", "cuda:0")
+        self.libero_cfg = load_libero_config(cfg)
 
         self._generator = np.random.default_rng(seed=self.seed)
 
-        self.task_suite_name = self.cfg.task_suite_name
+        self.task_suite_name = self.libero_cfg.task_suite_name
 
         self.env = None
         self.prev_step_reward = np.zeros(self.num_envs)
@@ -56,7 +58,7 @@ class IsaacEnv(gym.Env):
 
         self.render_images = []
         self.video_cnt = 0
-        self.camera_name = cfg.init_params.camera_names
+        self.camera_name = self.libero_cfg.init_params.camera_names
 
         # sys env must be set before import isaaclab
         from isaaclab.app import AppLauncher
