@@ -96,11 +96,11 @@ class GamepadDevice(DeviceBase):
     def key_bindings(self) -> dict[str, str]:
         return {
             "Left Stick Y": "+x / -x",
-            "Left Stick X": "-y / +y",
-            "Right Stick Y": "-z / +z",
+            "Left Stick X": "+y / -y",
+            "Right Stick Y": "+z / -z",
             "Right Stick X": "+yaw / -yaw",
             "D-Pad Left/Right": "+roll / -roll",
-            "D-Pad Up/Down": "-pitch / +pitch",
+            "D-Pad Up/Down": "+pitch / -pitch",
             "RT": "intervention (hold)",
             "X": "toggle gripper",
         }
