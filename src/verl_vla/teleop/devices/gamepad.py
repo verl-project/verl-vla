@@ -53,8 +53,12 @@ class GamepadDevice(DeviceBase):
             event_type = event.event_type.lower()
             if event_type == "gamepad_update":
                 self._latest_state = dict(event.raw)
-                buttons_raw = event.raw.get("buttons", {})
-                axes_raw = event.raw.get("axes", {})
+                buttons_raw = event.raw.get("buttons")
+                if not isinstance(buttons_raw, dict):
+                    buttons_raw = {}
+                axes_raw = event.raw.get("axes")
+                if not isinstance(axes_raw, dict):
+                    axes_raw = {}
 
                 for key, value in buttons_raw.items():
                     if isinstance(value, dict):

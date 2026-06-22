@@ -115,10 +115,7 @@ class LiberoGamepadStrategy(InterventionStrategyBase):
         return relative_command.astype(np.float32)
 
     def _process_events(self, device: DeviceBase) -> None:
-        try:
-            events = device.drain_events()
-        except Exception:
-            events = []
+        events = device.drain_events()
 
         for event in events:
             if not isinstance(event, dict):
