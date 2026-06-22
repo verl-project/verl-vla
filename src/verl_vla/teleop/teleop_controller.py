@@ -19,6 +19,8 @@ import numpy as np
 from verl_vla.teleop.config import TeleopConfig
 from verl_vla.teleop.devices import (
     DeviceBase,
+    GamepadDevice,
+    GamepadDeviceCfg,
     KeyboardDevice,
     KeyboardDeviceCfg,
     XRControllerDevice,
@@ -152,6 +154,8 @@ class TeleopController:
             return KeyboardDevice(KeyboardDeviceCfg())
         if device_type == "xr_controller":
             return XRControllerDevice(XRControllerDeviceCfg(max_events=self.teleop_cfg.xr_controller.max_events))
+        if device_type == "gamepad":
+            return GamepadDevice(GamepadDeviceCfg())
         raise NotImplementedError(f"Teleop device {device_type} is not implemented")
 
     def _create_strategy(self, device_type: str) -> InterventionStrategyBase:
@@ -159,4 +163,6 @@ class TeleopController:
             return get_strategy(self.env_type, device_type, self.teleop_cfg.keyboard)
         if device_type == "xr_controller":
             return get_strategy(self.env_type, device_type, self.teleop_cfg.xr_controller)
+        if device_type == "gamepad":
+            return get_strategy(self.env_type, device_type, self.teleop_cfg.gamepad)
         raise NotImplementedError(f"Teleop strategy for device {device_type} is not implemented")

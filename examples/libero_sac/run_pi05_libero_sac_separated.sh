@@ -94,7 +94,7 @@ $PYTHON -m verl_vla.trainer.main_sac \
     env.actor.model.action_dim=7 \
     env.train.device=$ENV_DEVICE \
     env.train.max_episode_steps=$MAX_EPISODE_STEPS \
-    +env.train.async_reset=$ASYNC_RESET \
+    env.train.async_reset=$ASYNC_RESET \
     $MAX_INTERACTIONS_CONFIG \
     +env.train.pipeline_stage_num=$NUM_STAGE \
     env.train.video_cfg.save_video=True \

@@ -114,6 +114,8 @@ def create_app(
                     continue
                 if device_type == "xr_controller" and message_type != "xr_frame":
                     continue
+                if device_type == "gamepad" and message_type not in {"gamepad_update", "gamepad_disconnect"}:
+                    continue
                 payload = message.get("payload", {})
                 input_devices[device_type].handle_event(DeviceEvent.from_payload(payload))
                 if latest_input_fn is not None:

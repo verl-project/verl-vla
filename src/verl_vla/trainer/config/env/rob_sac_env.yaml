@@ -230,6 +230,7 @@ train:
     devices:
       - keyboard
       - xr_controller
+      - gamepad
 
     # Keyboard SE(3) relative action sensitivities for LIBERO.
     keyboard:
@@ -244,6 +245,22 @@ train:
       intervention_button: squeeze
       gripper_button: trigger
       button_threshold: 0.5
+
+    # Gamepad controller relative SE(3) action mapping for LIBERO.
+    gamepad:
+      pos_sensitivity: 0.5
+      rot_sensitivity: 1.0
+      intervention_button: RT
+      gripper_button: X
+      button_threshold: 0.5
+      left_stick_x_axis: axis_0
+      left_stick_y_axis: axis_1
+      right_stick_y_axis: axis_3
+      right_stick_x_axis: axis_2
+      dpad_up_button: DUp
+      dpad_down_button: DDown
+      dpad_left_button: DLeft
+      dpad_right_button: DRight
 
 disagg_sim:
 

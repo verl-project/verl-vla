@@ -63,6 +63,7 @@ limitations under the License.
     </section>
   </main>
   <script src="/static/keyboard_device.js"></script>
+  <script src="/static/gamepad_device.js"></script>
   <script src="/static/xr_renderer.js"></script>
   <script>
     const TELEOP_DEVICE_TYPES = __TELEOP_DEVICE_TYPES__;
@@ -79,6 +80,7 @@ limitations under the License.
       right: {property: "--right-panel-width", storageKey: "teleop-right-panel-width", min: 300, max: 620, fallback: 390}
     };
     const keyboardDevice = new TeleopKeyboardDevice(() => inputSocket);
+    const gamepadDevice = new TeleopGamepadDevice(() => inputSocket);
     const xrRenderer = new TeleopXRRenderer();
 
     function clearElement(element) {
@@ -548,6 +550,9 @@ limitations under the License.
 
     if (TELEOP_DEVICE_TYPES.includes("keyboard")) {
       keyboardDevice.attach();
+    }
+    if (TELEOP_DEVICE_TYPES.includes("gamepad")) {
+      gamepadDevice.attach();
     }
     setTheme(localStorage.getItem("teleop-theme") || "system");
     restorePanelWidths();
