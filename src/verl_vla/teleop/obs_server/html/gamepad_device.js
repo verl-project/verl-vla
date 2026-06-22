@@ -138,6 +138,7 @@ class TeleopGamepadDevice {
         this.lastButtons = buttons;
         this.lastAxes = axes;
       }
+      break;
     }
 
     if (!hasActiveGamepad && Object.keys(this.lastButtons).length > 0) {
