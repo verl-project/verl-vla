@@ -11,10 +11,6 @@ _target_: verl_vla.workers.config.ActorConfig
 # fsdp, fsdp2 or megatron. must be set.
 strategy: ???
 
-# Legacy compatibility flag used by upstream `verl` PPO trainer when deciding
-# whether a reference policy is needed.
-use_kl_loss: false
-
 # checkpoint configs
 checkpoint:
 

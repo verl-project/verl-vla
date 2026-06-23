@@ -1,0 +1,196 @@
+# Base actor config structure:
+#
+# base_actor
+# |-- strategy: actor execution backend.
+# |-- profiler: optional per-actor profiling config.
+# |-- checkpoint: actor checkpoint save/load behavior.
+# |-- optim: optimizer, scheduler, and gradient clipping config.
+# `-- fsdp_config: FSDP engine, wrapping, offload, compile, and QAT config.
+
+# Actor execution strategy used by the worker engine.
+strategy: fsdp2
+
+# Per-actor profiler config. The current SFT path keeps profiling disabled by default.
+profiler:
+  # Instantiate verl profiler config.
+  _target_: verl.utils.profiler.ProfilerConfig
+
+  # Profiler tool name, for example nsys, npu, or torch.
+  tool: null
+
+  # Whether actor profiling is enabled.
+  enable: False
+
+  # Whether to profile all distributed ranks.
+  all_ranks: False
+
+  # Explicit rank list to profile when all_ranks is false.
+  ranks: []
+
+  # Directory for profiler outputs.
+  save_path: null
+
+  # Tool-specific profiler config.
+  tool_config: {}
+
+# Actor checkpoint save/load config.
+checkpoint:
+  # Instantiate verl checkpoint config.
+  _target_: verl.trainer.config.CheckpointConfig
+
+  # Checkpoint payloads to save.
+  save_contents: ["model", "optimizer", "extra"]
+
+  # Checkpoint payloads to load. Defaults to the same payloads as save_contents.
+  load_contents: ${.save_contents}
+
+  # Whether to save checkpoints asynchronously.
+  async_save: False
+
+  # Optional mbridge checkpoint extension config.
+  mbridge_config: {}
+
+# Actor optimizer and scheduler config.
+optim:
+  # Instantiate the VLA FSDP optimizer config.
+  _target_: verl_vla.workers.config.FSDPOptimizerConfig
+
+  # Optimizer algorithm name.
+  optimizer: AdamW
+
+  # Optimizer implementation module.
+  optimizer_impl: torch.optim
+
+  # Base learning rate.
+  lr: 1e-5
+
+  # Warmup ratio used when lr_warmup_steps is not set.
+  lr_warmup_steps_ratio: 0.0
+
+  # Total training steps. The trainer/worker may fill this at runtime.
+  total_training_steps: -1
+
+  # AdamW weight decay.
+  weight_decay: 0.01
+
+  # Explicit warmup steps. Negative values delegate to lr_warmup_steps_ratio.
+  lr_warmup_steps: -1
+
+  # Adam beta coefficients.
+  betas: [0.9, 0.999]
+
+  # Gradient clipping threshold.
+  clip_grad: 1.0
+
+  # Minimum learning-rate ratio for schedulers that support it.
+  min_lr_ratio: 0.0
+
+  # Number of cosine cycles when using cosine scheduling.
+  num_cycles: 0.5
+
+  # Learning-rate scheduler type.
+  lr_scheduler_type: constant
+
+  # Whether scheduler step indexing starts from zero.
+  zero_indexed_step: True
+
+  # Deprecated warmup style override. Prefer lr_scheduler_type.
+  warmup_style: null
+
+  # Optional raw optimizer config override.
+  override_optimizer_config: null
+
+# FSDP engine config used by the actor worker.
+fsdp_config:
+  # Instantiate the VLA FSDP engine config.
+  _target_: verl_vla.workers.config.FSDPEngineConfig
+
+  # Reuse the actor strategy value from this config.
+  strategy: ${..strategy}
+
+  # Runtime mixed-precision dtype.
+  dtype: bfloat16
+
+  # Model parameter dtype.
+  model_dtype: bfloat16
+
+  # Module wrapping policy for FSDP.
+  wrap_policy:
+    # Transformer layer classes wrapped as FSDP units.
+    transformer_layer_cls_to_wrap:
+      - SiglipEncoderLayer
+      - GemmaDecoderLayerWithExpert
+
+    # Minimum parameter count for modules eligible for wrapping.
+    min_num_params: 0
+
+  # Whether to offload model parameters.
+  param_offload: False
+
+  # Whether to offload optimizer states.
+  optimizer_offload: False
+
+  # Whether to offload gradients.
+  grad_offload: False
+
+  # Optional unified offload policy.
+  offload_policy: False
+
+  # Whether to reshard parameters after forward.
+  reshard_after_forward: True
+
+  # FSDP group size. -1 lets the engine choose.
+  fsdp_size: -1
+
+  # Whether to prefetch the next FSDP unit before forward.
+  forward_prefetch: False
+
+  # Whether FSDP should keep original parameter objects.
+  use_orig_params: False
+
+  # Engine seed.
+  seed: 42
+
+  # Whether to request fully deterministic execution.
+  full_determinism: False
+
+  # Ulysses sequence parallel size.
+  ulysses_sequence_parallel_size: 1
+
+  # Whether to compute entropy from logits with chunking.
+  entropy_from_logits_with_chunking: False
+
+  # Whether to compile the actor engine with torch.compile.
+  use_torch_compile: True
+
+  # Whether to checkpoint entropy computation.
+  entropy_checkpointing: False
+
+  # Whether this engine only runs forward passes.
+  forward_only: False
+
+  # Quantization-aware training config.
+  qat:
+    # Instantiate verl QAT engine config.
+    _target_: verl.workers.config.QATEngineConfig
+
+    # Whether QAT is enabled.
+    enable: False
+
+    # QAT mode.
+    mode: w4a16
+
+    # Quantization group size.
+    group_size: 16
+
+    # Module names or regex patterns excluded from quantization.
+    ignore_patterns:
+      - lm_head
+      - embed_tokens
+      - re:.*mlp.gate$
+
+    # Activation observer implementation.
+    activation_observer: static_minmax
+
+    # Optional quantization config file.
+    quantization_config_path: null

@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from .base import SupportSFTTraining
+from .config import SFTTrainerConfig
 from .sft_ray_trainer import RobRaySFTTrainer
 
-__all__ = ["RobRaySFTTrainer", "SupportSFTTraining"]
+__all__ = ["RobRaySFTTrainer", "SFTTrainerConfig", "SupportSFTTraining"]

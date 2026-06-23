@@ -1,0 +1,41 @@
+# Instantiate the VLA LeRobot dataloader config class.
+_target_: verl_vla.utils.dataloader.LeRobotDataLoaderConfig
+
+# HuggingFace dataset repo id. Keep null here and set it from the launcher or command line.
+repo_id: null
+
+# Optional local dataset root. Null lets LeRobot use its default cache/location logic.
+root: null
+
+# Dataset revision or branch.
+revision: main
+
+# Batch size produced by the PyTorch dataloader.
+batch_size: 32
+
+# Number of PyTorch dataloader worker processes.
+num_workers: 4
+
+# Whether dataloader workers stay alive between epochs.
+persistent_workers: True
+
+# Number of batches prefetched by each dataloader worker.
+prefetch_factor: 4
+
+# Whether to pin host memory before GPU transfer.
+pin_memory: True
+
+# Whether to shuffle dataset samples.
+shuffle: True
+
+# Whether to drop the final incomplete batch.
+drop_last: True
+
+# Random seed used by the dataloader sampler when shuffle is enabled.
+seed: 42
+
+# LeRobot video decoding backend.
+video_backend: pyav
+
+# Number of future action timestamps requested from LeRobot.
+action_delta_steps: 50

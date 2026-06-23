@@ -1,0 +1,53 @@
+# Instantiate the VLA SFT trainer config class.
+_target_: verl_vla.trainer.sft.config.SFTTrainerConfig
+
+# Tracking project name.
+project_name: vla-sft
+
+# Tracking experiment/run name.
+experiment_name: lerobot-preview
+
+# Tracking backends used by the trainer.
+logger: ["console"]
+
+# Number of training nodes.
+nnodes: 1
+
+# Number of training GPUs per node.
+n_gpus_per_node: 1
+
+# Device type used by Ray worker groups.
+device: cuda
+
+# Number of full dataloader passes.
+total_epochs: 30
+
+# Checkpoint save interval in global steps. Negative disables interval saves.
+save_freq: -1
+
+# Whether to save a checkpoint at the final training step.
+save_last: False
+
+# Extra time budget used by ESI preemption-aware checkpointing.
+esi_redundant_time: 0
+
+# Resume behavior: auto, disable, or resume_path.
+resume_mode: auto
+
+# Explicit checkpoint path used when resume_mode is resume_path.
+resume_from_path: null
+
+# Optional remote checkpoint root. SFT load from HDFS is not implemented yet.
+default_hdfs_dir: null
+
+# Local checkpoint root.
+default_local_dir: checkpoints/${trainer.project_name}/${trainer.experiment_name}
+
+# Whether to delete local checkpoint files after loading.
+del_local_ckpt_after_load: False
+
+# Maximum number of actor checkpoints to keep. Null keeps all.
+max_actor_ckpt_to_keep: null
+
+# Deprecated compatibility switch. Prefer max_actor_ckpt_to_keep=1.
+remove_previous_ckpt_in_save: False

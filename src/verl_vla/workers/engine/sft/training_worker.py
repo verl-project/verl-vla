@@ -20,7 +20,6 @@ from verl.utils.device import get_device_id, get_device_name
 from verl.workers.config import TrainingWorkerConfig
 from verl.workers.engine_workers import TrainingWorker
 
-from verl_vla.trainer.recap.returns import RECAP_RETURN_FIELD
 from verl_vla.workers.config import SFTActorConfig
 
 
@@ -30,8 +29,8 @@ class SFTTrainingWorker(TrainingWorker):
         self.actor_config = actor_config
         self.tokenizer = tokenizer or self.model_config.tokenizer
         self._sft_initialized = False
-        self.actor_ema_enabled = bool(self.actor_config.actor_ema_enabled)
-        self.actor_ema_decay = float(self.actor_config.actor_ema_decay)
+        self.actor_ema_enabled = bool(self.actor_config.ema.enable)
+        self.actor_ema_decay = float(self.actor_config.ema.decay)
         self.actor_ema_shadow: dict[str, torch.Tensor] = {}
         self.actor_ema_initialized = False
 
@@ -79,43 +78,6 @@ class SFTTrainingWorker(TrainingWorker):
         for name, param in self._get_named_actor_parameters():
             param.copy_(self.actor_ema_shadow[name].to(device=param.device, dtype=param.dtype))
 
-    def _extract_sft_obs(self, micro_batch: DataProto) -> DataProto:
-        return micro_batch
-
-    @staticmethod
-    def _extract_sft_actions(micro_batch: DataProto) -> dict[str, torch.Tensor]:
-        batch = micro_batch.batch
-        if "action" not in batch:
-            return {}
-        action = batch["action"]
-        # TODO(remove after datasets are fixed): compatibility for old LeRobot dumps that
-        # stored action chunks inside each action entry. Standard SFT data is [B, T, D].
-        if action.ndim >= 4:
-            action = action[..., 0, :]
-        elif action.ndim == 3 and "action_is_pad" not in batch:
-            action = action[:, :1, :]
-        # End legacy compatibility block.
-        return {"action": action}
-
-    @staticmethod
-    def _extract_sft_valids(micro_batch: DataProto) -> torch.Tensor:
-        batch = micro_batch.batch
-        if batch is not None and "info.valids" in batch:
-            return batch["info.valids"].float()
-        return torch.ones(len(micro_batch), device=get_device_id(), dtype=torch.float32)
-
-    @staticmethod
-    def _extract_sft_action_mask(micro_batch: DataProto) -> torch.Tensor | None:
-        if "action_is_pad" not in micro_batch.batch:
-            return None
-        return (~micro_batch.batch["action_is_pad"].bool()).float()
-
-    @staticmethod
-    def _extract_sft_target_values(micro_batch: DataProto) -> torch.Tensor | None:
-        if RECAP_RETURN_FIELD not in micro_batch.batch:
-            return None
-        return micro_batch.batch[RECAP_RETURN_FIELD]
-
     def _update_sft_policy(self, data: DataProto) -> dict[str, float]:
         if not self.actor_ema_initialized:
             self._init_actor_ema()
@@ -125,8 +87,8 @@ class SFTTrainingWorker(TrainingWorker):
         with marked_timer("sft_update_policy", timing_raw):
             self._force_set_lr(self.engine.optimizer, self.actor_config.optim.lr)
 
-            mini_batch_size = int(self.actor_config.sft_mini_batch_size)
-            micro_batch_size = self.actor_config.sft_micro_batch_size_per_gpu
+            mini_batch_size = int(self.actor_config.mini_batch_size)
+            micro_batch_size = self.actor_config.micro_batch_size
             if micro_batch_size is None:
                 micro_batch_size = mini_batch_size
             micro_batch_size = int(micro_batch_size)
@@ -143,11 +105,17 @@ class SFTTrainingWorker(TrainingWorker):
                 for micro_batches in split_micro_batches:
                     for micro_batch in micro_batches:
                         micro_batch = micro_batch.to(get_device_id())
-                        obs = self._extract_sft_obs(micro_batch)
-                        valids = self._extract_sft_valids(micro_batch)
-                        actions = self._extract_sft_actions(micro_batch)
-                        action_mask = self._extract_sft_action_mask(micro_batch)
-                        target_values = self._extract_sft_target_values(micro_batch)
+                        batch = micro_batch.batch
+                        data_keys = self.actor_config.data_keys
+                        obs = micro_batch
+                        valids = torch.ones(len(micro_batch), device=get_device_id(), dtype=torch.float32)
+                        actions = {"action": batch[data_keys.action]}
+                        action_mask = (
+                            (~batch[data_keys.action_mask].bool()).float()
+                            if data_keys.action_mask is not None
+                            else None
+                        )
+                        target_values = batch[data_keys.target_value] if data_keys.target_value is not None else None
                         with torch.autocast(device_type=get_device_name(), dtype=torch.bfloat16):
                             sft_loss = self.engine.module.sft_loss(
                                 obs=obs,

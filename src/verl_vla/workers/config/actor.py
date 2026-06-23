@@ -24,6 +24,8 @@ from .optimizer import FSDPOptimizerConfig
 
 __all__ = [
     "SACConfig",
+    "EMAConfig",
+    "SFTDataKeysConfig",
     "BaseVLAActorConfig",
     "ActorConfig",
     "SFTActorConfig",
@@ -67,6 +69,27 @@ class SACConfig(BaseConfig):
 
 
 @dataclass
+class EMAConfig(BaseConfig):
+    """Configuration for actor exponential moving average weights."""
+
+    enable: bool = False
+    decay: float = 0.995
+
+    def __post_init__(self):
+        if not 0 < self.decay < 1:
+            raise ValueError(f"EMA decay must be in (0, 1), got {self.decay}")
+
+
+@dataclass
+class SFTDataKeysConfig(BaseConfig):
+    """Batch field names used by the SFT worker."""
+
+    action: str = "action"
+    action_mask: str | None = "action_is_pad"
+    target_value: str | None = None
+
+
+@dataclass
 class BaseVLAActorConfig(BaseConfig):
     """Shared actor config used by algorithm-specific VLA actor configs."""
 
@@ -76,7 +99,6 @@ class BaseVLAActorConfig(BaseConfig):
     }
 
     strategy: str = "fsdp"
-    use_kl_loss: bool = False
 
     checkpoint: CheckpointConfig = field(default_factory=CheckpointConfig)
     optim: FSDPOptimizerConfig = field(default_factory=FSDPOptimizerConfig)
@@ -163,23 +185,17 @@ class SFTActorConfig(BaseVLAActorConfig):
 
     _target_: str = "verl_vla.workers.config.SFTActorConfig"
 
-    actor_ema_enabled: bool = False
-    actor_ema_decay: float = 0.995
+    ema: EMAConfig = field(default_factory=EMAConfig)
+    data_keys: SFTDataKeysConfig = field(default_factory=SFTDataKeysConfig)
 
-    sft_mini_batch_size: int = 256
-    sft_micro_batch_size_per_gpu: int | None = None
-    grad_clip: float = 1.0
+    mini_batch_size: int = 256
+    micro_batch_size: int | None = None
 
     def __post_init__(self):
         super().__post_init__()
 
-        if self.sft_mini_batch_size <= 0:
-            raise ValueError(f"sft_mini_batch_size must be positive, got {self.sft_mini_batch_size}")
+        if self.mini_batch_size <= 0:
+            raise ValueError(f"mini_batch_size must be positive, got {self.mini_batch_size}")
 
-        if self.sft_micro_batch_size_per_gpu is not None and self.sft_micro_batch_size_per_gpu <= 0:
-            raise ValueError(
-                f"sft_micro_batch_size_per_gpu must be positive when provided, got {self.sft_micro_batch_size_per_gpu}"
-            )
-
-        if self.grad_clip <= 0:
-            raise ValueError(f"grad_clip must be positive, got {self.grad_clip}")
+        if self.micro_batch_size is not None and self.micro_batch_size <= 0:
+            raise ValueError(f"micro_batch_size must be positive when provided, got {self.micro_batch_size}")

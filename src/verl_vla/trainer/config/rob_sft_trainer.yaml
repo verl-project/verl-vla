@@ -1,59 +1,39 @@
-hydra:
-  searchpath:
-    - pkg://verl.trainer.config
+# VLA SFT config structure:
+#
+# rob_sft_trainer
+# |-- data: LeRobot dataset and PyTorch dataloader settings.
+# |-- actor_rollout_ref
+# |   |-- model: HuggingFace model path, tokenizer path, and model-load options.
+# |   |-- rollout: checkpoint-engine settings required by the actor worker.
+# |   `-- actor: SFT actor training config.
+# |-- trainer: SFT trainer loop, device/resource, resume, logging, and checkpoint-save settings.
+# `-- ray_kwargs: Ray init kwargs used before the trainer is constructed.
+
+# Compose reusable config groups into the final SFT config tree.
 
 defaults:
-  - ppo_trainer
-  - override /actor@actor_rollout_ref.actor: sft_actor
+  # Attach the LeRobot dataloader config under `data`.
+  - data@data: lerobot_dataloader
+
+  # Attach the HuggingFace model config under `actor_rollout_ref.model`.
+  - model@actor_rollout_ref.model: hf_model
+
+  # Attach the SFT rollout/checkpoint-engine config under `actor_rollout_ref.rollout`.
+  - rollout@actor_rollout_ref.rollout: sft_rollout
+
+  # Attach the SFT actor config under `actor_rollout_ref.actor`.
+  - actor@actor_rollout_ref.actor: sft_actor
+
+  # Attach the SFT trainer loop config under `trainer`.
+  - trainer@trainer: sft_trainer
+
+  # Keep local overrides in this file taking precedence over composed defaults.
   - _self_
 
-data:
-  sft:
-    enable: True
-    repo_id: Miical/record-test
-    revision: main
-    batch_size: 2
-    num_workers: 0
-    persistent_workers: True
-    prefetch_factor: 4
-    pin_memory: True
-    shuffle: True
-    drop_last: False
-    seed: null
-    video_backend: pyav
-    action_delta_steps: 64
+# Ray initialization options passed by `main_sft.py` before launching the trainer task.
 
-actor_rollout_ref:
-  model:
-    path: /file_system/liujincheng/models/pi05_libero_torch
-    tokenizer_path: ${actor_rollout_ref.model.path}
-    enable_gradient_checkpointing: False
-    use_remove_padding: False
-    trust_remote_code: False
-    override_config:
-      policy_type: lerobot
-      attn_implementation: eager
-
-  actor:
-    strategy: fsdp2
-    actor_ema_enabled: False
-    actor_ema_decay: 0.995
-    sft_mini_batch_size: 2
-    sft_micro_batch_size_per_gpu: 1
-    grad_clip: 1.0
-    optim:
-      lr: 1e-5
-    fsdp_config:
-      model_dtype: bfloat16
-      wrap_policy:
-        transformer_layer_cls_to_wrap:
-          - SiglipEncoderLayer
-          - GemmaDecoderLayerWithExpert
-        min_num_params: 0
-
-trainer:
-  project_name: vla-sft
-  experiment_name: lerobot-preview
-  logger: ["console"]
-  nnodes: 1
-  n_gpus_per_node: 1
+ray_kwargs:
+  # Keyword arguments forwarded to `ray.init`.
+  ray_init:
+    # Let Ray infer CPU resources by default.
+    num_cpus: null

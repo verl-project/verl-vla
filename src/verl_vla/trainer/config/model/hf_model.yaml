@@ -1,0 +1,31 @@
+# Instantiate the shared verl HuggingFace model config class.
+_target_: verl.workers.config.HFModelConfig
+
+# Default model path. Override this for a different HF checkpoint.
+path: /file_system/liujincheng/models/pi05_libero_torch
+
+# Tokenizer path defaults to the model path.
+tokenizer_path: ${actor_rollout_ref.model.path}
+
+# Whether to stage model files through shared memory.
+use_shm: False
+
+# Whether to allow custom code from the model repository.
+trust_remote_code: False
+
+# Whether to enable gradient checkpointing while building the model.
+enable_gradient_checkpointing: False
+
+# Whether to offload activations to reduce GPU memory pressure.
+enable_activation_offload: False
+
+# Whether to remove padding before model forward when the model/engine supports it.
+use_remove_padding: False
+
+# Model config fields overridden after loading the HF config.
+override_config:
+  # Select the LeRobot policy path in the model implementation.
+  policy_type: lerobot
+
+  # Use eager attention for compatibility with the current VLA model path.
+  attn_implementation: eager
