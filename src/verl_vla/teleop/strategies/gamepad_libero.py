@@ -87,9 +87,9 @@ class LiberoGamepadStrategy(InterventionStrategyBase):
         right_y = self._axis_values.get(self.cfg.right_stick_y_axis, 0.0)
 
         delta_pos = np.zeros(3, dtype=np.float32)
-        delta_pos[0] = left_y * self.cfg.pos_sensitivity
-        delta_pos[1] = -left_x * self.cfg.pos_sensitivity
-        delta_pos[2] = -right_y * self.cfg.pos_sensitivity
+        delta_pos[0] = -left_y * self.cfg.pos_sensitivity
+        delta_pos[1] = left_x * self.cfg.pos_sensitivity
+        delta_pos[2] = right_y * self.cfg.pos_sensitivity
 
         dpad_up = self._button_states.get(self.cfg.dpad_up_button, False)
         dpad_down = self._button_states.get(self.cfg.dpad_down_button, False)
@@ -98,9 +98,9 @@ class LiberoGamepadStrategy(InterventionStrategyBase):
         right_x = self._axis_values.get(self.cfg.right_stick_x_axis, 0.0)
 
         delta_rot = np.zeros(3, dtype=np.float32)
-        delta_rot[0] = (dpad_left - dpad_right) * self.cfg.rot_sensitivity
-        delta_rot[1] = (dpad_up - dpad_down) * self.cfg.rot_sensitivity
-        delta_rot[2] = -right_x * self.cfg.rot_sensitivity
+        delta_rot[0] = 0.5 * (dpad_right - dpad_left) * self.cfg.rot_sensitivity
+        delta_rot[1] = 0.5 * (dpad_down - dpad_up) * self.cfg.rot_sensitivity
+        delta_rot[2] = right_x * self.cfg.rot_sensitivity
 
         rot_vec = Rotation.from_euler("XYZ", delta_rot).as_rotvec()
         command = np.concatenate([delta_pos, rot_vec]).astype(np.float32)

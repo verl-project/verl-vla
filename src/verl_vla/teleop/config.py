@@ -50,7 +50,7 @@ class XRControllerTeleopConfig:
 @dataclass(frozen=True)
 class GamepadTeleopConfig:
     pos_sensitivity: float = 0.5
-    rot_sensitivity: float = 1.0
+    rot_sensitivity: float = 0.5
     intervention_button: str = "RT"
     gripper_button: str = "X"
     button_threshold: float = 0.5
