@@ -17,7 +17,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 from torch.distributed.device_mesh import init_device_mesh
 from verl import DataProto
 from verl.single_controller.base import Worker
@@ -98,6 +98,7 @@ class EnvWorker(Worker, DistProfilerExtension):
         self.eval_simulator_list = []
 
         self.stage_num = self.cfg.rollout.pipeline_stage_num
+        self.stage_modes = ["train"] * self.stage_num
         self.single_env_rollout = bool(self.cfg.train.get("single_env_rollout", False))
         device_name = self.cfg.train.get("device", None) or get_device_name()
         if device_name == "cpu":
@@ -123,22 +124,54 @@ class EnvWorker(Worker, DistProfilerExtension):
             self, DistProfiler(rank=self.rank, config=profiler_config, tool_config=tool_config)
         )
 
+    def _make_eval_env_cfg(self):
+        eval_cfg = OmegaConf.create(OmegaConf.to_container(self.cfg.train, resolve=False))
+        OmegaConf.set_struct(eval_cfg, False)
+        if "teleop" in eval_cfg:
+            eval_cfg.teleop.enable = False
+        if "recorder" in eval_cfg:
+            eval_cfg.recorder.enable = False
+        return eval_cfg
+
+    def _simulators(self, mode: str):
+        if mode == "eval":
+            if not self.eval_simulator_list:
+                raise RuntimeError("Eval simulator is not initialized. Add 'eval' to env.train.modes.")
+            return self.eval_simulator_list
+        return self.simulator_list
+
     @register(dispatch_mode=Dispatch.ONE_TO_ALL)
     @DistProfiler.annotate(color="green", role="env_init")
     def init_worker(self):
         if self.cfg.train.simulator_type == "libero":
             from verl_vla.envs.libero_env.libero_env import LiberoEnv
 
+            modes = list(self.cfg.train.get("modes", ["train"]))
+            if not set(modes).issubset({"train", "eval"}):
+                raise ValueError(f"Unsupported LIBERO env modes: {modes}")
+            eval_cfg = self._make_eval_env_cfg() if "eval" in modes else None
             for stage_id in range(self.stage_num):
-                self.simulator_list.append(
-                    EnvManager(
-                        self.cfg.train,
-                        rank=self._rank,
-                        world_size=self._world_size,
-                        env_cls=LiberoEnv,
-                        stage_id=stage_id,
+                if "train" in modes:
+                    self.simulator_list.append(
+                        EnvManager(
+                            self.cfg.train,
+                            rank=self._rank,
+                            world_size=self._world_size,
+                            env_cls=LiberoEnv,
+                            stage_id=stage_id,
+                        )
                     )
-                )
+                if eval_cfg is not None:
+                    self.eval_simulator_list.append(
+                        EnvManager(
+                            eval_cfg,
+                            rank=self._rank,
+                            world_size=self._world_size,
+                            env_cls=LiberoEnv,
+                            stage_id=stage_id,
+                            only_eval=True,
+                        )
+                    )
 
         elif self.cfg.train.simulator_type == "isaac":
             from verl_vla.envs.isaac_env.isaac_env import IsaacEnv
@@ -185,8 +218,10 @@ class EnvWorker(Worker, DistProfilerExtension):
     @register(dispatch_mode=Dispatch.ONE_TO_ALL)
     @DistProfiler.annotate(color="green", role="env_init_simulator")
     def init_simulator(self):
-        for i in range(self.stage_num):
-            self.simulator_list[i].start_simulator()
+        for simulator in self.simulator_list:
+            simulator.start_simulator()
+        for simulator in self.eval_simulator_list:
+            simulator.start_simulator()
         return
 
     @register(dispatch_mode=make_nd_compute_dataproto_dispatch_fn(mesh_name="env"), blocking=False)
@@ -216,18 +251,11 @@ class EnvWorker(Worker, DistProfilerExtension):
         #     action_dim=self.cfg.actor.model.action_dim,
         # )
 
-        env_info_list = {}
-
-        extracted_obs, chunk_rewards, chunk_dones, chunk_truncations, infos = self.simulator_list[stage_id].step(
+        mode = self.stage_modes[stage_id]
+        simulators = self._simulators(mode)
+        extracted_obs, chunk_rewards, chunk_dones, chunk_truncations, infos = simulators[stage_id].step(
             chunk_actions, chunk_values=chunk_values
         )
-        chunk_completes = torch.logical_or(chunk_dones, chunk_truncations)
-
-        if chunk_completes.any():
-            if "final_info" in infos:
-                final_info = infos["final_info"]
-                for key in final_info["episode"]:
-                    env_info_list[key] = final_info["episode"][key][chunk_completes[:, -1]].cpu()
 
         env_batch = create_env_batch_dataproto(
             obs=extracted_obs,
@@ -235,14 +263,14 @@ class EnvWorker(Worker, DistProfilerExtension):
             dones=chunk_dones,
             truncations=chunk_truncations,
             infos=infos,
-            meta=env_info_list,
         )
         return env_batch
 
     @register(dispatch_mode=Dispatch.ONE_TO_ALL)
     def get_all_state_ids(self):
         """Get all available state IDs from the environment."""
-        state_ids = self.simulator_list[0].get_all_state_ids()
+        simulator = self.eval_simulator_list[0] if self.eval_simulator_list else self.simulator_list[0]
+        state_ids = simulator.get_all_state_ids()
         return state_ids
 
     @register(dispatch_mode=make_nd_compute_dataproto_dispatch_fn(mesh_name="env"), blocking=False)
@@ -255,6 +283,9 @@ class EnvWorker(Worker, DistProfilerExtension):
         """
         state_ids_list = list(data.non_tensor_batch["state_ids"])
         task_ids_list = list(data.non_tensor_batch["task_ids"])
+        mode = data.meta_info.get("mode", "train")
+        reset_eval = bool(data.meta_info.get("reset_eval", False))
+        simulators = self._simulators(mode)
 
         full_batch_size = self.cfg.train.num_envs * self.stage_num
         if self.single_env_rollout:
@@ -277,11 +308,13 @@ class EnvWorker(Worker, DistProfilerExtension):
             if self.cfg.train.simulator_type == "isaac":
                 assert len(set(stage_state_ids)) == 1, "rollout.n should equal to num_envs for isaac"
 
-            result = self.simulator_list[stage_id].reset(
+            self.stage_modes[stage_id] = mode
+            result = simulators[stage_id].reset(
                 options={
                     "env_idx": list(range(len(stage_state_ids))),
                     "reset_state_ids": stage_state_ids,
                     "task_ids": stage_task_ids,
+                    "reset_eval": reset_eval,
                 }
             )
             result_list.append(result)
@@ -299,7 +332,7 @@ class EnvWorker(Worker, DistProfilerExtension):
 
     @register(dispatch_mode=Dispatch.ONE_TO_ALL)
     @DistProfiler.annotate(color="gray", role="env_finish_rollout")
-    def finish_rollout(self, mode="train"):
+    def finish_rollout(self):
         for simulator in self.simulator_list:
             simulator.finish_rollout()
 

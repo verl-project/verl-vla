@@ -49,7 +49,7 @@ class BaseEnv(gym.Env):
         env_init(async_reset): Initialize simulator-specific resources. Async
             reset mode is passed here so subclasses can choose their initial
             task/state allocation policy.
-        env_reset(env_ids, reset_state_ids=None, task_ids=None, async_reset=False):
+        env_reset(env_ids, reset_state_ids=None, task_ids=None, async_reset=False, reset_eval=False):
             Reset simulator-specific state and return ``(obs, infos)``.
         env_step(action, env_ids): Step simulator-specific state once with
             action shape ``[B, D]`` and return the standard step-result dict
@@ -124,10 +124,11 @@ class BaseEnv(gym.Env):
     def reset(self, *, seed: int | None = None, options: dict[str, Any] | None = None) -> Any:
         del seed
         reset_kwargs = self._reset_kwargs_from_options(options)
-        if self.async_reset_enabled and self._latest_obs is not None:
+        reset_eval = bool(reset_kwargs.pop("reset_eval", False))
+        if self.async_reset_enabled and self._latest_obs is not None and not reset_eval:
             return self._latest_obs, {}
 
-        obs, infos = self.env_reset(async_reset=self.async_reset_enabled, **reset_kwargs)
+        obs, infos = self.env_reset(async_reset=self.async_reset_enabled, reset_eval=reset_eval, **reset_kwargs)
         env_ids = reset_kwargs["env_ids"]
         self._latest_obs = obs
         self.reset_teleops()
@@ -145,7 +146,15 @@ class BaseEnv(gym.Env):
     def env_init(self, *, async_reset: bool) -> None:
         """Initialize subclass-owned simulator resources."""
 
-    def env_reset(self, *, env_ids, reset_state_ids=None, task_ids=None, async_reset: bool = False):
+    def env_reset(
+        self,
+        *,
+        env_ids,
+        reset_state_ids=None,
+        task_ids=None,
+        async_reset: bool = False,
+        reset_eval: bool = False,
+    ):
         """Reset the underlying simulator and return ``(obs, infos)``.
 
         Args:
@@ -156,6 +165,8 @@ class BaseEnv(gym.Env):
                 ``reset_state_ids`` and may intentionally ignore this argument.
             async_reset: If True, preserve the subclass's current task
                 assignment and sample a new simulator state as needed.
+            reset_eval: If True, start a fresh evaluation queue and force a
+                real reset even when async reset has a cached latest obs.
         """
         raise NotImplementedError
 
@@ -192,12 +203,14 @@ class BaseEnv(gym.Env):
     def _reset_kwargs_from_options(self, options: dict[str, Any] | None) -> dict[str, Any]:
         options = options or {}
         env_ids = options.get("env_idx")
-        if env_ids is None:
+        reset_eval = bool(options.get("reset_eval", False))
+        if env_ids is None or reset_eval:
             env_ids = np.arange(self.num_envs)
         return {
             "env_ids": env_ids,
             "reset_state_ids": options.get("reset_state_ids"),
             "task_ids": options.get("task_ids"),
+            "reset_eval": reset_eval,
         }
 
     def mask_step(self, action, execute_mask, is_intervention, critic_value=None):

@@ -108,6 +108,15 @@ train:
     # LIBERO task suite name.
     task_suite_name: libero_spatial
 
+    # Optional task ids to sample/evaluate, e.g. [0] or [0, 1, 2].
+    task_ids: null
+
+    # Optional cap on the number of initial states per selected task.
+    num_trials_per_task: null
+
+    # Optional global LIBERO reset id for fixed-task/state debugging.
+    specific_reset_id: null
+
     # Number of zero-action simulator steps after reset to settle observations.
     reset_warmup_steps: 10
 

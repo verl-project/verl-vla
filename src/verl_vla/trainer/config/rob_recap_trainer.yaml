@@ -120,3 +120,7 @@ recap:
       trainer:
         project_name: recap
         experiment_name: policy
+  policy_eval:
+    enable: false
+    model_path: null
+    max_episodes: null

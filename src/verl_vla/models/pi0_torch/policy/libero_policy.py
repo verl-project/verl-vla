@@ -19,7 +19,6 @@ from verl.protocol import DataProto
 from .base import Pi0Input, Pi0Output
 
 PI0_MAX_STATE_DIM = 32
-PI0_ACTION_CHUNK_SIZE = 10
 LIBERO_ACTION_DIM = 7
 
 
@@ -80,6 +79,7 @@ class LiberoPi0Output(Pi0Output):
     @classmethod
     def from_model_output(cls, model_output: dict) -> "LiberoPi0Output":
         output = cls()
-        output.action = model_output["full_action"][:, :PI0_ACTION_CHUNK_SIZE, :LIBERO_ACTION_DIM]
+        action_chunk_size = int(model_output.get("action_chunk_size", model_output["full_action"].shape[1]))
+        output.action = model_output["full_action"][:, :action_chunk_size, :LIBERO_ACTION_DIM]
         output.log_prob = model_output.get("log_probs")
         return output

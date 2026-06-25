@@ -67,6 +67,8 @@ class LiberoResetStateMixin:
         self._generator = np.random.default_rng(seed=compose_seed(self.seed, self.rank, self.stage_id, 0, 0, 0))
         self._generator_ordered = np.random.default_rng(seed=compose_seed(self.seed, self.rank, self.stage_id, 0, 0, 1))
         self.start_idx = 0
+        self.use_eval_reset_queue = self.only_eval
+        self.eval_start_idx = 0
 
     def _init_env(self):
         env_fns = self.get_env_fns()
@@ -114,13 +116,14 @@ class LiberoResetStateMixin:
 
     def init_reset_states(self, *, async_reset: bool = False):
         self._compute_total_num_group_envs()
-        self.reset_state_ids_all = self.get_reset_state_ids_all()
+        self.reset_state_ids_all = self._build_rank_reset_queue(self.valid_reset_state_ids, shuffle=not self.only_eval)
+        self.eval_reset_state_ids_all = self._build_rank_reset_queue(self._build_eval_reset_state_ids(), shuffle=False)
         self.reset_state_ids = self._get_ordered_reset_state_ids(self.num_envs)
         self._init_task_and_trial_ids(async_reset=async_reset)
 
     def get_all_state_ids(self):
         """Returns all possible state IDs from the entire benchmark."""
-        return np.arange(self.total_num_group_envs)
+        return self.valid_reset_state_ids.copy()
 
     def load_state(self, state_buffer: bytes):
         self.env.load_state(state_buffer)
@@ -135,38 +138,123 @@ class LiberoResetStateMixin:
             self.total_num_group_envs += task_num_trials
 
         self.cumsum_trial_id_bins = np.cumsum(self.trial_id_bins)
+        self.valid_reset_state_ids = self._build_valid_reset_state_ids()
+
+    def _build_valid_reset_state_ids(self):
+        num_tasks = self.task_suite.get_num_tasks()
+        selected_task_ids = self.libero_cfg.task_ids
+        if selected_task_ids is None:
+            selected_task_ids = tuple(range(num_tasks))
+        self.selected_task_ids = tuple(selected_task_ids)
+        invalid_task_ids = [task_id for task_id in selected_task_ids if task_id < 0 or task_id >= num_tasks]
+        if invalid_task_ids:
+            raise ValueError(f"Unknown LIBERO task ids {invalid_task_ids}. Valid task ids: {list(range(num_tasks))}")
+
+        reset_state_ids = []
+        for task_id in selected_task_ids:
+            start = self.cumsum_trial_id_bins[task_id - 1] if task_id > 0 else 0
+            num_trials = self.trial_id_bins[task_id]
+            if self.libero_cfg.num_trials_per_task is not None:
+                num_trials = min(num_trials, int(self.libero_cfg.num_trials_per_task))
+            reset_state_ids.extend(range(start, start + num_trials))
+
+        if self.libero_cfg.specific_reset_id is not None:
+            specific_reset_id = int(self.libero_cfg.specific_reset_id)
+            if specific_reset_id not in reset_state_ids:
+                raise ValueError(f"specific_reset_id {specific_reset_id} is outside the configured LIBERO reset ids.")
+            reset_state_ids = [specific_reset_id]
+
+        if not reset_state_ids:
+            raise ValueError("LIBERO reset id filter produced no states.")
+        return np.asarray(reset_state_ids, dtype=np.int64)
 
     def _init_task_and_trial_ids(self, *, async_reset: bool = False):
         if not async_reset:
             self.task_ids, self.trial_ids = self._get_task_and_trial_ids_from_reset_state_ids(self.reset_state_ids)
             return
 
-        num_tasks = self.task_suite.get_num_tasks()
         stage_num = int(getattr(self.cfg, "pipeline_stage_num", 1))
         base_global_idx = (self.rank * stage_num + self.stage_id) * self.num_envs
-        self.task_ids = np.array([(base_global_idx + env_id) % num_tasks for env_id in range(self.num_envs)])
+        self.task_ids = np.array(
+            [
+                self.selected_task_ids[(base_global_idx + env_id) % len(self.selected_task_ids)]
+                for env_id in range(self.num_envs)
+            ]
+        )
         self.trial_ids = np.zeros(self.num_envs, dtype=int)
 
     def _get_random_reset_state_ids(self, num_reset_states):
-        reset_state_ids = self._generator.integers(low=0, high=self.total_num_group_envs, size=(num_reset_states,))
-        return reset_state_ids
+        indices = self._generator.integers(low=0, high=len(self.valid_reset_state_ids), size=(num_reset_states,))
+        return self.valid_reset_state_ids[indices]
 
-    def get_reset_state_ids_all(self):
-        reset_state_ids = np.arange(self.total_num_group_envs)
-        valid_size = len(reset_state_ids) - (len(reset_state_ids) % self.world_size)
-        if not self.cfg.only_eval:
+    def _build_rank_reset_queue(self, reset_state_ids, *, shuffle: bool):
+        reset_state_ids = np.asarray(reset_state_ids, dtype=np.int64).reshape(-1)
+        if reset_state_ids.size == 0:
+            raise ValueError("LIBERO reset queue is empty.")
+
+        min_size = self.world_size * self.num_envs
+        if reset_state_ids.size < min_size:
+            reset_state_ids = np.resize(reset_state_ids, min_size)
+
+        valid_size = reset_state_ids.size - (reset_state_ids.size % self.world_size)
+        reset_state_ids = reset_state_ids[:valid_size].copy()
+        if shuffle:
             self._generator_ordered.shuffle(reset_state_ids)
-        reset_state_ids = reset_state_ids[:valid_size]
-        reset_state_ids = reset_state_ids.reshape(self.world_size, -1)
+        return reset_state_ids.reshape(self.world_size, -1)
+
+    def _build_eval_reset_state_ids(self):
+        reset_state_ids = []
+        valid_reset_state_ids = set(self.valid_reset_state_ids.tolist())
+        max_trials = max(self.trial_id_bins) if self.trial_id_bins else 0
+        for trial_id in range(max_trials):
+            for task_id, num_trials in enumerate(self.trial_id_bins):
+                if trial_id >= num_trials:
+                    continue
+                start = self.cumsum_trial_id_bins[task_id - 1] if task_id > 0 else 0
+                reset_state_id = start + trial_id
+                if reset_state_id in valid_reset_state_ids:
+                    reset_state_ids.append(reset_state_id)
+        return np.asarray(reset_state_ids, dtype=np.int64)
+
+    def reset_eval_cursor(self):
+        self.eval_start_idx = 0
+        self.eval_reset_state_ids_all = self._build_rank_reset_queue(self._build_eval_reset_state_ids(), shuffle=False)
+
+    def _get_eval_reset_state_ids(self, num_reset_states):
+        reset_state_ids, self.eval_start_idx = self._take_rank_reset_state_ids(
+            self.eval_reset_state_ids_all,
+            start_idx=self.eval_start_idx,
+            num_reset_states=num_reset_states,
+        )
         return reset_state_ids
 
     def _get_ordered_reset_state_ids(self, num_reset_states):
-        reset_state_ids = self.reset_state_ids_all[self.rank][self.start_idx : self.start_idx + num_reset_states]
-        self.start_idx = self.start_idx + num_reset_states
-        if self.start_idx >= len(self.reset_state_ids_all[0]):
-            self.reset_state_ids_all = self.get_reset_state_ids_all()
-            self.start_idx = 0
+        reset_state_ids, self.start_idx = self._take_rank_reset_state_ids(
+            self.reset_state_ids_all,
+            start_idx=self.start_idx,
+            num_reset_states=num_reset_states,
+        )
+        if self.start_idx == 0:
+            self.reset_state_ids_all = self._build_rank_reset_queue(
+                self.valid_reset_state_ids, shuffle=not self.only_eval
+            )
         return reset_state_ids
+
+    def _take_rank_reset_state_ids(self, rank_queue, *, start_idx: int, num_reset_states: int):
+        rank_state_ids = np.asarray(rank_queue[self.rank], dtype=np.int64).reshape(-1)
+        if rank_state_ids.size == 0:
+            raise ValueError(f"LIBERO reset queue for rank {self.rank} is empty.")
+        indices = (start_idx + np.arange(num_reset_states)) % rank_state_ids.size
+        next_start_idx = (start_idx + num_reset_states) % rank_state_ids.size
+        return rank_state_ids[indices].astype(np.int64, copy=False), next_start_idx
+
+    def _normalize_reset_state_ids(self, reset_state_ids, count: int):
+        reset_state_ids = np.asarray(reset_state_ids, dtype=np.int64).reshape(-1)
+        if reset_state_ids.size == 0:
+            raise ValueError("LIBERO reset_state_ids must not be empty.")
+        if reset_state_ids.size < count:
+            reset_state_ids = np.resize(reset_state_ids, count)
+        return reset_state_ids[:count]
 
     def _get_task_and_trial_ids_from_reset_state_ids(self, reset_state_ids):
         task_ids = []
@@ -221,6 +309,7 @@ class LiberoResetStateMixin:
         self.env.set_init_state(init_state=self._get_reset_states(env_idx=env_idx), id=env_idx)
 
     def _reconfigure(self, reset_state_ids, env_idx):
+        reset_state_ids = self._normalize_reset_state_ids(reset_state_ids, count=len(env_idx))
         reconfig_env_idx = []
         task_ids, trial_ids = self._get_task_and_trial_ids_from_reset_state_ids(reset_state_ids)
         for j, env_id in enumerate(env_idx):
@@ -245,7 +334,8 @@ class LiberoResetStateMixin:
 class LiberoEnv(LiberoResetStateMixin, BaseEnv):
     env_type = "libero"
 
-    def __init__(self, cfg, rank, world_size, stage_id: int = 0):
+    def __init__(self, cfg, rank, world_size, stage_id: int = 0, only_eval: bool = False):
+        self.only_eval = only_eval
         self.libero_cfg = load_libero_config(cfg)
         super().__init__(cfg, rank, world_size, stage_id=stage_id)
         self._init_metrics()
@@ -329,6 +419,7 @@ class LiberoEnv(LiberoResetStateMixin, BaseEnv):
         reset_state_ids=None,
         task_ids=None,
         async_reset: bool = False,
+        reset_eval: bool = False,
     ):
         """Reset LIBERO envs.
 
@@ -341,7 +432,14 @@ class LiberoEnv(LiberoResetStateMixin, BaseEnv):
 
         # configure envs with the given reset state ids, then reset them and set their init states.
         env_ids = np.asarray(env_ids, dtype=np.int64)
-        if async_reset:
+        if reset_eval:
+            self.reset_eval_cursor()
+
+        if self.use_eval_reset_queue:
+            self.rollout_id += 1
+            reset_state_ids = self._get_eval_reset_state_ids(len(env_ids))
+            self._reconfigure(reset_state_ids, env_ids)
+        elif async_reset:
             self._reconfigure_random_trial(env_ids)
         else:
             self.rollout_id += 1

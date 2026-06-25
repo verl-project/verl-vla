@@ -37,6 +37,9 @@ class LiberoInitParamsConfig:
 class LiberoConfig:
     task_suite_name: str = "libero_spatial"
     reset_warmup_steps: int = 10
+    task_ids: tuple[int, ...] | None = None
+    num_trials_per_task: int | None = None
+    specific_reset_id: int | None = None
     init_params: LiberoInitParamsConfig = field(default_factory=LiberoInitParamsConfig)
 
 
@@ -59,6 +62,9 @@ def load_libero_config(cfg: DictConfig | Any) -> LiberoConfig:
     return LiberoConfig(
         task_suite_name=str(raw.get("task_suite_name", LiberoConfig.task_suite_name)),
         reset_warmup_steps=int(raw.get("reset_warmup_steps", LiberoConfig.reset_warmup_steps)),
+        task_ids=_to_optional_int_tuple(raw.get("task_ids")),
+        num_trials_per_task=_to_optional_int(raw.get("num_trials_per_task")),
+        specific_reset_id=_to_optional_int(raw.get("specific_reset_id")),
         init_params=init_cfg,
     )
 
@@ -67,3 +73,19 @@ def _to_dict(raw: Any) -> dict[str, Any]:
     if isinstance(raw, DictConfig):
         raw = OmegaConf.to_container(raw, resolve=True)
     return dict(raw or {})
+
+
+def _to_optional_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    return int(value)
+
+
+def _to_optional_int_tuple(value: Any) -> tuple[int, ...] | None:
+    if value is None:
+        return None
+    if isinstance(value, int):
+        return (value,)
+    if isinstance(value, str):
+        value = [item.strip() for item in value.split(",") if item.strip()]
+    return tuple(int(item) for item in value)

@@ -17,6 +17,7 @@ from omegaconf import OmegaConf
 
 from verl_vla.trainer.recap.collect import collect_recap_env_data
 from verl_vla.trainer.recap.policy import train_recap_policy
+from verl_vla.trainer.recap.policy_eval import eval_recap_policy
 from verl_vla.trainer.recap.returns import CollectedDatasets, DatasetInfo, ensure_recap_fields
 from verl_vla.trainer.recap.value_infer import infer_recap_values
 from verl_vla.trainer.recap.value_model import train_recap_value_model
@@ -88,8 +89,21 @@ def main(config):
                     "repo_id": str(policy_cfg.repo_id),
                 }
             }
-        train_recap_policy(config, collected_datasets)
+        policy_path = train_recap_policy(config, collected_datasets)
         print("ReCap policy training finished.")
+    else:
+        policy_path = None
+
+    # Step 6: evaluate the RECAP policy on the environment benchmark.
+    if OmegaConf.select(config, "recap.policy_eval.enable", default=False):
+        if policy_path is None:
+            policy_path = OmegaConf.select(config, "recap.policy_eval.model_path")
+        if policy_path is None:
+            raise ValueError(
+                "recap.policy_eval.enable=True requires recap.policy.enable=True or recap.policy_eval.model_path."
+            )
+        metrics = eval_recap_policy(config, policy_path)
+        print(f"ReCap policy eval finished with metrics: {metrics}")
 
 
 if __name__ == "__main__":
