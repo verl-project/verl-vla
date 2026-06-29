@@ -17,6 +17,9 @@
 # Select the LIBERO policy path in the model implementation.
 policy_type: libero
 
+# Attention implementation used by the PI0 backbone.
+attn_implementation: eager
+
 # Enable SAC-specific model heads.
 sac_enable: True
 

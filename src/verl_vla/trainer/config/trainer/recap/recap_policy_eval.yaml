@@ -31,6 +31,9 @@ model_path: checkpoints/recap/policy/global_step_2150/actor/huggingface
 # by the eval environment.
 max_episodes: null
 
+# Whether the first RECAP iteration should evaluate without ACP prompt tagging.
+disable_acp_on_first_iteration: true
+
 
 # Policy evaluation initializes only eval simulators and disables dataset/video recording.
 cluster:
@@ -42,4 +45,6 @@ cluster:
       modes:
         - eval
       recorder:
-        enable: false
+        enable: true
+        recorders:
+          - video

@@ -1,0 +1,30 @@
+{
+  "license": "apache-2.0",
+  "model_type": "recap_value_critic",
+  "architectures": [
+    "ReCapValueCriticForConditionalGeneration"
+  ],
+  "auto_map": {
+    "AutoConfig": "configuration_recap_value_critic.ReCapValueCriticConfig",
+    "AutoModel": "modeling_recap_value_critic.ReCapValueCriticForConditionalGeneration",
+    "AutoModelForVision2Seq": "modeling_recap_value_critic.ReCapValueCriticForConditionalGeneration"
+  },
+  "siglip_path": "google/siglip-so400m-patch14-384",
+  "gemma3_path": "google/gemma-3-270m",
+  "tokenizer_path": "google/gemma-3-270m",
+  "critic_expert_variant": "gemma3_100m",
+  "image_size": 384,
+  "max_token_len": 200,
+  "include_state_in_prompt": true,
+  "max_state_dim": 32,
+  "freeze_vision_encoder": true,
+  "freeze_vlm": true,
+  "stop_gradient_to_vlm": true,
+  "precision": "bfloat16",
+  "sft_type": "value_model",
+  "value_head_num_bins": 201,
+  "value_head_v_min": -1.0,
+  "value_head_v_max": 0.0,
+  "value_head_dropout": 0.0,
+  "value_head_hidden_dim": 0
+}

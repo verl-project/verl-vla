@@ -33,7 +33,6 @@ class SimulatorConfig(BaseConfig):
 
     simulator_type: str = "libero"
     seed: int = 42
-    max_interactions: int = 1
     max_episode_steps: int = 512
     task_suite_name: str = "libero_spatial"
     task_ids: list[int] | None = None

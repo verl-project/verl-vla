@@ -273,18 +273,11 @@ class TrainCluster:
     def train_world_size(self) -> int:
         return int(self.worker_groups[ROLE_TO_WORKER_NAME[Role.Actor]].world_size)
 
-    def rollout(self, prompts: DataProto) -> tuple[DataProto, dict[str, dict[str, Any]]]:
+    def rollout(self) -> tuple[DataProto, dict[str, dict[str, Any]]]:
         if self.cluster_type != "env_loop":
             raise RuntimeError("rollout is only wired for env-loop train clusters.")
 
-        reset_future = self.worker_groups["env"].reset_envs_to_state_ids(
-            DataProto.from_dict(
-                non_tensors={
-                    "state_ids": prompts.non_tensor_batch["state_ids"],
-                    "task_ids": prompts.non_tensor_batch["task_ids"],
-                }
-            )
-        )
+        reset_future = self.worker_groups["env"].reset_envs_to_state_ids(DataProto.from_dict())
         assert self.env_loop is not None
         output = self.env_loop.generate_sequences(reset_future)
         return output, self._collect_lerobot_datasets()

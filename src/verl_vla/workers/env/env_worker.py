@@ -287,19 +287,15 @@ class EnvWorker(Worker, DistProfilerExtension):
         full_batch_size = self.env_worker_cfg.num_envs * self.stage_num
         if "state_ids" in data.non_tensor_batch:
             state_ids_list = list(data.non_tensor_batch["state_ids"])
-        elif mode == "eval":
-            state_ids_list = None
         else:
-            raise KeyError("reset_envs_to_state_ids requires non_tensor_batch['state_ids'] outside eval mode.")
+            state_ids_list = None
 
         if "task_id" in data.non_tensor_batch:
             task_ids_list = list(data.non_tensor_batch["task_id"])
         elif "task_ids" in data.non_tensor_batch:
             task_ids_list = list(data.non_tensor_batch["task_ids"])
-        elif mode == "eval":
-            task_ids_list = None
         else:
-            raise KeyError("reset_envs_to_state_ids requires non_tensor_batch['task_ids'] outside eval mode.")
+            task_ids_list = None
 
         if state_ids_list is not None:
             assert len(state_ids_list) == full_batch_size, (

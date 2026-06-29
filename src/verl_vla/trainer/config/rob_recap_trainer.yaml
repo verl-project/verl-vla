@@ -14,23 +14,23 @@
 
 defaults:
 
-  # Stage 1: collect rollout data into a LeRobot dataset.
+  # Stage 1: evaluate the configured RECAP policy on the environment benchmark.
+  - /trainer/recap/recap_policy_eval@recap.policy_eval
+
+  # Stage 2: collect rollout data into a LeRobot dataset.
   - /trainer/recap/recap_collect_data@recap.collect_data
 
-  # Stage 2: compute RECAP returns for the collected LeRobot dataset.
+  # Stage 3: compute RECAP returns for the collected LeRobot dataset.
   - /trainer/recap/recap_compute_return@recap.compute_return
 
-  # Stage 3: train the RECAP value model with actor-only SFT.
+  # Stage 4: train the RECAP value model with actor-only SFT.
   - /trainer/recap/recap_train_value_model@recap.train_value_model
 
-  # Stage 4: infer RECAP values and write them back to the LeRobot dataset.
+  # Stage 5: infer RECAP values and write them back to the LeRobot dataset.
   - /trainer/recap/recap_value_infer@recap.value_infer
 
-  # Stage 5: train the final RECAP policy with actor-only SFT.
+  # Stage 6: train the final RECAP policy with actor-only SFT.
   - /trainer/recap/recap_train_policy@recap.train_policy
-
-  # Stage 6: evaluate the final RECAP policy on the environment benchmark.
-  - /trainer/recap/recap_policy_eval@recap.policy_eval
 
   - _self_
 
@@ -41,3 +41,14 @@ ray_kwargs:
   # Arguments forwarded to ray.init.
   ray_init:
     num_cpus: null
+
+
+# RECAP loop settings.
+recap:
+
+  # Number of full RECAP iterations to run.
+  num_iterations: 1
+
+  # Optional cumulative LeRobot dataset root used by RECAP SFT stages.
+  # Null keeps using the freshly collected dataset for the current iteration.
+  sft_dataset_path: null

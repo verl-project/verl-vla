@@ -14,10 +14,12 @@
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 
 import numpy as np
 import pyarrow.parquet as pq
+from omegaconf import OmegaConf
 
 from verl_vla.utils.lerobot import (
     collect_lerobot_columns,
@@ -26,6 +28,8 @@ from verl_vla.utils.lerobot import (
     update_lerobot_feature_metadata,
     write_parquet_columns,
 )
+from verl_vla.utils.recorder import merge_lerobot_datasets
+from verl_vla.utils.recorder.lerobot import REQUIRED_LEROBOT_META_FILES
 
 DatasetInfo = dict[str, str | Path]
 CollectedDatasets = dict[str, DatasetInfo]
@@ -110,6 +114,56 @@ def ensure_recap_fields(config, collected_datasets: CollectedDatasets) -> Collec
             clip_min=clip_min,
             clip_max=clip_max,
         )
+    return collected_datasets
+
+
+def merge_recap_collected_dataset_into_sft_dataset(
+    config,
+    collected_datasets: CollectedDatasets,
+) -> CollectedDatasets:
+    collected_dataset = collected_datasets.get("collected_dataset")
+    sft_dataset_path = OmegaConf.select(config, "recap.sft_dataset_path", default=None)
+    if collected_dataset is None or sft_dataset_path in (None, ""):
+        return collected_datasets
+
+    sft_dataset_root = Path(str(sft_dataset_path))
+    sft_repo_id = f"local/{sft_dataset_root.name}"
+    collected_root = Path(collected_dataset["root"])
+
+    if collected_root.resolve() != sft_dataset_root.resolve() and all(
+        (sft_dataset_root / path).exists() for path in REQUIRED_LEROBOT_META_FILES
+    ):
+        merged_dataset = merge_lerobot_datasets(
+            roots=[collected_root],
+            output_root=sft_dataset_root,
+            repo_id=sft_repo_id,
+            repo_ids=[str(collected_dataset["repo_id"])],
+            append=True,
+            cleanup_roots=True,
+            video_files_size_in_mb=float(
+                OmegaConf.select(
+                    config,
+                    "recap.collect_data.cluster.env.env_worker.recorder.lerobot.video_files_size_in_mb",
+                    default=1e-6,
+                )
+            ),
+        )
+    elif collected_root.resolve() != sft_dataset_root.resolve():
+        shutil.rmtree(sft_dataset_root, ignore_errors=True)
+        sft_dataset_root.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(collected_root), str(sft_dataset_root))
+        merged_dataset = {
+            "root": sft_dataset_root,
+            "repo_id": sft_repo_id,
+        }
+    else:
+        merged_dataset = {
+            "root": sft_dataset_root,
+            "repo_id": sft_repo_id,
+        }
+
+    collected_datasets["collected_dataset"] = merged_dataset
+    collected_datasets.pop("existing_dataset", None)
     return collected_datasets
 
 

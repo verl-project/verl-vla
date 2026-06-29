@@ -12,28 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-defaults:
+from verl_vla.models.recap_value_critic.modeling_recap_value_critic import (
+    ReCapValueCriticForConditionalGeneration,
+    ReCapValueCriticForPrediction,
+)
 
-  # TrainCluster config used by this rollout collection stage.
-  - /cluster@cluster: env_rollout_cluster
-
-  # Apply this stage config last.
-  - _self_
-
-
-# Whether to run rollout data collection.
-enable: true
-
-# Number of completed trajectories to collect.
-max_episodes: 1
-
-
-# Rollout collection records both LeRobot datasets and visualization videos.
-cluster:
-  env:
-    env_worker:
-      recorder:
-        enable: true
-        recorders:
-          - lerobot
-          - video
+__all__ = ["ReCapValueCriticForConditionalGeneration", "ReCapValueCriticForPrediction"]

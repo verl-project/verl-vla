@@ -20,21 +20,22 @@ from verl_vla.trainer.train_cluster import TrainCluster
 from verl_vla.utils.ray_utils import ensure_ray_initialized, get_controller_remote_options
 
 
-def _build_policy_eval_config(config, policy_path: str):
+def _build_policy_eval_config(config, policy_path: str, *, disable_acp: bool = False):
     eval_config_node = OmegaConf.select(config, "recap.policy_eval")
     if eval_config_node is None:
         raise ValueError("`recap.policy_eval` is required when RECAP policy evaluation is enabled.")
 
-    eval_config = OmegaConf.create(OmegaConf.to_container(eval_config_node, resolve=True))
+    eval_config = OmegaConf.create(OmegaConf.to_container(eval_config_node, resolve=False))
     OmegaConf.set_struct(eval_config, False)
     OmegaConf.update(eval_config, "cluster.actor_rollout_ref.model.path", str(policy_path))
-    OmegaConf.update(eval_config, "cluster.actor_rollout_ref.model.tokenizer_path", str(policy_path))
+    if disable_acp:
+        OmegaConf.update(eval_config, "cluster.actor_rollout_ref.rollout.acp.enable", False)
     OmegaConf.resolve(eval_config)
     return eval_config
 
 
-def eval_recap_policy(config, policy_path: str) -> dict[str, float]:
-    eval_config = _build_policy_eval_config(config, policy_path)
+def eval_recap_policy(config, policy_path: str, *, disable_acp: bool = False) -> dict[str, float]:
+    eval_config = _build_policy_eval_config(config, policy_path, disable_acp=disable_acp)
     ensure_ray_initialized(config)
     remote_options = get_controller_remote_options(eval_config)
     return ray.get(run_policy_eval.options(**remote_options).remote(eval_config))

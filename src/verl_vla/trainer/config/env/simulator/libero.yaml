@@ -20,9 +20,6 @@ simulator_type: libero
 # Random seed for simulator initialization and reset sampling.
 seed: 42
 
-# Maximum simulator interaction rounds per rollout.
-max_interactions: 4
-
 # Maximum number of simulator steps per episode.
 max_episode_steps: 512
 

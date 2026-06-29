@@ -40,7 +40,7 @@ cluster:
 
   actor_rollout_ref:
     model:
-      path: /file_system/liujincheng/Projects/verl-vla/examples/recap_value_critic_hf
+      path: /file_system/liujincheng/Projects/verl-vla/assets/hf_models/recap_value_critic
       tokenizer_path: google/gemma-3-270m
       trust_remote_code: true
 
@@ -63,3 +63,7 @@ trainer:
   experiment_name: value_model
   early_stopping:
     enable: true
+    window_size: 300
+    min_improvement_ratio: 0.0005
+    patience_windows: 16
+    warmup_steps: 500

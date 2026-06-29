@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -37,6 +38,40 @@ def load_lerobot_feature_names(dataset_root: str | Path) -> set[str]:
     with open(info_path) as f:
         info = json.load(f)
     return set(info.get("features", {}).keys())
+
+
+def count_lerobot_episodes(dataset_root: str | Path) -> int:
+    info_path = Path(dataset_root) / "meta" / "info.json"
+    if not info_path.exists():
+        return 0
+    with open(info_path) as f:
+        info = json.load(f)
+    return int(info.get("total_episodes", 0))
+
+
+def truncate_lerobot_episodes(dataset_root: str | Path, max_episodes: int) -> None:
+    root = Path(dataset_root)
+    if max_episodes <= 0:
+        raise ValueError(f"max_episodes must be positive, got {max_episodes}.")
+
+    total_episodes = count_lerobot_episodes(root)
+    if total_episodes <= max_episodes:
+        return
+
+    from lerobot.datasets.dataset_tools import delete_episodes
+    from lerobot.datasets.lerobot_dataset import LeRobotDataset
+
+    tmp_root = root.parent / f".{root.name}.truncate_tmp"
+    shutil.rmtree(tmp_root, ignore_errors=True)
+    dataset = LeRobotDataset(repo_id=f"local/{root.name}", root=root)
+    delete_episodes(
+        dataset,
+        episode_indices=list(range(max_episodes, total_episodes)),
+        output_dir=tmp_root,
+        repo_id=f"local/{tmp_root.name}",
+    )
+    shutil.rmtree(root)
+    shutil.move(str(tmp_root), str(root))
 
 
 def collect_lerobot_columns(data_files: list[str | Path]) -> set[str]:
