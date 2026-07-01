@@ -75,6 +75,7 @@ class GamepadDevice(DeviceBase):
             elif event_type == "gamepad_disconnect":
                 self._connected = False
                 self._device_id = ""
+                self._latest_state.clear()
                 self._button_states.clear()
                 self._axis_values.clear()
 

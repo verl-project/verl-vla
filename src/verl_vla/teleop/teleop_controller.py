@@ -155,7 +155,7 @@ class TeleopController:
         if device_type == "xr_controller":
             return XRControllerDevice(XRControllerDeviceCfg(max_events=self.teleop_cfg.xr_controller.max_events))
         if device_type == "gamepad":
-            return GamepadDevice(GamepadDeviceCfg())
+            return GamepadDevice(GamepadDeviceCfg(max_events=self.teleop_cfg.gamepad.max_events))
         raise NotImplementedError(f"Teleop device {device_type} is not implemented")
 
     def _create_strategy(self, device_type: str) -> InterventionStrategyBase:

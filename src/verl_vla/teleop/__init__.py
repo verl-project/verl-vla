@@ -12,14 +12,22 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from verl_vla.teleop.config import KeyboardTeleopConfig, TeleopConfig, TeleopServerConfig
+from verl_vla.teleop.config import (
+    GamepadTeleopConfig,
+    KeyboardTeleopConfig,
+    TeleopConfig,
+    TeleopServerConfig,
+    XRControllerTeleopConfig,
+)
 from verl_vla.teleop.obs_server import TeleopServer
 from verl_vla.teleop.teleop_controller import TeleopController
 
 __all__ = [
+    "GamepadTeleopConfig",
     "KeyboardTeleopConfig",
     "TeleopConfig",
     "TeleopController",
     "TeleopServerConfig",
     "TeleopServer",
+    "XRControllerTeleopConfig",
 ]

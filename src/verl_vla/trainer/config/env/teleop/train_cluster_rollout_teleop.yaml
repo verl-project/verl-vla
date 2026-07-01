@@ -22,6 +22,9 @@ defaults:
   # WebXR controller teleop device config.
   - /env/teleop@xr_controller: xr_controller
 
+  # Browser gamepad teleop device config.
+  - /env/teleop@gamepad: gamepad
+
   # Apply this teleop config last.
   - _self_
 

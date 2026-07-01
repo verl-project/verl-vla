@@ -56,8 +56,6 @@ class LiberoGamepadStrategy(InterventionStrategyBase):
         command = self._command_from_device(device)
         action_array = np.asarray(action)
         if not self.is_intervening(device):
-            if action_array.shape != command.shape:
-                return self._default_command()
             return action
         command = self._state_to_action(action, command)
         if action_array.shape == command.shape:
