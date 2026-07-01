@@ -64,5 +64,5 @@ trainer:
   resume_dataloader_state: false
   early_stopping:
     enable: true
-    window_size: 200
-    warmup_steps: 300
+    window_size: 500
+    warmup_steps: 800

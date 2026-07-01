@@ -40,9 +40,18 @@ defaults:
 
 # RECAP loop settings.
 recap:
+  _target_: verl_vla.trainer.recap.config.MainReCapConfig
 
   # Number of full RECAP iterations to run.
   num_iterations: 1
+
+  # One-based RECAP iteration to resume from.
+  resume_iteration: 1
+
+  # One-based stage step to enter within resume_iteration:
+  # 1 policy_eval, 2 collect_data, 3 compute_return, 4 train_value_model,
+  # 5 value_infer, 6 train_policy.
+  resume_step: 1
 
   # Optional cumulative LeRobot dataset root used by RECAP SFT stages.
   # Null keeps using the freshly collected dataset for the current iteration.
