@@ -23,9 +23,10 @@ import ray
 import torch
 from ray.util.placement_group import remove_placement_group
 from verl import DataProto
+from verl.checkpoint_engine import CheckpointEngineManager
 from verl.single_controller.ray import RayClassWithInitArgs, RayWorkerGroup
-from verl.single_controller.ray.base import create_colocated_worker_cls
 from verl.trainer.ppo.utils import Role
+from verl.utils.config import omega_conf_to_dataclass
 
 from verl_vla.env_loop.env_loop import EnvLoop
 from verl_vla.trainer.train_cluster.checkpoint import CheckpointHelper
@@ -35,6 +36,7 @@ from verl_vla.utils.recorder import merge_lerobot_datasets
 from verl_vla.utils.recorder.lerobot import REQUIRED_LEROBOT_META_FILES
 from verl_vla.workers.engine import VLAActorRolloutRefWorker, VLAActorWorker, VLARolloutWorker
 from verl_vla.workers.env.env_worker import EnvWorker
+from verl_vla.workers.rollout.vla_replica import VLARolloutReplica
 
 __all__ = [
     "TrainCluster",
@@ -88,6 +90,7 @@ class TrainCluster:
         self.worker_groups: dict[str, Any] = {}
         self.env_loop: EnvLoop | None = None
         self.checkpoint_helper: CheckpointHelper | None = None
+        self.checkpoint_engine_manager: CheckpointEngineManager | None = None
         self.rollout_state = RolloutState()
         self._pending_rollout_ref: ray.ObjectRef | None = None
 
@@ -117,6 +120,7 @@ class TrainCluster:
                 env_wg=env_wg,
             )
             self.rollout_state.reset_future = env_wg.reset_env()
+            self._init_checkpoint_engine_manager()
 
         if self.config.checkpoint is not None:
             actor_config = self.config.actor_rollout_ref.actor
@@ -161,6 +165,7 @@ class TrainCluster:
         self.worker_groups = {}
         self.env_loop = None
         self.checkpoint_helper = None
+        self.checkpoint_engine_manager = None
         self.resource_pool_manager = None
         self.rollout_state = RolloutState()
         self._pending_rollout_ref = None
@@ -172,7 +177,6 @@ class TrainCluster:
         self.resource_pool_manager.create_resource_pool()
         self.worker_groups = {}
 
-        resource_pool_to_cls = {pool: {} for pool in self.resource_pool_manager.resource_pool_dict.values()}
         role_worker_mapping = self._role_worker_mapping()
         for role, pool_name in self.role_to_pool.items():
             resource_pool = self.resource_pool_manager.get_resource_pool(role)
@@ -183,18 +187,11 @@ class TrainCluster:
                 config=worker_config,
                 role=worker_name,
             )
-            resource_pool_to_cls[resource_pool][worker_name] = ray_cls_with_init
-
-        for resource_pool, class_dict in resource_pool_to_cls.items():
-            if not class_dict:
-                continue
-            worker_dict_cls = create_colocated_worker_cls(class_dict=class_dict)
-            wg_dict = RayWorkerGroup(
+            self.worker_groups[worker_name] = RayWorkerGroup(
                 resource_pool=resource_pool,
-                ray_cls_with_init=worker_dict_cls,
+                ray_cls_with_init=ray_cls_with_init,
                 device_name=self.config.resource.model.device,
             )
-            self.worker_groups.update(wg_dict.spawn(prefix_set=class_dict.keys()))
 
         for worker_name in [
             ROLE_TO_WORKER_NAME[Role.Actor],
@@ -314,6 +311,29 @@ class TrainCluster:
         if callable(dump_memory_snapshot):
             dump_memory_snapshot(tag=tag, sub_dir=sub_dir)
 
+    def _init_checkpoint_engine_manager(self) -> None:
+        if not isinstance(self.config, EnvLoopTrainClusterConfig):
+            return
+        if not self.config.resource.separate_rollout_model.enabled:
+            return
+        if ROLE_TO_WORKER_NAME[Role.Rollout] not in self.worker_groups:
+            return
+
+        rollout_config = omega_conf_to_dataclass(self.config.actor_rollout_ref.rollout)
+        rollout_replicas = [
+            VLARolloutReplica(
+                replica_rank=0,
+                config=rollout_config,
+                model_config=self.config.actor_rollout_ref.model,
+                rollout_workers=self.worker_groups[ROLE_TO_WORKER_NAME[Role.Rollout]].workers,
+            )
+        ]
+        self.checkpoint_engine_manager = CheckpointEngineManager(
+            config=omega_conf_to_dataclass(self.config.actor_rollout_ref.rollout.checkpoint_engine),
+            trainer=self.actor_worker_group,
+            replicas=rollout_replicas,
+        )
+
     @property
     def actor_worker_group(self):
         actor_wg = self.worker_groups.get(ROLE_TO_WORKER_NAME[Role.Actor])
@@ -355,6 +375,9 @@ class TrainCluster:
 
             assert self._pending_rollout_ref is not None
             output, collected_datasets, metrics, self.rollout_state = ray.get(self._pending_rollout_ref)
+
+            self.update_weights()
+
             self._pending_rollout_ref = ray_rollout_once.remote(
                 self.env_loop,
                 self.config,
@@ -432,6 +455,13 @@ class TrainCluster:
         if async_update:
             return actor_wg.update_actor_async(data)
         return actor_wg.update_actor(data)
+
+    def update_weights(self) -> None:
+        assert self.cluster_type == "env_loop"
+
+        if self.config.resource.separate_rollout_model.enabled:
+            assert self.checkpoint_engine_manager is not None
+            self.checkpoint_engine_manager.update_weights()
 
     def eval(
         self,
@@ -666,11 +696,11 @@ class TrainCluster:
             )
         return metrics
 
-    def update_weights(self, *args: Any, **kwargs: Any) -> Any: ...
-
     def load_checkpoint(self) -> tuple[int, str] | None:
         assert self.checkpoint_helper is not None
-        return self.checkpoint_helper.load()
+        checkpoint_state = self.checkpoint_helper.load()
+        self.update_weights()
+        return checkpoint_state
 
     def save_checkpoint(
         self,
