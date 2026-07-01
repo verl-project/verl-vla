@@ -32,7 +32,7 @@ def ensure_ray_initialized(config) -> None:
     runtime_env = OmegaConf.merge(default_runtime_env, runtime_env_kwargs)
     ray_init_kwargs = OmegaConf.create({**ray_init_kwargs, "runtime_env": runtime_env})
     logger.info("ray init kwargs: %s", ray_init_kwargs)
-    ray.init(**OmegaConf.to_container(ray_init_kwargs))
+    ray.init(**OmegaConf.to_container(ray_init_kwargs, resolve=True))
 
 
 def get_controller_remote_options(config) -> dict:

@@ -171,7 +171,7 @@ class PI0ForActionPrediction(PreTrainedModel, SupportSACTraining, SupportSFTTrai
         self,
         env_obs: DataProto,
         tokenizer,
-        validate: bool = False,
+        eval: bool = False,
     ) -> tuple[Pi0Output, dict, dict]:
         """Run one forward pass from raw inputs to final action sequence.
 
@@ -202,7 +202,7 @@ class PI0ForActionPrediction(PreTrainedModel, SupportSACTraining, SupportSFTTrai
             {"task": pi0_input.task, "observation.state": state}, tokenizer
         )
 
-        if self.flow_sde_enable and not validate:
+        if self.flow_sde_enable and not eval:
             prefix_features = self.model.embed_prefix(
                 images=images,
                 img_masks=pi0_input.img_masks,
@@ -557,9 +557,9 @@ class PI0ForActionPrediction(PreTrainedModel, SupportSACTraining, SupportSFTTrai
         self,
         obs: DataProto,
         tokenizer: torch.nn.Module | None = None,
-        validate: bool = False,
+        eval: bool = False,
     ) -> Pi0Output:
-        pi0_output, _, _ = self.sample_actions(obs, tokenizer, validate)
+        pi0_output, _, _ = self.sample_actions(obs, tokenizer, eval)
         return pi0_output
 
     @torch.no_grad()

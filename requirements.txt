@@ -1,3 +1,5 @@
 verl==0.7.1
+lerobot==0.4.4
+numpy<2.0.0
 timm==0.9.16
 onnx-ir

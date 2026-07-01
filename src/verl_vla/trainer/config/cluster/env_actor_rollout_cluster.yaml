@@ -12,14 +12,25 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .base import register_vla_rollouts
-from .hf_rollout import HFRollout
-from .naive_rollout_rob import NaiveRolloutRob
+# Env + actor/rollout TrainCluster config.
 
-register_vla_rollouts()
+defaults:
 
-__all__ = [
-    "HFRollout",
-    "NaiveRolloutRob",
-    "register_vla_rollouts",
-]
+  # Resource placement used by TrainCluster.
+  - /cluster/resource@resource: env_rollout
+
+  # Actor and rollout worker config.
+  - /actor_rollout_ref@actor_rollout_ref: actor_rollout
+
+  # Environment config.
+  - /env@env: train_cluster_rollout_env
+
+  # Checkpoint path, retention, and resume config.
+  - /cluster/checkpoint@checkpoint: actor
+
+  # Apply this TrainCluster config last.
+  - _self_
+
+
+# Target class for this cluster configuration.
+_target_: verl_vla.trainer.train_cluster.config.EnvLoopTrainClusterConfig

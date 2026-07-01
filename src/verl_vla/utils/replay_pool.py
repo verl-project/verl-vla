@@ -25,7 +25,7 @@ logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
 
 VALID_KEY = "info.valids"
-POSITIVE_SAMPLE_MASK_KEY = "info.positive_sample_mask"
+SUCCESS_MASK_KEY = "info.success_mask"
 
 
 @dataclass
@@ -55,6 +55,7 @@ class SACReplayPool:
         self.size = 0
         self.positive_size = 0
         self.negative_size = 0
+        self._invalid_sample: DataProto | None = None
         self.rank = torch.distributed.get_rank() if torch.distributed.is_initialized() else 0
 
     def add_batch(self, batch: DataProto, task_ids: Sequence[Any]):
@@ -66,14 +67,19 @@ class SACReplayPool:
         valid_mask = batch.batch[VALID_KEY].to(torch.bool)
         valid_indices = torch.nonzero(valid_mask, as_tuple=False).squeeze(-1)
         if valid_indices.numel() == 0:
+            if self.size == 0 and self._invalid_sample is None:
+                self._invalid_sample = self._index_select_batch(
+                    batch,
+                    torch.zeros(1, dtype=torch.long, device=batch.batch[VALID_KEY].device),
+                )
             return
 
         batch = self._index_select_batch(batch, valid_indices)
         selected = valid_indices.cpu().tolist()
         task_ids = [task_ids[i] for i in selected]
         if self.positive_only:
-            positive_sample_mask = batch.batch[POSITIVE_SAMPLE_MASK_KEY].clone()
-            batch.batch[POSITIVE_SAMPLE_MASK_KEY] = torch.ones_like(positive_sample_mask)
+            success_mask = batch.batch[SUCCESS_MASK_KEY].clone()
+            batch.batch[SUCCESS_MASK_KEY] = torch.ones_like(success_mask)
 
         positive_mask = (
             torch.ones(len(batch), device=valid_indices.device, dtype=torch.bool)
@@ -114,7 +120,19 @@ class SACReplayPool:
         return_sample_info: bool = False,
     ) -> DataProto | tuple[DataProto, dict]:
         if self.size == 0:
-            raise ValueError("Replay pool is empty, unable to sample.")
+            if self._invalid_sample is None:
+                raise ValueError("Replay pool is empty, unable to sample.")
+
+            sampled_batch = self._sample_invalid_batch(batch_size)
+            if not return_sample_info:
+                return sampled_batch
+            sample_info = {
+                "actual_positive_sample_ratio": 0.0,
+                "positive_size": self.positive_size,
+                "negative_size": self.negative_size,
+                "task_count": len(self.task_pools),
+            }
+            return sampled_batch, sample_info
 
         positive_sample_ratio = 1.0 if self.positive_only else max(0.0, min(1.0, float(positive_sample_ratio)))
         target_positive = int(round(batch_size * positive_sample_ratio))
@@ -333,7 +351,7 @@ class SACReplayPool:
         return self.task_pools[task_id]
 
     def _extract_positive_mask(self, batch: DataProto) -> torch.Tensor:
-        positive_mask = batch.batch[POSITIVE_SAMPLE_MASK_KEY].to(torch.bool)
+        positive_mask = batch.batch[SUCCESS_MASK_KEY].to(torch.bool)
         if positive_mask.ndim == 1:
             return positive_mask
         return positive_mask.reshape(positive_mask.shape[0], -1).any(dim=1)
@@ -354,6 +372,18 @@ class SACReplayPool:
             valid_tensor[current_size:] = 0
         padded.batch[VALID_KEY] = valid_tensor
         return padded
+
+    def _sample_invalid_batch(self, batch_size: int) -> DataProto:
+        assert self._invalid_sample is not None
+        idx = torch.zeros(batch_size, dtype=torch.long, device=self.sample_device)
+        sampled_batch = self._index_select_batch(self._invalid_sample, idx)
+        valid_tensor = sampled_batch.batch[VALID_KEY].clone()
+        if valid_tensor.dtype == torch.bool:
+            valid_tensor[:] = False
+        else:
+            valid_tensor[:] = 0
+        sampled_batch.batch[VALID_KEY] = valid_tensor
+        return sampled_batch
 
     def _index_select_batch(self, batch: DataProto, idx: torch.Tensor) -> DataProto:
         idx_cpu = idx.detach().cpu().numpy()

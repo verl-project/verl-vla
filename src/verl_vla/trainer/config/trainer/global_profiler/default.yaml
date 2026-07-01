@@ -1,0 +1,93 @@
+# Copyright 2026 Bytedance Ltd. and/or its affiliates
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Global profiling config shared by trainer and TrainCluster worker groups.
+
+# Required when using Hydra to instantiate profiler configs.
+_target_: verl.utils.profiler.ProfilerConfig
+
+# Profiling tool: choose between nsys, npu, torch, and torch_memory.
+tool: null
+
+# Trainer steps to profile.
+steps: null
+
+# Whether to combine continuous profiled steps into one profile database.
+profile_continuous_steps: False
+
+# Path to save profiling outputs.
+save_path: outputs/profile
+
+# Tool-specific profiler configs.
+global_tool_config:
+
+  # Nsight Systems profiling config.
+  nsys:
+
+    # Required when using Hydra to instantiate Nsight configs.
+    _target_: verl.utils.profiler.config.NsightToolConfig
+
+    # Whether each task writes its own database.
+    discrete: False
+
+    # Controller-side Nvidia Nsight Systems options.
+    controller_nsight_options:
+
+      # APIs traced by Nsight.
+      trace: cuda,nvtx,cublas,ucx
+
+      # Whether to track CUDA memory usage.
+      cuda-memory-usage: "true"
+
+      # CUDA graph trace mode.
+      cuda-graph-trace: graph
+
+    # Worker-side Nvidia Nsight Systems options.
+    worker_nsight_options:
+
+      # APIs traced by Nsight.
+      trace: cuda,nvtx,cublas,ucx
+
+      # Whether to track CUDA memory usage.
+      cuda-memory-usage: "true"
+
+      # CUDA graph trace mode.
+      cuda-graph-trace: graph
+
+      # Profile only inside torch.cuda.profiler start/stop ranges.
+      capture-range: cudaProfilerApi
+
+      # Capture range end behavior.
+      capture-range-end: null
+
+      # Signal behavior when profiling ends.
+      kill: none
+
+  # Torch memory snapshot config.
+  torch_memory:
+
+    # Maximum number of allocation entries to record.
+    trace_alloc_max_entries: 100_000
+
+    # Call stack depth captured for each allocation.
+    stack_depth: 32
+
+    # Memory event context: alloc, state, or all.
+    context: all
+
+    # Stack source: python, cpp, or all.
+    stacks: all
+
+    # Additional keyword arguments forwarded to the profiler.
+    kw_args: {}

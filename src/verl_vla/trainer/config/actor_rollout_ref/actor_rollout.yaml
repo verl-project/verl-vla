@@ -12,14 +12,25 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .base import register_vla_rollouts
-from .hf_rollout import HFRollout
-from .naive_rollout_rob import NaiveRolloutRob
+# Actor + rollout worker config.
 
-register_vla_rollouts()
+defaults:
 
-__all__ = [
-    "HFRollout",
-    "NaiveRolloutRob",
-    "register_vla_rollouts",
-]
+  # Trainable actor worker config.
+  - /actor@actor: sac_actor
+
+  # Rollout worker config.
+  - /rollout@rollout: hf_rollout
+
+  # HuggingFace model config.
+  - /model@model: hf_model
+
+  # Shared batch field names.
+  - data_keys@data_keys
+
+  # Apply this actor/rollout config last.
+  - _self_
+
+
+# Target class for actor/rollout worker config.
+_target_: verl_vla.trainer.train_cluster.config.ActorRolloutRefConfig

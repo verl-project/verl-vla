@@ -1,0 +1,26 @@
+# Format checks enforced on CI:
+# 1. Comments must appear above each field.
+# 2. There must be a blank line between each field.
+# 3. Inline comments (after a field on the same line) are not allowed.
+# 4. Indentation level is respected for nested fields.
+
+# Instantiate verl profiler config.
+_target_: verl.utils.profiler.ProfilerConfig
+
+# Profiler tool name, for example nsys, npu, or torch.
+tool: null
+
+# Whether actor profiling is enabled.
+enable: False
+
+# Whether to profile all distributed ranks.
+all_ranks: False
+
+# Explicit rank list to profile when all_ranks is false.
+ranks: []
+
+# Directory for profiler outputs.
+save_path: null
+
+# Tool-specific profiler config.
+tool_config: {}

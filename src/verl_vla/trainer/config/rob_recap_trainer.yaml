@@ -32,15 +32,10 @@ defaults:
   # Stage 6: train the final RECAP policy with actor-only SFT.
   - /trainer/recap/recap_train_policy@recap.train_policy
 
+  # Attach Ray initialization config shared by RECAP stages under `ray_kwargs`.
+  - /ray@ray_kwargs: default
+
   - _self_
-
-
-# Ray initialization options shared by RECAP stages.
-ray_kwargs:
-
-  # Arguments forwarded to ray.init.
-  ray_init:
-    num_cpus: null
 
 
 # RECAP loop settings.

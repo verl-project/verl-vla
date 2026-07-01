@@ -1,0 +1,20 @@
+# Format checks enforced on CI:
+# 1. Comments must appear above each field.
+# 2. There must be a blank line between each field.
+# 3. Inline comments (after a field on the same line) are not allowed.
+# 4. Indentation level is respected for nested fields.
+
+# Instantiate verl checkpoint config.
+_target_: verl.trainer.config.CheckpointConfig
+
+# Checkpoint payloads to save.
+save_contents: ["model", "optimizer", "extra"]
+
+# Checkpoint payloads to load. Defaults to the same payloads as save_contents.
+load_contents: ${.save_contents}
+
+# Whether to save checkpoints asynchronously.
+async_save: False
+
+# Optional mbridge checkpoint extension config.
+mbridge_config: {}

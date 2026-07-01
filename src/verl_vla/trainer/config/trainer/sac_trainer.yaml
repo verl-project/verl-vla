@@ -1,0 +1,72 @@
+# Copyright 2026 Bytedance Ltd. and/or its affiliates
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+defaults:
+
+  # Attach RLPD offline replay prefill config under `rlpd`.
+  - /trainer/rlpd@rlpd: default
+
+  # Attach global profiler config used by the trainer loop.
+  - /trainer/global_profiler@_global_.global_profiler: default
+
+  # Keep local trainer fields in this file taking precedence.
+  - _self_
+
+# Instantiate the VLA SAC trainer config class.
+_target_: verl_vla.trainer.sac.config.SACTrainerConfig
+
+# Tracking project name.
+project_name: vla-sac
+
+# Tracking experiment/run name.
+experiment_name: libero-preview
+
+# Tracking backends used by the trainer.
+logger: ["console"]
+
+# Number of epochs in training.
+total_epochs: 30
+
+# Total training steps. Null derives it from dataloader length and epochs.
+total_training_steps: null
+
+# Number of training steps between rollout collections.
+rollout_interval: 20
+
+# Number of rollout collections inside each rollout interval window.
+rollout_times: 1
+
+# Number of initial trainer steps that force fresh rollout collection.
+warm_rollout_steps: 1
+
+# Per-step reward penalty applied before adding rollout transitions to replay.
+step_penalty: 0.0
+
+# Checkpoint save interval in global steps. Negative disables interval saves.
+save_freq: -1
+
+# Evaluation interval in global steps. Negative disables interval evaluation.
+test_freq: -1
+
+# Whether to run evaluation before training begins.
+val_before_train: True
+
+# Whether to run evaluation only.
+val_only: False
+
+# Extra time budget used by ESI preemption-aware checkpointing.
+esi_redundant_time: 0
+
+# Device used by trainer-side tensors.
+device: cuda

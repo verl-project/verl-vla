@@ -1,0 +1,98 @@
+# Format checks enforced on CI:
+# 1. Comments must appear above each field.
+# 2. There must be a blank line between each field.
+# 3. Inline comments (after a field on the same line) are not allowed.
+# 4. Indentation level is respected for nested fields.
+
+# Target class for this configuration.
+_target_: verl.workers.config.FSDPEngineConfig
+
+# FSDP backend implementation used by the engine.
+strategy: ${..strategy}
+
+# Mixed precision training param dtype.
+dtype: bfloat16
+
+# FSDP auto-wrap policy for the VLA actor model.
+wrap_policy:
+
+  # Transformer layer classes to wrap.
+  transformer_layer_cls_to_wrap:
+
+    - PrismaticProjector
+    - LlamaDecoderLayer
+
+# Whether to offload model parameters to CPU.
+param_offload: false
+
+# Whether to offload optimizer states to CPU.
+optimizer_offload: false
+
+# Whether to offload gradients to CPU.
+grad_offload: false
+
+# Only for FSDP2: offload param/grad/optimizer during train.
+offload_policy: false
+
+# Reshard after forward pass to reduce memory footprint.
+reshard_after_forward: true
+
+# Whether to prefetch parameters for the next forward pass.
+forward_prefetch: false
+
+# Model dtype of fsdp.
+model_dtype: fp32
+
+# Whether to use original parameters in fsdp. Only available in fsdp1.
+use_orig_params: false
+
+# Random seed for reproducibility.
+seed: 42
+
+# Whether to enable full determinism for distributed training.
+full_determinism: false
+
+# Ulysses sequence parallel size.
+ulysses_sequence_parallel_size: 1
+
+# Whether to use entropy_from_logits_with_chunking in fsdp.
+entropy_from_logits_with_chunking: false
+
+# Whether to use torch compile in fsdp.
+use_torch_compile: true
+
+# Whether to use entropy checkpointing in fsdp.
+entropy_checkpointing: false
+
+# Whether to use forward only in fsdp.
+forward_only: false
+
+# FSDP shard group size.
+fsdp_size: -1
+
+# QAT configuration.
+qat:
+
+  # Required when using verl.utils.omega_conf_to_dataclass to instantiate dataclass configs.
+  _target_: verl.workers.config.QATEngineConfig
+
+  # Whether to enable QAT.
+  enable: false
+
+  # Quantization mode.
+  mode: w4a16
+
+  # Quantization group size.
+  group_size: 16
+
+  # Patterns to ignore.
+  ignore_patterns:
+    - lm_head
+    - embed_tokens
+    - re:.*mlp.gate$
+
+  # Activation observer for W4A4 mode.
+  activation_observer: static_minmax
+
+  # Path to vLLM quantization config JSON file.
+  quantization_config_path: null

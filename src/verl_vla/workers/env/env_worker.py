@@ -21,7 +21,13 @@ from omegaconf import DictConfig, OmegaConf
 from torch.distributed.device_mesh import init_device_mesh
 from verl import DataProto
 from verl.single_controller.base import Worker
-from verl.single_controller.base.decorator import Dispatch, make_nd_compute_dataproto_dispatch_fn, register
+from verl.single_controller.base.decorator import (
+    Dispatch,
+    collect_lazy_compute_data_proto,
+    dispatch_lazy_compute_data_proto,
+    make_nd_compute_dataproto_dispatch_fn,
+    register,
+)
 from verl.utils.config import omega_conf_to_dataclass
 from verl.utils.device import (
     get_device_name,
@@ -33,6 +39,22 @@ from verl_vla.utils.recorder import merge_lerobot_datasets
 from verl_vla.workers.env.config import EnvWorkerConfig
 
 from .env_manager import EnvManager
+
+
+def dispatch_reset_env(worker_group, *args, **kwargs):
+    mode = kwargs.pop("mode", "train")
+    reset_eval = kwargs.pop("reset_eval", False)
+    reset_args = DataProto.from_dict(
+        meta_info={
+            "mode": mode,
+            "reset_eval": reset_eval,
+        }
+    )
+    return dispatch_lazy_compute_data_proto("env", worker_group, reset_args, **kwargs)
+
+
+def collect_reset_env(worker_group, *args, **kwargs):
+    return collect_lazy_compute_data_proto("env", worker_group, *args, **kwargs)
 
 
 def put_tensor_cpu(data_dict):
@@ -53,14 +75,13 @@ def create_env_batch(obs, rews, dones, infos, meta=None):
     return ret_dict
 
 
-def create_env_batch_dataproto(obs, rewards, dones, truncations, infos, meta=None):
+def create_env_batch_dataproto(obs, rewards, dones, infos, meta=None):
     step_result = {
         "observation": obs["observation"],
         "task": obs["task"],
         "task_id": obs.get("task_id"),
         "next.reward": rewards,
         "next.done": dones,
-        "next.truncated": truncations,
         "info": infos,
     }
     if meta is not None:
@@ -78,7 +99,6 @@ def create_env_batch_dataproto(obs, rewards, dones, truncations, infos, meta=Non
         **obs_tensor_batch,
         "next.reward": step_result["next.reward"],
         "next.done": step_result["next.done"],
-        "next.truncated": step_result["next.truncated"],
     }
     non_tensor_batch = {"obs.task": step_result["task"]}
     if step_result["task_id"] is not None:
@@ -253,7 +273,7 @@ class EnvWorker(Worker, DistProfilerExtension):
 
         mode = self.stage_modes[stage_id]
         simulators = self._simulators(mode)
-        extracted_obs, chunk_rewards, chunk_dones, chunk_truncations, infos = simulators[stage_id].step(
+        extracted_obs, chunk_rewards, chunk_dones, _chunk_truncations, infos = simulators[stage_id].step(
             chunk_actions, chunk_values=chunk_values
         )
 
@@ -261,7 +281,6 @@ class EnvWorker(Worker, DistProfilerExtension):
             obs=extracted_obs,
             rewards=chunk_rewards,
             dones=chunk_dones,
-            truncations=chunk_truncations,
             infos=infos,
         )
         return env_batch
@@ -272,54 +291,28 @@ class EnvWorker(Worker, DistProfilerExtension):
         simulator = self.eval_simulator_list[0] if self.eval_simulator_list else self.simulator_list[0]
         return int(simulator.env_benchmark_size())
 
-    @register(dispatch_mode=make_nd_compute_dataproto_dispatch_fn(mesh_name="env"), blocking=False)
-    @DistProfiler.annotate(color="blue", role="env_reset_envs_to_state_ids")
-    def reset_envs_to_state_ids(self, data: DataProto):
-        """Reset environments to specified state IDs.
-
-        Args:
-            state_ids: State IDs to reset environments to
-        """
-        mode = data.meta_info.get("mode", "train")
-        reset_eval = bool(data.meta_info.get("reset_eval", False))
+    @register(
+        dispatch_mode={
+            "dispatch_fn": dispatch_reset_env,
+            "collect_fn": collect_reset_env,
+        },
+        blocking=False,
+    )
+    @DistProfiler.annotate(color="blue", role="env_reset_env")
+    def reset_env(self, _data: DataProto):
+        mode = _data.meta_info.get("mode", "train")
+        reset_eval = bool(_data.meta_info.get("reset_eval", False))
         simulators = self._simulators(mode)
 
-        full_batch_size = self.env_worker_cfg.num_envs * self.stage_num
-        if "state_ids" in data.non_tensor_batch:
-            state_ids_list = list(data.non_tensor_batch["state_ids"])
-        else:
-            state_ids_list = None
-
-        if "task_id" in data.non_tensor_batch:
-            task_ids_list = list(data.non_tensor_batch["task_id"])
-        elif "task_ids" in data.non_tensor_batch:
-            task_ids_list = list(data.non_tensor_batch["task_ids"])
-        else:
-            task_ids_list = None
-
-        if state_ids_list is not None:
-            assert len(state_ids_list) == full_batch_size, (
-                f"state_ids_list length is {len(state_ids_list)}, but should be {full_batch_size}"
-            )
         result_list = []
         for stage_id in range(self.stage_num):
-            start = stage_id * self.env_worker_cfg.num_envs
-            end = (stage_id + 1) * self.env_worker_cfg.num_envs
-            stage_state_ids = None if state_ids_list is None else state_ids_list[start:end]
-            stage_task_ids = None if task_ids_list is None else task_ids_list[start:end]
-
-            if self.simulator_type == "isaac" and stage_state_ids is not None:
-                assert len(set(stage_state_ids)) == 1, "rollout.n should equal to num_envs for isaac"
-
             self.stage_modes[stage_id] = mode
-            result = simulators[stage_id].reset(
-                options={
-                    "env_idx": list(range(self.env_worker_cfg.num_envs)),
-                    "reset_state_ids": stage_state_ids,
-                    "task_ids": stage_task_ids,
-                    "reset_eval": reset_eval,
-                }
-            )
+            options = {
+                "env_idx": list(range(self.env_worker_cfg.num_envs)),
+            }
+            if reset_eval:
+                options["reset_eval"] = True
+            result = simulators[stage_id].reset(options=options)
             result_list.append(result)
         output_tensor_dict = {}
         output_non_tensor_dict = {}

@@ -138,8 +138,8 @@ async def run():
         non_tensors={"state_ids": [0] * NUM_ENVS_PER_ITER * STAGE_NUM, "task_ids": [0] * NUM_ENVS_PER_ITER * STAGE_NUM}
     )
 
-    reset_result = env_wg.reset_envs_to_state_ids(reset_state_ids_tensordict)
-    print(f"reset_envs_to_state_ids result: {reset_result}")
+    reset_result = env_wg.reset_env(reset_state_ids_tensordict)
+    print(f"reset_env result: {reset_result}")
     stages_data_list = restructure_data_proto(reset_result)
 
     RayNaiveRolloutRob = ray.remote(num_gpus=1)(NaiveRolloutRob)

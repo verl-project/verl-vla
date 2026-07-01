@@ -415,21 +415,17 @@ class LiberoEnv(LiberoResetStateMixin, BaseEnv):
         self,
         *,
         env_ids,
-        reset_state_ids=None,
-        task_ids=None,
         async_reset: bool = False,
         reset_eval: bool = False,
     ):
         """Reset LIBERO envs.
 
-        LIBERO reset state ids are global benchmark ids. Each id already
-        determines both the task id and the trial id, so the separately supplied
-        task ids are redundant for this environment. In async reset mode, task
-        ids are fixed by ``env_init`` and only the trial/init state is sampled.
+        LIBERO chooses task and trial ids internally from its configured reset
+        queues. In async reset mode, task ids are fixed by ``env_init`` and only
+        the trial/init state is sampled.
         """
-        del task_ids
 
-        # configure envs with the given reset state ids, then reset them and set their init states.
+        # Configure envs with internally selected reset state ids, then reset them and set their init states.
         env_ids = np.asarray(env_ids, dtype=np.int64)
         if reset_eval:
             self.reset_eval_cursor()
@@ -442,8 +438,7 @@ class LiberoEnv(LiberoResetStateMixin, BaseEnv):
             self._reconfigure_random_trial(env_ids)
         else:
             self.rollout_id += 1
-            if reset_state_ids is None:
-                reset_state_ids = self._get_random_reset_state_ids(len(env_ids))
+            reset_state_ids = self._get_random_reset_state_ids(len(env_ids))
             self._reconfigure(reset_state_ids, env_ids)
 
         # Perform extra warmup steps after reset to let the observations settle.

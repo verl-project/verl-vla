@@ -59,9 +59,8 @@ def run_env_loop(config, policy_path: Optional[str] = None):
         completed_episodes = 0
         rollout_idx = 0
         while completed_episodes < target_episodes:
-            rollout_output, collected_datasets = cluster.rollout()
+            _rollout_output, collected_datasets, metrics = cluster.rollout()
             collected_dataset = collected_datasets.get("collected_dataset")
-            metrics = rollout_output.meta_info.get("metrics", {})
             if collected_dataset is None:
                 logger.info(
                     "Finished recap env loop rollout %s without completed trajectories: "

@@ -49,7 +49,7 @@ class SupportSACTraining:
         self,
         obs: DataProto,
         tokenizer: Optional[torch.nn.Module] = None,
-        validate: bool = False,
+        eval: bool = False,
     ) -> ModelOutput:
         raise NotImplementedError("Subclasses must implement sac_sample_actions method.")
 

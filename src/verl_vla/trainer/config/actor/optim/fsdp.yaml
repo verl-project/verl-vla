@@ -1,0 +1,53 @@
+# Format checks enforced on CI:
+# 1. Comments must appear above each field.
+# 2. There must be a blank line between each field.
+# 3. Inline comments (after a field on the same line) are not allowed.
+# 4. Indentation level is respected for nested fields.
+
+# Target class for this configuration.
+_target_: verl.workers.config.FSDPOptimizerConfig
+
+# Optimizer class name.
+optimizer: AdamW
+
+# Module path to import optimizer.
+optimizer_impl: torch.optim
+
+# Learning rate.
+lr: 1e-6
+
+# LR warmup steps ratio.
+lr_warmup_steps_ratio: 0.0
+
+# Total training steps.
+total_training_steps: -1
+
+# Weight decay.
+weight_decay: 0.01
+
+# LR warmup steps.
+lr_warmup_steps: -1
+
+# Betas for Adam optimizer.
+betas: [0.9, 0.999]
+
+# Clip gradient.
+clip_grad: 1.0
+
+# Minimum LR ratio for cosine schedule.
+min_lr_ratio: 0.0
+
+# Number of cosine cycles in LR schedule.
+num_cycles: 0.5
+
+# LR scheduler type.
+lr_scheduler_type: constant
+
+# Whether the LR schedule uses 0-indexed steps.
+zero_indexed_step: true
+
+# Deprecated warmup style.
+warmup_style: null
+
+# Additional optimizer-specific keyword arguments.
+override_optimizer_config: null

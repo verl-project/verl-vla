@@ -13,15 +13,41 @@
 # limitations under the License.
 
 import math
+from dataclasses import dataclass, field
 from functools import partial
 
 import numpy as np
 import torch
-from omegaconf import OmegaConf
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 from verl import DataProto
+from verl.base_config import BaseConfig
 from verl.protocol import pad_dataproto_to_divisor
+
+from verl_vla.utils.dataloader import LeRobotDataLoaderConfig
+
+
+@dataclass
+class RLPDConfig(BaseConfig):
+    """Configuration for offline LeRobot replay prefill used by SAC."""
+
+    _target_: str = "verl_vla.utils.rlpd.RLPDConfig"
+
+    dataloader: LeRobotDataLoaderConfig = field(default_factory=LeRobotDataLoaderConfig)
+    enable: bool = False
+    episodes: list[int] | None = None
+    max_transitions: int = 0
+    submit_max_transitions: int = 0
+    action_chunk_steps: int = 10
+    terminal_reward: float = 1.0
+
+    def __post_init__(self):
+        if self.max_transitions < 0:
+            raise ValueError(f"max_transitions must be non-negative, got {self.max_transitions}")
+        if self.submit_max_transitions < 0:
+            raise ValueError(f"submit_max_transitions must be non-negative, got {self.submit_max_transitions}")
+        if self.action_chunk_steps <= 0:
+            raise ValueError(f"action_chunk_steps must be positive, got {self.action_chunk_steps}")
 
 
 def pad_dataproto_to_divisor_with_valid_mask(
@@ -42,33 +68,31 @@ def pad_dataproto_to_divisor_with_valid_mask(
     return padded_batch
 
 
-def iter_rlpd_replay_prefill_batches(config, global_steps: int):
-    rlpd_config = OmegaConf.select(config, "data.rlpd")
-    if not rlpd_config or not rlpd_config.get("enable", False):
+def iter_rlpd_replay_prefill_batches(rlpd_config: RLPDConfig, global_steps: int):
+    if not rlpd_config.enable:
         return
 
-    action_chunk_steps = int(rlpd_config.get("action_chunk_steps", 10))
-    max_prefill_transitions = int(rlpd_config.get("max_transitions", 0))
-    submit_max_transitions = int(rlpd_config.get("submit_max_transitions", 0))
-    num_workers = int(rlpd_config.get("num_workers", 0))
-    prefetch_factor = int(rlpd_config.get("prefetch_factor", 2))
-    requested_episodes = OmegaConf.to_container(rlpd_config.get("episodes")) if rlpd_config.get("episodes") else None
+    dataloader_config = rlpd_config.dataloader
+    action_chunk_steps = int(rlpd_config.action_chunk_steps)
+    max_prefill_transitions = int(rlpd_config.max_transitions)
+    submit_max_transitions = int(rlpd_config.submit_max_transitions)
+    num_workers = int(dataloader_config.num_workers)
+    prefetch_factor = int(dataloader_config.prefetch_factor)
 
     from verl_vla.utils.dataloader.lerobot import RLPDTransitionDataset
 
     transition_dataset = RLPDTransitionDataset(
-        repo_id=rlpd_config.repo_id,
+        repo_id=dataloader_config.repo_id,
         action_chunk_steps=action_chunk_steps,
-        root=rlpd_config.get("root"),
-        revision=rlpd_config.get("revision"),
-        video_backend=rlpd_config.get("video_backend"),
-        episodes=requested_episodes,
+        root=dataloader_config.root,
+        revision=dataloader_config.revision,
+        video_backend=dataloader_config.video_backend,
+        episodes=rlpd_config.episodes,
         max_transitions=max_prefill_transitions,
     )
     if len(transition_dataset) == 0:
         return
 
-    rlpd_config_dict = OmegaConf.to_container(rlpd_config, resolve=True)
     if submit_max_transitions > 0:
         batch_size = submit_max_transitions
     elif num_workers > 1:
@@ -87,7 +111,7 @@ def iter_rlpd_replay_prefill_batches(config, global_steps: int):
         collate_fn=partial(
             rlpd_transition_samples_to_actor_input,
             dataset=transition_dataset.dataset,
-            rlpd_config=rlpd_config_dict,
+            rlpd_config=rlpd_config,
             global_steps=global_steps,
         ),
         **dataloader_kwargs,
@@ -138,10 +162,10 @@ def stack_transition_observations(items: list[dict], prefix: str) -> tuple[dict[
 def rlpd_transition_samples_to_actor_input(
     samples: list[dict],
     dataset,
-    rlpd_config,
+    rlpd_config: RLPDConfig,
     global_steps: int,
 ) -> DataProto:
-    action_chunk_steps = int(rlpd_config.get("action_chunk_steps", 10))
+    action_chunk_steps = int(rlpd_config.action_chunk_steps)
     start_indices = torch.as_tensor([sample["start"] for sample in samples], dtype=torch.long)
     next_indices = torch.as_tensor([sample["next"] for sample in samples], dtype=torch.long)
     terminal_mask = torch.as_tensor([sample["terminal"] for sample in samples], dtype=torch.bool)
@@ -153,7 +177,7 @@ def rlpd_transition_samples_to_actor_input(
 
     t0_action_chunks = read_lerobot_action_chunks(dataset, start_indices, action_chunk_steps)
     t1_action_chunks = read_lerobot_action_chunks(dataset, next_indices, action_chunk_steps)
-    rewards = terminal_mask.to(torch.float32) * float(rlpd_config.get("terminal_reward", 1.0))
+    rewards = terminal_mask.to(torch.float32) * float(rlpd_config.terminal_reward)
     task_ids = torch.as_tensor(
         [item["task_index"].item() if torch.is_tensor(item["task_index"]) else item["task_index"] for item in t0_items],
         dtype=torch.long,
@@ -168,7 +192,7 @@ def rlpd_transition_samples_to_actor_input(
             "info.rewards": rewards,
             "info.dones": terminal_mask.to(torch.float32),
             "info.valids": torch.ones(len(samples), dtype=torch.float32),
-            "info.positive_sample_mask": torch.ones(len(samples), dtype=torch.float32),
+            "info.success_mask": torch.ones(len(samples), dtype=torch.float32),
             "info.task_ids": task_ids,
         },
         non_tensors={

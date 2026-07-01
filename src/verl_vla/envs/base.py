@@ -49,7 +49,7 @@ class BaseEnv(gym.Env):
         env_init(async_reset): Initialize simulator-specific resources. Async
             reset mode is passed here so subclasses can choose their initial
             task/state allocation policy.
-        env_reset(env_ids, reset_state_ids=None, task_ids=None, async_reset=False, reset_eval=False):
+        env_reset(env_ids, async_reset=False, reset_eval=False):
             Reset simulator-specific state and return ``(obs, infos)``.
         env_step(action, env_ids): Step simulator-specific state once with
             action shape ``[B, D]`` and return the standard step-result dict
@@ -150,8 +150,6 @@ class BaseEnv(gym.Env):
         self,
         *,
         env_ids,
-        reset_state_ids=None,
-        task_ids=None,
         async_reset: bool = False,
         reset_eval: bool = False,
     ):
@@ -159,10 +157,6 @@ class BaseEnv(gym.Env):
 
         Args:
             env_ids: Environment ids to reset.
-            reset_state_ids: Optional environment-specific reset state ids.
-            task_ids: Optional task ids from the rollout sampler. Some envs use
-                them directly; others, such as LIBERO, infer task ids from
-                ``reset_state_ids`` and may intentionally ignore this argument.
             async_reset: If True, preserve the subclass's current task
                 assignment and sample a new simulator state as needed.
             reset_eval: If True, start a fresh evaluation queue and force a
@@ -212,8 +206,6 @@ class BaseEnv(gym.Env):
             env_ids = np.arange(self.num_envs)
         return {
             "env_ids": env_ids,
-            "reset_state_ids": options.get("reset_state_ids"),
-            "task_ids": options.get("task_ids"),
             "reset_eval": reset_eval,
         }
 
@@ -268,8 +260,6 @@ class BaseEnv(gym.Env):
 
         reset_obs, _infos = self.env_reset(
             env_ids=env_ids[reset_local_ids],
-            reset_state_ids=None,
-            task_ids=None,
             async_reset=True,
         )
         for obs_idx, local_id in enumerate(reset_local_ids):

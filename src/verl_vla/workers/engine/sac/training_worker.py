@@ -38,16 +38,16 @@ class SACTrainingWorker(TrainingWorker):
     def __init__(self, config: TrainingWorkerConfig, actor_config: ActorConfig, tokenizer=None):
         super().__init__(config=config)
         self.actor_config = actor_config
-        self.sac_mini_batch_size = self._global_to_local_batch_size(self.actor_config.sac_mini_batch_size)
+        self.sac_mini_batch_size = self._global_to_local_batch_size(self.actor_config.mini_batch_size)
         self.online_replay_sample_batch_size = self._global_to_local_batch_size(
-            self.actor_config.online_replay_sample_batch_size
-            if self.actor_config.online_replay_sample_batch_size is not None
-            else self.actor_config.sac_mini_batch_size
+            self.actor_config.replay.online_sample_batch_size
+            if self.actor_config.replay.online_sample_batch_size is not None
+            else self.actor_config.mini_batch_size
         )
         self.offline_replay_sample_batch_size = self._global_to_local_batch_size(
-            self.actor_config.offline_replay_sample_batch_size
-            if self.actor_config.offline_replay_sample_batch_size is not None
-            else self.actor_config.sac_mini_batch_size
+            self.actor_config.replay.offline_sample_batch_size
+            if self.actor_config.replay.offline_sample_batch_size is not None
+            else self.actor_config.mini_batch_size
         )
         self.sac_config = actor_config.sac
         self.tokenizer = tokenizer or self.model_config.tokenizer
@@ -68,20 +68,20 @@ class SACTrainingWorker(TrainingWorker):
 
         self.engine.module.sac_init()
         self.replay_pool = SACReplayPool(
-            single_pool_capacity=self.actor_config.replay_pool_single_size,
+            single_pool_capacity=self.actor_config.replay.online_single_size,
             sample_device=get_device_name(),
         )
-        self.replay_pool.load(self.actor_config.replay_pool_save_dir)
+        self.replay_pool.load(self.actor_config.replay.save_dir)
         self.offline_replay_pool = SACReplayPool(
-            single_pool_capacity=self.actor_config.offline_replay_pool_single_size,
+            single_pool_capacity=self.actor_config.replay.offline_single_size,
             sample_device=get_device_name(),
             positive_only=True,
         )
 
         self.critic_optimizer = torch.optim.Adam(
             self.engine.module.sac_get_critic_parameters(),
-            lr=self.actor_config.critic_lr,
-            weight_decay=self.actor_config.critic_weight_decay,
+            lr=self.actor_config.critic.lr,
+            weight_decay=self.actor_config.critic.weight_decay,
         )
         self.critic_scheduler = torch.optim.lr_scheduler.ConstantLR(self.critic_optimizer, factor=1.0)
 
@@ -102,20 +102,18 @@ class SACTrainingWorker(TrainingWorker):
             self.alpha_optimizer = torch.optim.Adam([self.raw_alpha], lr=self.sac_config.get("alpha_lr", 3e-4))
             self.alpha_scheduler = torch.optim.lr_scheduler.ConstantLR(self.alpha_optimizer, factor=1.0)
 
-        self.actor_ema_enabled = bool(self.actor_config.actor_ema_enabled)
-        self.actor_ema_decay = float(self.actor_config.actor_ema_decay)
+        self.actor_ema_enabled = self.actor_config.ema_decay is not None
+        self.actor_ema_decay = 0.0 if self.actor_config.ema_decay is None else float(self.actor_config.ema_decay)
         self.actor_ema_shadow: dict[str, torch.Tensor] = {}
         self.actor_ema_initialized = False
-        self.td3_enabled = bool(self.sac_config.get("td3_enabled", False))
-        self.td3_bc_alpha = float(self.sac_config.get("td3_bc_alpha", 2.5))
-        self.cql_enabled = bool(self.sac_config.get("cql_enabled", False))
-        self.cql_alpha = float(self.sac_config.get("cql_alpha", 1.0))
-        self.cql_temperature = float(self.sac_config.get("cql_temperature", 1.0))
-        cql_noise_scale = self.sac_config.get("cql_noise_scale", None)
+        self.td3_enabled = bool(self.actor_config.td3.enabled)
+        self.td3_bc_alpha = float(self.actor_config.td3.bc_alpha)
+        self.cql_enabled = bool(self.actor_config.cql.enabled)
+        self.cql_alpha = float(self.actor_config.cql.alpha)
+        self.cql_temperature = float(self.actor_config.cql.temperature)
+        cql_noise_scale = self.actor_config.cql.noise_scale
         self.cql_noise_scale = None if cql_noise_scale is None else float(cql_noise_scale)
-        self.skip_critic_update_when_actor_update = bool(
-            self.sac_config.get("skip_critic_update_when_actor_update", False)
-        )
+        self.skip_critic_update_when_actor_update = bool(self.actor_config.critic.skip_update_when_actor_update)
         self._sac_initialized = True
 
     def _add_data_to_replay_pool(self, replay_pool: SACReplayPool, data: DataProto):
@@ -125,7 +123,14 @@ class SACTrainingWorker(TrainingWorker):
         ]
         replay_pool.add_batch(
             data.select(batch_keys=replay_batch_keys, non_tensor_batch_keys=replay_non_tensor_batch_keys),
-            task_ids=data.batch["info.task_ids"],
+            task_ids=data.non_tensor_batch["t0.obs.task_id"],
+        )
+
+    def _task_ids_from_obs(self, data: DataProto) -> torch.Tensor:
+        return torch.as_tensor(
+            data.non_tensor_batch["t0.obs.task_id"],
+            dtype=torch.long,
+            device=get_device_id(),
         )
 
     def _sample_rlpd_batch(
@@ -186,7 +191,7 @@ class SACTrainingWorker(TrainingWorker):
 
     @property
     def _critic_grad_clip(self) -> float:
-        return self.actor_config.critic_grad_clip or self._actor_grad_clip
+        return self.actor_config.critic.grad_clip or self._actor_grad_clip
 
     def _post_clip_norm(self, pre_clip_norm: torch.Tensor | float, clip_threshold: float) -> float:
         if isinstance(pre_clip_norm, torch.Tensor):
@@ -258,7 +263,7 @@ class SACTrainingWorker(TrainingWorker):
         next_log_prob: Optional[torch.Tensor],
         valids: torch.Tensor,
     ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
-        gamma = self.sac_config.gamma
+        gamma = self.actor_config.critic.gamma
         alpha = self._get_alpha()
         with torch.no_grad():
             y = (
@@ -303,6 +308,7 @@ class SACTrainingWorker(TrainingWorker):
         s1 = get_dataproto_from_prefix(micro_batch, "t1.obs.")
         a0 = get_dataproto_from_prefix(micro_batch, "t0.action.").batch
         a1 = get_dataproto_from_prefix(micro_batch, "t1.action.").batch
+        task_ids = self._task_ids_from_obs(micro_batch)
 
         with torch.autocast(device_type=get_device_name(), dtype=torch.bfloat16):
             with torch.no_grad():
@@ -313,7 +319,7 @@ class SACTrainingWorker(TrainingWorker):
                 if resample:
                     a1_actions, log_probs_1, _ = self.engine.module.sac_forward_actor(
                         s1_state_features,
-                        task_ids=micro_batch.batch["info.task_ids"],
+                        task_ids=task_ids,
                         is_first_micro_batch=False,
                     )
                     a1 = {"action": a1_actions}
@@ -323,7 +329,7 @@ class SACTrainingWorker(TrainingWorker):
             q_values_0 = self.engine.module.sac_forward_critic(
                 a0,
                 s0_state_features,
-                task_ids=micro_batch.batch["info.task_ids"],
+                task_ids=task_ids,
                 use_target_network=False,
                 method="cat",
                 requires_grad=True,
@@ -331,7 +337,7 @@ class SACTrainingWorker(TrainingWorker):
             q_values_1 = self.engine.module.sac_forward_critic(
                 a1,
                 s1_state_features,
-                task_ids=micro_batch.batch["info.task_ids"],
+                task_ids=task_ids,
                 use_target_network=True,
                 method="min",
                 requires_grad=False,
@@ -341,14 +347,14 @@ class SACTrainingWorker(TrainingWorker):
                 with torch.no_grad():
                     policy_actions_0, _, _ = self.engine.module.sac_forward_actor(
                         s0_state_features,
-                        task_ids=micro_batch.batch["info.task_ids"],
+                        task_ids=task_ids,
                         is_first_micro_batch=False,
                         noise_scale=self.cql_noise_scale,
                     )
                 q_policy_0 = self.engine.module.sac_forward_critic(
                     {"action": policy_actions_0},
                     s0_state_features,
-                    task_ids=micro_batch.batch["info.task_ids"],
+                    task_ids=task_ids,
                     use_target_network=False,
                     method="cat",
                     requires_grad=True,
@@ -372,18 +378,19 @@ class SACTrainingWorker(TrainingWorker):
     ) -> tuple[torch.Tensor, Optional[torch.Tensor], torch.Tensor, dict[str, float]]:
         s0 = get_dataproto_from_prefix(micro_batch, "t0.obs.")
         a0 = get_dataproto_from_prefix(micro_batch, "t0.action.").batch
+        task_ids = self._task_ids_from_obs(micro_batch)
 
         with torch.autocast(device_type=get_device_name(), dtype=torch.bfloat16):
             s0_state_features = self.engine.module.sac_forward_state_features(s0, self.tokenizer)
             a0_actions, log_probs_0, actor_forward_metrics = self.engine.module.sac_forward_actor(
                 s0_state_features,
-                task_ids=micro_batch.batch["info.task_ids"],
+                task_ids=task_ids,
                 is_first_micro_batch=is_first_micro_batch,
             )
             q_values_0 = self.engine.module.sac_forward_critic(
                 {"action": a0_actions},
                 s0_state_features,
-                task_ids=micro_batch.batch["info.task_ids"],
+                task_ids=task_ids,
                 use_target_network=False,
                 method="min",
                 requires_grad=False,
@@ -436,17 +443,15 @@ class SACTrainingWorker(TrainingWorker):
             self._add_data_to_replay_pool(self.replay_pool, data)
 
         critic_batches, critic_replay_sample_info = self._sample_rlpd_batch(
-            positive_sample_ratio=float(self.sac_config.get("critic_replay_positive_sample_ratio", 0.5))
+            positive_sample_ratio=float(self.actor_config.replay.critic_positive_sample_ratio)
         )
         critic_micro_batches = [
-            micro_batch
-            for batch in critic_batches
-            for micro_batch in batch.split(self.actor_config.sac_micro_batch_size_per_gpu)
+            micro_batch for batch in critic_batches for micro_batch in batch.split(self.actor_config.micro_batch_size)
         ]
         grad_accum_steps = len(critic_micro_batches) * torch.distributed.get_world_size()
 
         update_actor = (
-            global_steps >= self.actor_config.critic_warmup_steps
+            global_steps >= self.actor_config.critic.warmup_steps
             and global_steps % self.actor_config.actor_update_interval == 0
             and not critic_only_update
         )
@@ -477,7 +482,7 @@ class SACTrainingWorker(TrainingWorker):
                 critic_qvalues_0_list.append(q_values_0.mean(dim=-1).detach())
                 critic_qvalues_1_list.append(q_values_1.detach())
                 critic_valids_list.append(micro_batch.batch["info.valids"].detach())
-                critic_positive_masks_list.append(micro_batch.batch["info.positive_sample_mask"].detach())
+                critic_positive_masks_list.append(micro_batch.batch["info.success_mask"].detach())
             critic_grad_norm = torch.nn.utils.clip_grad_norm_(
                 self.engine.module.sac_get_critic_parameters(), max_norm=self._critic_grad_clip
             )
@@ -489,12 +494,12 @@ class SACTrainingWorker(TrainingWorker):
         actor_valids_list = []
         if update_actor:
             actor_batches, actor_replay_sample_info = self._sample_rlpd_batch(
-                positive_sample_ratio=float(self.sac_config.get("actor_replay_positive_sample_ratio", 0.5))
+                positive_sample_ratio=float(self.actor_config.replay.actor_positive_sample_ratio)
             )
             actor_micro_batches = [
                 micro_batch
                 for batch in actor_batches
-                for micro_batch in batch.split(self.actor_config.sac_micro_batch_size_per_gpu)
+                for micro_batch in batch.split(self.actor_config.micro_batch_size)
             ]
 
             self.engine.optimizer_zero_grad()
@@ -530,24 +535,24 @@ class SACTrainingWorker(TrainingWorker):
                 self.alpha_optimizer.step()
                 self.alpha_scheduler.step()
 
-        force_tau_one_in_warmup = bool(self.sac_config.get("force_critic_tau_one_in_warmup", True))
+        force_tau_one_in_warmup = bool(self.actor_config.critic.force_target_tau_one_in_warmup)
         critic_target_tau = (
             1.0
-            if force_tau_one_in_warmup and global_steps < self.actor_config.critic_warmup_steps
-            else float(self.sac_config.tau)
+            if force_tau_one_in_warmup and global_steps < self.actor_config.critic.warmup_steps
+            else float(self.actor_config.critic.tau)
         )
         if not skip_critic_update:
             self.engine.module.sac_update_target_network(critic_target_tau)
 
-        if global_steps % self.actor_config.replay_pool_save_interval == 0:
-            self.replay_pool.save(self.actor_config.replay_pool_save_dir)
+        if global_steps % self.actor_config.replay.save_interval == 0:
+            self.replay_pool.save(self.actor_config.replay.save_dir)
 
         critic_rewards = torch.cat([batch.batch["info.rewards"] for batch in critic_batches])
         critic_valids = torch.cat([batch.batch["info.valids"] for batch in critic_batches])
         critic_positive_mask = (
             torch.cat(critic_positive_masks_list)
             if critic_positive_masks_list
-            else torch.cat([batch.batch["info.positive_sample_mask"] for batch in critic_batches])
+            else torch.cat([batch.batch["info.success_mask"] for batch in critic_batches])
         ).to(torch.bool)
         critic_valid_mask = (torch.cat(critic_valids_list) if critic_valids_list else critic_valids).to(torch.bool)
         critic_qvalues_0 = torch.cat(critic_qvalues_0_list) if critic_qvalues_0_list else None

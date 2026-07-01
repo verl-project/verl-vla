@@ -1,0 +1,142 @@
+# Format checks enforced on CI:
+# 1. Comments must appear above each field.
+# 2. There must be a blank line between each field.
+# 3. Inline comments (after a field on the same line) are not allowed.
+# 4. Indentation level is respected for nested fields.
+
+defaults:
+  # inherit shared actor configs
+  - base_actor
+
+  - _self_
+
+# Target class for this configuration
+_target_: verl_vla.workers.config.ActorConfig
+
+# SAC mini-batch size sampled from replay data.
+mini_batch_size: 256
+
+# SAC micro-batch size per GPU used during updates.
+micro_batch_size: 16
+
+# Update actor every N trainer steps.
+actor_update_interval: 2
+
+# EMA decay for actor parameters. Null disables actor EMA.
+ema_decay: null
+
+# SAC entropy temperature config.
+sac:
+
+  # Required when using verl.utils.omega_conf_to_dataclass to instantiate dataclass configs
+  _target_: verl_vla.workers.config.SACConfig
+
+  # Whether to learn entropy temperature automatically
+  auto_entropy: false
+
+  # Initial entropy temperature
+  initial_alpha: 0.0
+
+  # Parameterization for alpha: "exp" or "softplus"
+  alpha_type: exp
+
+  # Learning rate for alpha optimization
+  alpha_lr: 3e-4
+
+  # Target entropy used when auto_entropy is enabled
+  target_entropy: -64.0
+
+# Optional TD3+BC actor loss.
+td3:
+
+  # Required when using Hydra to instantiate nested TD3 config.
+  _target_: verl_vla.workers.config.SACTD3Config
+
+  # Whether to switch SAC actor updates to TD3+BC style updates.
+  enabled: false
+
+  # TD3+BC alpha coefficient used in lambda = alpha / mean(|Q|).
+  bc_alpha: 2.5
+
+# Optional Conservative Q-Learning critic regularization.
+cql:
+
+  # Required when using Hydra to instantiate nested CQL config.
+  _target_: verl_vla.workers.config.SACCQLConfig
+
+  # Whether to enable conservative Q-learning regularization for critic updates.
+  enabled: false
+
+  # Weight applied to the CQL penalty term.
+  alpha: 1.0
+
+  # Temperature used by the CQL logsumexp penalty.
+  temperature: 1.0
+
+  # Optional Flow-SDE noise scale override for CQL policy action sampling.
+  # Set null to reuse the actor training noise scale.
+  noise_scale: null
+
+# Critic optimizer and update schedule.
+critic:
+
+  # Required when using Hydra to instantiate nested SAC critic config.
+  _target_: verl_vla.workers.config.SACCriticConfig
+
+  # Discount factor for target Q computation.
+  gamma: 0.99
+
+  # Target network update coefficient.
+  tau: 0.25
+
+  # Whether to force target tau to 1.0 during critic warmup steps.
+  force_target_tau_one_in_warmup: true
+
+  # Whether to skip critic updates on steps that also update actor.
+  skip_update_when_actor_update: false
+
+  # Critic optimizer learning rate.
+  lr: 1e-4
+
+  # Critic optimizer weight decay.
+  weight_decay: 0.0
+
+  # Optional critic-specific gradient clipping threshold.
+  # When null, critic clipping falls back to optim.clip_grad.
+  grad_clip: null
+
+  # Number of steps to train critic before actor updates start.
+  warmup_steps: 0
+
+  # Number of critic-only update steps after each rollout group.
+  only_steps_after_rollout: 0
+
+# Replay sampling, pool capacity, and persistence.
+replay:
+
+  # Required when using Hydra to instantiate nested SAC replay config.
+  _target_: verl_vla.workers.config.SACReplayConfig
+
+  # Positive sample ratio when drawing replay data for critic updates.
+  critic_positive_sample_ratio: 0.5
+
+  # Positive sample ratio when drawing replay data for actor updates.
+  actor_positive_sample_ratio: 0.9
+
+  # Online replay samples per global SAC update. Null falls back to top-level mini_batch_size.
+  online_sample_batch_size: null
+
+  # Offline replay samples per global SAC update. Null falls back to top-level mini_batch_size.
+  offline_sample_batch_size: null
+
+  # How often to persist replay buffer snapshots.
+  save_interval: 500
+
+  # Capacity of each rank-local online replay pool.
+  online_single_size: 10
+
+  # Capacity of each rank-local offline RLPD replay pool.
+  offline_single_size: 1000
+
+  # Directory used to save and restore replay pools.
+  save_dir: outputs/replay_pools

@@ -17,8 +17,8 @@ import logging
 import os
 import time
 
-import numpy as np
 import torch
+from tqdm import tqdm
 from verl import DataProto
 from verl.single_controller.ray import RayWorkerGroup
 
@@ -64,7 +64,7 @@ class EnvLoop:
         reset_wait_start_t = time.perf_counter()
         reset_results = reset_future.get()
         reset_wait_s = time.perf_counter() - reset_wait_start_t
-        rollout_meta_info = {"validate": True} if eval else {}
+        rollout_meta_info = {"eval": True} if eval else {}
 
         loop = asyncio.get_event_loop()
 
@@ -96,7 +96,6 @@ class EnvLoop:
         trajectories = {i: [] for i in range(self.stage_num)}
 
         staged_obs = self._restructure_obs_data(reset_results)
-        initial_task_ids = self._task_ids_from_staged_obs(staged_obs)
         for stage_id in range(self.stage_num):
             trajectories[stage_id].append({OBS_KEY: self._strip_meta_info(staged_obs[stage_id])})
 
@@ -118,13 +117,12 @@ class EnvLoop:
             for stage_id in range(self.stage_num)
         }
 
+        progress_bar = tqdm(total=self.max_interactions, desc="Rollout Progress", leave=False)
+
         async def _stage_loop(stage_id: int):
             stage_start_t = time.perf_counter()
             step_idx = 0
             while step_idx < self.max_interactions:
-                if stage_id == 0:
-                    logger.info(f"[{step_idx}/{self.max_interactions - 1}] rollout step")
-
                 rollout_wait_start_t = time.perf_counter()
                 action_result: DataProto = await asyncio.to_thread(rollout_futures[stage_id].get)
                 stage_timing[stage_id]["rollout_wait_s"] += time.perf_counter() - rollout_wait_start_t
@@ -148,6 +146,8 @@ class EnvLoop:
 
                 stage_timing[stage_id]["effective_steps"] += 1.0
                 step_idx += 1
+                if stage_id == 0:
+                    progress_bar.update(1)
                 if step_idx < self.max_interactions:
                     trajectories[stage_id].append({OBS_KEY: next_obs})
 
@@ -158,11 +158,12 @@ class EnvLoop:
 
             stage_timing[stage_id]["stage_wall_s"] = time.perf_counter() - stage_start_t
 
-        await asyncio.gather(*[asyncio.create_task(_stage_loop(sid)) for sid in range(self.stage_num)])
+        try:
+            await asyncio.gather(*[asyncio.create_task(_stage_loop(sid)) for sid in range(self.stage_num)])
+        finally:
+            progress_bar.close()
         self.env_wg.finish_rollout()
         collated_meta_info = dict(rollout_meta_info)
-        if initial_task_ids is not None:
-            collated_meta_info["task_ids"] = initial_task_ids
         output = self._collate_trajectories(trajectories, meta_info=collated_meta_info)
         stage_wall_max_s = max(stage_timing[sid]["stage_wall_s"] for sid in range(self.stage_num))
         rollout_wait_sum_s = sum(stage_timing[sid]["rollout_wait_s"] for sid in range(self.stage_num))
@@ -184,14 +185,6 @@ class EnvLoop:
             "count/env_loop_rollout_wait_calls": rollout_wait_calls,
         }
         return output, run_metrics
-
-    def _task_ids_from_staged_obs(self, staged_obs: list[DataProto]) -> np.ndarray | None:
-        task_id_chunks = []
-        for obs in staged_obs:
-            if "task_id" not in obs.non_tensor_batch:
-                return None
-            task_id_chunks.append(np.asarray(obs.non_tensor_batch["task_id"], dtype=np.int64))
-        return np.concatenate(task_id_chunks, axis=0) if task_id_chunks else None
 
     def _restructure_obs_data(self, data_proto: DataProto) -> list[DataProto]:
         num_workers = self.env_wg.world_size

@@ -1,18 +1,44 @@
+# Format checks enforced on CI:
+# 1. Comments must appear above each field.
+# 2. There must be a blank line between each field.
+# 3. Inline comments (after a field on the same line) are not allowed.
+# 4. Indentation level is respected for nested fields.
+
 defaults:
+  # Inherit shared actor configs.
   - base_actor
+
   - _self_
 
+# Target class for this configuration.
 _target_: verl_vla.workers.config.SFTActorConfig
 
+# Actor EMA config.
 ema:
+
+  # Whether to maintain EMA weights for actor parameters.
   enable: false
+
+  # EMA decay for actor parameters.
   decay: 0.995
 
+# Advantage-conditioned prompt config.
 acp:
+
+  # Whether to enable advantage-conditioned prompt tagging.
   enable: false
+
+  # Dropout probability for ACP indicators.
   indicator_dropout_prob: 0.0
+
+  # Prompt tag used for positive samples.
   positive_tag: "Advantage: positive"
+
+  # Prompt tag used for negative samples.
   negative_tag: "Advantage: negative"
 
+# SFT mini-batch size.
 mini_batch_size: 256
+
+# SFT micro-batch size.
 micro_batch_size: 32

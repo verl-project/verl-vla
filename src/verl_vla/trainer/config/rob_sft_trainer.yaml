@@ -31,14 +31,8 @@ defaults:
   # Attach the SFT trainer loop config under `trainer`.
   - trainer@trainer: sft_trainer
 
+  # Attach Ray initialization config under `ray_kwargs`.
+  - /ray@ray_kwargs: default
+
   # Keep local overrides in this file taking precedence over composed defaults.
   - _self_
-
-# Ray initialization options passed before launching the trainer task.
-ray_kwargs:
-
-  # Keyword arguments forwarded to `ray.init`.
-  ray_init:
-
-    # Let Ray infer CPU resources by default.
-    num_cpus: null

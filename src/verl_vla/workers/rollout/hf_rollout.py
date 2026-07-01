@@ -133,11 +133,11 @@ class HFRollout(BaseRollout):
     def generate_sequences(self, prompts: DataProto) -> DataProto:
         prompts = self._apply_acp_prompt_tag(prompts)
         with torch.autocast(device_type=get_device_name(), dtype=torch.bfloat16):
-            validate = bool(prompts.meta_info.get("validate", False))
+            eval = bool(prompts.meta_info.get("eval", False))
             output = self.module.sac_sample_actions(
                 prompts,
                 tokenizer=self.tokenizer,
-                validate=validate,
+                eval=eval,
             )
 
         ret = output.to_data_proto()

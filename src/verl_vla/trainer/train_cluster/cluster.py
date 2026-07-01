@@ -48,21 +48,6 @@ ROLE_TO_WORKER_NAME = {
 }
 
 
-def _reduce_time_tensor(value: torch.Tensor, *, reduction: str) -> torch.Tensor:
-    """Reduce chunk/substep dimensions while preserving batch and rollout time."""
-    if value.ndim <= 2:
-        return value
-
-    while value.ndim > 2:
-        if reduction == "any":
-            value = value.any(dim=-1)
-        elif reduction == "sum":
-            value = value.sum(dim=-1)
-        else:
-            raise ValueError(f"Unsupported reduction: {reduction}")
-    return value
-
-
 class TrainCluster:
     def __init__(self, config: SFTTrainClusterConfig | EnvLoopTrainClusterConfig):
         if not isinstance(config, SFTTrainClusterConfig | EnvLoopTrainClusterConfig):
@@ -81,6 +66,12 @@ class TrainCluster:
         self.env_loop: EnvLoop | None = None
         self.checkpoint_helper: CheckpointHelper | None = None
         self._lerobot_collected_once = False
+        self._rollout_reset_future: Any | None = None
+        self._rollout_carry_state: dict[str, np.ndarray | None] = {
+            "length": None,
+            "reward": None,
+            "task_id": None,
+        }
 
     def start(self) -> None:
         self._build_resource_pool_plan()
@@ -107,15 +98,15 @@ class TrainCluster:
                 rollout_wg=rollout_wg,
                 env_wg=env_wg,
             )
+            self._rollout_reset_future = env_wg.reset_env()
 
         if self.config.checkpoint is not None:
             actor_config = self.config.actor_rollout_ref.actor
             assert actor_config is not None
-            assert ROLE_TO_WORKER_NAME[Role.Actor] in self.worker_groups
             self.checkpoint_helper = CheckpointHelper(
                 config=self.config.checkpoint,
                 actor_config=actor_config,
-                actor_worker_group=self.worker_groups[ROLE_TO_WORKER_NAME[Role.Actor]],
+                actor_worker_group=self.actor_worker_group,
             )
 
     def shutdown(self) -> None:
@@ -269,20 +260,66 @@ class TrainCluster:
         else:
             raise ValueError(f"Unsupported worker role: {role}")
 
+    def _iter_unique_worker_groups(self):
+        seen_worker_groups: set[int] = set()
+        for worker_name, worker_group in self.worker_groups.items():
+            worker_group_id = id(worker_group)
+            if worker_group_id in seen_worker_groups:
+                continue
+            seen_worker_groups.add(worker_group_id)
+            yield worker_name, worker_group
+
+    def start_profiling(self, step: int) -> None:
+        for worker_name, worker_group in self._iter_unique_worker_groups():
+            start_profile = getattr(worker_group, "start_profile", None)
+            if callable(start_profile):
+                start_profile(role=worker_name, profile_step=step)
+
+    def stop_profiling(self) -> None:
+        for _worker_name, worker_group in self._iter_unique_worker_groups():
+            stop_profile = getattr(worker_group, "stop_profile", None)
+            if callable(stop_profile):
+                stop_profile()
+
+    def dump_memory_snapshot(self, *, tag: str, sub_dir: str) -> None:
+        dump_memory_snapshot = getattr(self.actor_worker_group, "dump_memory_snapshot", None)
+        if callable(dump_memory_snapshot):
+            dump_memory_snapshot(tag=tag, sub_dir=sub_dir)
+
+    @property
+    def actor_worker_group(self):
+        actor_wg = self.worker_groups.get(ROLE_TO_WORKER_NAME[Role.Actor])
+        if actor_wg is not None:
+            return actor_wg
+        return self.worker_groups[ROLE_TO_WORKER_NAME[Role.ActorRollout]]
+
     @property
     def train_world_size(self) -> int:
-        return int(self.worker_groups[ROLE_TO_WORKER_NAME[Role.Actor]].world_size)
+        return int(self.actor_worker_group.world_size)
 
-    def rollout(self) -> tuple[DataProto, dict[str, dict[str, Any]]]:
+    def rollout(self) -> tuple[DataProto, dict[str, dict[str, Any]], dict[str, float]]:
         if self.cluster_type != "env_loop":
             raise RuntimeError("rollout is only wired for env-loop train clusters.")
 
-        reset_future = self.worker_groups["env"].reset_envs_to_state_ids(DataProto.from_dict())
         assert self.env_loop is not None
-        output = self.env_loop.generate_sequences(reset_future)
-        return output, self._collect_lerobot_datasets()
+        env_wg = self.worker_groups[ROLE_TO_WORKER_NAME[Role.Env]]
+        reset_future = self._rollout_reset_future
+        if reset_future is None:
+            reset_future = env_wg.reset_env()
 
-    def _collect_lerobot_datasets(self) -> dict[str, dict[str, Any]]:
+        output = self.env_loop.generate_sequences(reset_future)
+        self._rollout_reset_future = env_wg.reset_env()
+
+        metrics = dict(output.meta_info.pop("metrics", {}))
+        trajectory_records = self._collect_trajectory_records(
+            output,
+            carry_state=self._rollout_carry_state,
+        )
+        metrics.update(self._trajectory_metrics_from_records(trajectory_records, metric_prefix="data"))
+        collected_datasets = self.collect_lerobot_datasets()
+        return output, collected_datasets, metrics
+
+    def collect_lerobot_datasets(self) -> dict[str, dict[str, Any]]:
         if not isinstance(self.config, EnvLoopTrainClusterConfig):
             return {}
 
@@ -325,7 +362,7 @@ class TrainCluster:
         return collected_dataset
 
     def train(self, data: DataProto, *, async_update: bool = True) -> Any:
-        actor_wg = self.worker_groups[ROLE_TO_WORKER_NAME[Role.Actor]]
+        actor_wg = self.actor_worker_group
         if async_update:
             return actor_wg.update_actor_async(data)
         return actor_wg.update_actor(data)
@@ -347,21 +384,13 @@ class TrainCluster:
         trajectory_records: list[dict[str, float | int | bool]] = []
         carry_state: dict[str, np.ndarray | None] = {"length": None, "reward": None, "task_id": None}
         while len(trajectory_records) < target_episodes:
-            reset_eval = eval_step == 0
-            reset_future = env_wg.reset_envs_to_state_ids(
-                DataProto.from_dict(
-                    meta_info={
-                        "mode": "eval",
-                        "reset_eval": reset_eval,
-                    },
-                )
-            )
+            reset_future = env_wg.reset_env(mode="eval", reset_eval=eval_step == 0)
             rollout_output = self.env_loop.generate_sequences(reset_future, eval=True)
             for key, value in rollout_output.meta_info.get("metrics", {}).items():
                 rollout_metric_lists.setdefault(key, []).append(float(value))
 
             trajectory_records.extend(
-                self._collect_eval_trajectory_records(
+                self._collect_trajectory_records(
                     rollout_output,
                     remaining=target_episodes - len(trajectory_records),
                     carry_state=carry_state,
@@ -369,34 +398,44 @@ class TrainCluster:
             )
             eval_step += 1
 
-        metrics = self._eval_metrics_from_trajectory_records(
+        metrics = self._trajectory_metrics_from_records(
             trajectory_records,
+            metric_prefix="val",
             benchmark_size=benchmark_size,
         )
         for key, values in rollout_metric_lists.items():
             metrics[key] = float(np.mean(values)) if values else 0.0
         return metrics
 
-    def _collect_eval_trajectory_records(
+    def _collect_trajectory_records(
         self,
         output: DataProto,
         *,
-        remaining: int,
+        remaining: int | None = None,
         carry_state: dict[str, np.ndarray | None],
     ) -> list[dict[str, float | int | bool]]:
-        if remaining <= 0:
+        if remaining is not None and remaining <= 0:
             return []
 
-        done_steps = _reduce_time_tensor(output.batch["next.done"].bool(), reduction="any")
-        reward_steps = _reduce_time_tensor(output.batch["next.reward"].float(), reduction="sum")
+        raw_done_steps = output.batch["next.done"].bool()
+        raw_reward_steps = output.batch["next.reward"].float()
+        chunk_steps = int(raw_done_steps.shape[-1]) if raw_done_steps.ndim > 2 else 1
+        done_steps = raw_done_steps.reshape(raw_done_steps.shape[0], -1)
+        reward_steps = raw_reward_steps.reshape(raw_reward_steps.shape[0], -1)
         if done_steps.ndim == 1:
             done_steps = done_steps[:, None]
             reward_steps = reward_steps[:, None]
-        task_id_steps = output.non_tensor_batch.get("obs.task_id")
-        if task_id_steps is not None:
-            task_id_steps = np.asarray(task_id_steps)
-            if task_id_steps.ndim == 1:
-                task_id_steps = task_id_steps[:, None]
+        task_id_steps = np.asarray(output.non_tensor_batch["obs.task_id"])
+        task_id_steps = np.repeat(task_id_steps, chunk_steps, axis=1)
+
+        if not self.config.env.env_worker.async_reset:
+            return self._collect_non_auto_reset_trajectory_records(
+                done_steps,
+                reward_steps,
+                task_id_steps=task_id_steps,
+                chunk_steps=chunk_steps,
+                remaining=remaining,
+            )
 
         records: list[dict[str, float | int | bool]] = []
         batch_size = int(done_steps.shape[0])
@@ -415,7 +454,7 @@ class TrainCluster:
         assert carry_task_ids is not None
 
         for batch_idx in range(done_steps.shape[0]):
-            if len(records) >= remaining:
+            if remaining is not None and len(records) >= remaining:
                 break
 
             done_row = done_steps[batch_idx].reshape(-1)
@@ -425,19 +464,21 @@ class TrainCluster:
             segment_prefix_length = int(carry_lengths[batch_idx])
             segment_prefix_return = float(carry_rewards[batch_idx])
             segment_task_id = int(carry_task_ids[batch_idx])
-            if segment_prefix_length == 0 and task_id_steps is not None and task_id_steps.shape[1] > 0:
+            if segment_prefix_length == 0 and task_id_steps.shape[1] > 0:
                 segment_task_id = int(task_id_steps[batch_idx, 0])
 
             for done_idx in done_indices:
-                if len(records) >= remaining:
+                if remaining is not None and len(records) >= remaining:
                     break
 
                 segment = slice(start_idx, done_idx + 1)
                 trajectory_return = segment_prefix_return + float(reward_row[segment].sum().item())
                 trajectory_length = segment_prefix_length + done_idx - start_idx + 1
+                trajectory_chunk_length = (trajectory_length + chunk_steps - 1) // chunk_steps
                 records.append(
                     {
                         "length": int(trajectory_length),
+                        "chunk_length": int(trajectory_chunk_length),
                         "return": float(trajectory_return),
                         "success": bool(trajectory_return > 0.0),
                         "task_id": int(segment_task_id),
@@ -447,10 +488,10 @@ class TrainCluster:
                 start_idx = done_idx + 1
                 segment_prefix_length = 0
                 segment_prefix_return = 0.0
-                if task_id_steps is not None and start_idx < task_id_steps.shape[1]:
+                if start_idx < task_id_steps.shape[1]:
                     segment_task_id = int(task_id_steps[batch_idx, start_idx])
 
-            if len(records) < remaining:
+            if remaining is None or len(records) < remaining:
                 remaining_steps = int(done_row.numel()) - start_idx
                 carry_lengths[batch_idx] = segment_prefix_length + remaining_steps
                 carry_rewards[batch_idx] = segment_prefix_return + float(reward_row[start_idx:].sum().item())
@@ -458,40 +499,89 @@ class TrainCluster:
 
         return records
 
-    def _eval_metrics_from_trajectory_records(
+    def _collect_non_auto_reset_trajectory_records(
+        self,
+        done_steps: torch.Tensor,
+        reward_steps: torch.Tensor,
+        *,
+        task_id_steps: np.ndarray,
+        chunk_steps: int,
+        remaining: int | None,
+    ) -> list[dict[str, float | int | bool]]:
+        records: list[dict[str, float | int | bool]] = []
+        for batch_idx in range(done_steps.shape[0]):
+            if remaining is not None and len(records) >= remaining:
+                break
+
+            done_row = done_steps[batch_idx].reshape(-1)
+            reward_row = reward_steps[batch_idx].reshape(-1)
+            done_indices = torch.nonzero(done_row, as_tuple=False).flatten().tolist()
+            done_idx = int(done_indices[0]) if done_indices else int(done_row.numel()) - 1
+            segment = slice(0, done_idx + 1)
+            task_id = int(task_id_steps[batch_idx, 0])
+
+            trajectory_return = float(reward_row[segment].sum().item())
+            records.append(
+                {
+                    "length": int(done_idx + 1),
+                    "chunk_length": int(done_idx // chunk_steps + 1),
+                    "return": trajectory_return,
+                    "success": bool(trajectory_return > 0.0),
+                    "task_id": task_id,
+                }
+            )
+        return records
+
+    def _trajectory_metrics_from_records(
         self,
         records: list[dict[str, float | int | bool]],
         *,
-        benchmark_size: int,
+        metric_prefix: str,
+        benchmark_size: int | None = None,
     ) -> dict[str, float]:
         trajectory_count = len(records)
         success_records = [record for record in records if bool(record["success"])]
         success_count = len(success_records)
         metrics = {
-            "val/benchmark_size": float(benchmark_size),
-            "val/avg_return": (float(np.mean([float(record["return"]) for record in records])) if records else 0.0),
-            "val/avg_success_trajectory_length": (
+            f"{metric_prefix}/avg_return": (
+                float(np.mean([float(record["return"]) for record in records])) if records else 0.0
+            ),
+            f"{metric_prefix}/avg_success_trajectory_length": (
                 float(np.mean([int(record["length"]) for record in success_records])) if success_records else 0.0
             ),
-            "val/trajectory_count": float(trajectory_count),
-            "val/success_trajectory_count": float(success_count),
-            "val/failed_trajectory_count": float(trajectory_count - success_count),
-            "val/trajectory_success_rate": (float(success_count / trajectory_count) if trajectory_count > 0 else 0.0),
+            f"{metric_prefix}/avg_success_trajectory_chunk_length": (
+                float(np.mean([int(record["chunk_length"]) for record in success_records])) if success_records else 0.0
+            ),
+            f"{metric_prefix}/trajectory_count": float(trajectory_count),
+            f"{metric_prefix}/success_trajectory_count": float(success_count),
+            f"{metric_prefix}/failed_trajectory_count": float(trajectory_count - success_count),
+            f"{metric_prefix}/trajectory_success_rate": (
+                float(success_count / trajectory_count) if trajectory_count > 0 else 0.0
+            ),
         }
+        if benchmark_size is not None:
+            metrics[f"{metric_prefix}/benchmark_size"] = float(benchmark_size)
         task_ids = sorted({int(record["task_id"]) for record in records if int(record["task_id"]) >= 0})
         for task_id in task_ids:
             task_records = [record for record in records if int(record["task_id"]) == task_id]
             task_success_records = [record for record in task_records if bool(record["success"])]
             trajectory_count = len(task_records)
             success_count = len(task_success_records)
-            metrics[f"val/per_task_trajectory_count/task_{task_id}"] = float(trajectory_count)
-            metrics[f"val/per_task_success_trajectory_count/task_{task_id}"] = float(success_count)
-            metrics[f"val/per_task_failed_trajectory_count/task_{task_id}"] = float(trajectory_count - success_count)
-            metrics[f"val/per_task_success_rate/task_{task_id}"] = (
+            metrics[f"{metric_prefix}/per_task_trajectory_count/task_{task_id}"] = float(trajectory_count)
+            metrics[f"{metric_prefix}/per_task_success_trajectory_count/task_{task_id}"] = float(success_count)
+            metrics[f"{metric_prefix}/per_task_failed_trajectory_count/task_{task_id}"] = float(
+                trajectory_count - success_count
+            )
+            metrics[f"{metric_prefix}/per_task_success_rate/task_{task_id}"] = (
                 float(success_count / trajectory_count) if trajectory_count > 0 else 0.0
             )
-            metrics[f"val/per_task_avg_success_trajectory_length/task_{task_id}"] = (
+            metrics[f"{metric_prefix}/per_task_avg_success_trajectory_length/task_{task_id}"] = (
                 float(np.mean([int(record["length"]) for record in task_success_records]))
+                if task_success_records
+                else 0.0
+            )
+            metrics[f"{metric_prefix}/per_task_avg_success_trajectory_chunk_length/task_{task_id}"] = (
+                float(np.mean([int(record["chunk_length"]) for record in task_success_records]))
                 if task_success_records
                 else 0.0
             )

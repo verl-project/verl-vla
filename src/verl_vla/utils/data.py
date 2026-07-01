@@ -19,6 +19,47 @@ from verl import DataProto
 from verl_vla.utils.keys import ACTION_KEY, OBS_KEY
 
 
+def reduce_substep_dims(value: torch.Tensor, *, reduction: str) -> torch.Tensor:
+    """Reduce chunk/substep dimensions while preserving batch and rollout time."""
+    if value.ndim <= 2:
+        return value
+
+    while value.ndim > 2:
+        if reduction == "any":
+            value = value.any(dim=-1)
+        elif reduction == "sum":
+            value = value.sum(dim=-1)
+        else:
+            raise ValueError(f"Unsupported reduction: {reduction}")
+    return value
+
+
+def _build_sac_transition_masks(
+    done_steps: torch.Tensor, reward_steps: torch.Tensor
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Build transition masks for rows that may contain zero, one, or many completed episodes."""
+    valid_mask = torch.zeros_like(done_steps, dtype=torch.bool)
+    positive_mask = torch.zeros_like(done_steps, dtype=torch.bool)
+
+    for batch_idx in range(done_steps.shape[0]):
+        start_idx = 0
+        done_indices = torch.nonzero(done_steps[batch_idx], as_tuple=False).flatten().tolist()
+        for done_idx in done_indices:
+            if done_idx < start_idx:
+                continue
+
+            segment = slice(start_idx, done_idx + 1)
+            segment_return = reward_steps[batch_idx, segment].sum()
+            valid_mask[batch_idx, segment] = True
+
+            if segment_return > 0:
+                positive_mask[batch_idx, segment] = True
+
+            start_idx = done_idx + 1
+
+    return valid_mask, positive_mask
+
+
 def dataloader_batch_to_dataproto(batch: dict) -> DataProto:
     tensor_batch = {}
     non_tensor_batch = {}
@@ -145,25 +186,21 @@ def stack_dataproto_with_padding(data_protos: list[DataProto], prefix: str) -> d
 
 
 def flatten_trajectories(data: DataProto) -> DataProto:
-    batch_size, num_steps = data.batch["action.action"].shape[:2]
+    batch_size, num_steps = data.batch["t0.action.action"].shape[:2]
     new_batch_fields = {}
     new_non_tensor_fields = {}
 
     for key, tensor in data.batch.items():
         if len(tensor.shape) >= 2 and tensor.shape[0] == batch_size and tensor.shape[1] == num_steps:
             new_batch_fields[key] = tensor.reshape(batch_size * num_steps, *tensor.shape[2:])
-        elif len(tensor.shape) == 1 and tensor.shape[0] == batch_size:
-            new_batch_fields[key] = tensor.repeat_interleave(num_steps)
         else:
-            new_batch_fields[key] = tensor
+            new_batch_fields[key] = tensor.repeat_interleave(num_steps)
 
     for key, array in data.non_tensor_batch.items():
         if array.ndim >= 2 and array.shape[0] == batch_size and array.shape[1] == num_steps:
             new_non_tensor_fields[key] = array.reshape(batch_size * num_steps, *array.shape[2:])
-        elif array.ndim == 1 and array.shape[0] == batch_size:
-            new_non_tensor_fields[key] = np.repeat(array, num_steps, axis=0)
         else:
-            new_non_tensor_fields[key] = array
+            new_non_tensor_fields[key] = np.repeat(array, num_steps, axis=0)
 
     return DataProto.from_dict(
         tensors=new_batch_fields,
@@ -175,13 +212,6 @@ def flatten_trajectories(data: DataProto) -> DataProto:
 def add_transition_prefixes(data: DataProto) -> DataProto:
     batch = data.batch
     non_tensor_batch = data.non_tensor_batch
-    step_key = "action.full_action" if "action.full_action" in batch else "action.action"
-    if step_key not in batch:
-        return data
-
-    num_steps = batch[step_key].shape[1]
-    if num_steps < 1:
-        return data
 
     def next_steps(x):
         last_step = x[:, -1:, ...]
@@ -199,9 +229,11 @@ def add_transition_prefixes(data: DataProto) -> DataProto:
     for key in keys:
         batch[f"t0.{key}"] = batch[key]
         batch[f"t1.{key}"] = next_steps(batch[key])
+        del batch[key]
 
     for key in non_tensor_keys:
         non_tensor_batch[f"t0.{key}"] = non_tensor_batch[key]
         non_tensor_batch[f"t1.{key}"] = next_steps(non_tensor_batch[key])
+        del non_tensor_batch[key]
 
     return data
