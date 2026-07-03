@@ -698,7 +698,8 @@ class TrainCluster:
     def load_checkpoint(self) -> tuple[int, str] | None:
         assert self.checkpoint_helper is not None
         checkpoint_state = self.checkpoint_helper.load()
-        self.update_weights()
+        if self.config.resource.separate_rollout_model.enabled:
+            self.update_weights()
         return checkpoint_state
 
     def save_checkpoint(
