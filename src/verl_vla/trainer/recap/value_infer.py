@@ -412,7 +412,7 @@ def _load_recap_records(
         ],
         optional_columns={
             "task_index": 0,
-            "is_intervention": False,
+            "info.is_intervention": False,
         },
     )
     for frame_record in frame_records:
@@ -425,7 +425,7 @@ def _load_recap_records(
                 "task_index": int(frame_record["task_index"]),
                 "return": float(np.asarray(frame_record[RECAP_RETURN_FIELD]).reshape(-1)[0]),
                 "value": float(value_lookup[index]),
-                "is_intervention": bool(frame_record["is_intervention"]),
+                "is_intervention": bool(frame_record["info.is_intervention"]),
             }
         )
 

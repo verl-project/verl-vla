@@ -78,7 +78,7 @@ class LiberoLeRobotStrategy(BaseLeRobotStrategy):
             "next.terminated": {"dtype": "bool", "shape": (1,), "names": None},
             "next.truncated": {"dtype": "bool", "shape": (1,), "names": None},
             "next.success": {"dtype": "bool", "shape": (1,), "names": None},
-            "is_intervention": {"dtype": "bool", "shape": (1,), "names": None},
+            "info.is_intervention": {"dtype": "bool", "shape": (1,), "names": None},
         }
         return features
 
@@ -104,6 +104,6 @@ class LiberoLeRobotStrategy(BaseLeRobotStrategy):
             "next.terminated": np.asarray(next_terminated, dtype=bool).reshape(1),
             "next.truncated": np.asarray(next_truncated, dtype=bool).reshape(1),
             "next.success": np.asarray(next_success, dtype=bool).reshape(1),
-            "is_intervention": np.asarray(is_intervention, dtype=bool).reshape(1),
+            "info.is_intervention": np.asarray(is_intervention, dtype=bool).reshape(1),
             "task": str(task),
         }
