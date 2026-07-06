@@ -18,6 +18,7 @@
 from transformers import AutoConfig, AutoImageProcessor, AutoModel, AutoProcessor
 from verl.utils.transformers_compat import get_auto_model_for_vision2seq
 
+from .gr00t_torch import Gr00tForConditionalGeneration, Gr00tTorchConfig
 from .openvla_oft.configuration_prismatic import OpenVLAConfig
 from .openvla_oft.modeling_prismatic import OpenVLAForActionPrediction
 from .openvla_oft.processing_prismatic import PrismaticImageProcessor, PrismaticProcessor
@@ -30,6 +31,7 @@ from .recap_value_critic import (
 _REGISTERED_MODELS = {
     "openvla_oft": False,
     "pi0_torch": False,
+    "gr00t_torch": False,
     "recap_value_critic": False,
 }
 AutoModelForVision2Seq = get_auto_model_for_vision2seq()
@@ -59,6 +61,17 @@ def register_pi0_torch_model() -> None:
     _REGISTERED_MODELS["pi0_torch"] = True
 
 
+def register_gr00t_torch_model() -> None:
+    """Register the GR00T wrapper with the HF auto classes."""
+    if _REGISTERED_MODELS["gr00t_torch"]:
+        return
+
+    AutoConfig.register("gr00t_torch", Gr00tTorchConfig)
+    AutoModelForVision2Seq.register(Gr00tTorchConfig, Gr00tForConditionalGeneration)
+
+    _REGISTERED_MODELS["gr00t_torch"] = True
+
+
 def register_recap_value_critic_model() -> None:
     """Register the RECAP value critic with the HF auto classes."""
     if _REGISTERED_MODELS["recap_value_critic"]:
@@ -75,4 +88,5 @@ def register_vla_models() -> None:
     """Register all custom VLA models with Hugging Face."""
     register_openvla_oft()
     register_pi0_torch_model()
+    register_gr00t_torch_model()
     register_recap_value_critic_model()

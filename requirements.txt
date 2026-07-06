@@ -4,3 +4,6 @@ feetech-servo-sdk==1.0.0
 numpy<2.0.0
 timm==0.9.16
 onnx-ir
+# GR00T N1.7: Qwen3-VL backbone needs transformers>=4.57; DiT uses diffusers.
+transformers>=4.57.3
+diffusers
