@@ -719,7 +719,7 @@ class TrainCluster:
     def load_checkpoint(self) -> tuple[int, str] | None:
         assert self.checkpoint_helper is not None
         checkpoint_state = self.checkpoint_helper.load()
-        if self.config.resource.separate_rollout_model.enabled:
+        if self.cluster_type == "env_loop" and self.config.resource.separate_rollout_model.enabled:
             self.update_weights()
         return checkpoint_state
 
