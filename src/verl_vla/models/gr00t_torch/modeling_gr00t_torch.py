@@ -230,7 +230,7 @@ class Gr00tForActionPrediction(PreTrainedModel, SupportSACTraining, SupportSFTTr
 
         gr00t_output = output_cls.from_model_output(
             {
-                "full_action": self.action_unnormalize_transform(pred_action),
+                "full_action": self.action_unnormalize_transform(pred_action[..., : self.env_action_dim]),
                 "log_probs": rollout_log_probs,
                 "action_chunk_size": self.action_chunk_size,
                 "action_dim": self.env_action_dim,
@@ -655,7 +655,7 @@ class Gr00tForActionPrediction(PreTrainedModel, SupportSACTraining, SupportSFTTr
         _, gr00t_output_cls = self._get_gr00t_policy_classes()
         gr00t_output = gr00t_output_cls.from_model_output(
             {
-                "full_action": self.action_unnormalize_transform(actions),
+                "full_action": self.action_unnormalize_transform(actions[..., : self.env_action_dim]),
                 "log_probs": log_probs,
                 "action_chunk_size": self.action_chunk_size,
                 "action_dim": self.env_action_dim,

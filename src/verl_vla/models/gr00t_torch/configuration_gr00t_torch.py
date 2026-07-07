@@ -46,6 +46,13 @@ class Gr00tTorchConfig(PretrainedConfig):
         self.load_bf16 = kwargs.get("load_bf16", False)
         self.backbone_trainable_params_fp32 = kwargs.get("backbone_trainable_params_fp32", True)
 
+        # Top-level attention-head counts so verl's apply_monkey_patch (which reads
+        # config.num_attention_heads / config.text_config.* unconditionally) works.
+        # ulysses_sp_size=1 makes the patch a no-op for gr00t_torch (model_type is
+        # not qwen2_vl), so the exact values only need to exist and be positive.
+        self.num_attention_heads = kwargs.get("num_attention_heads", 32)
+        self.num_key_value_heads = kwargs.get("num_key_value_heads", self.num_attention_heads)
+
         # ---- GR00T N1.7 action head (flow-matching DiT) ----
         self.max_state_dim = kwargs.get("max_state_dim", 132)
         self.max_action_dim = kwargs.get("max_action_dim", 132)
