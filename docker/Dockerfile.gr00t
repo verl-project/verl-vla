@@ -1,0 +1,104 @@
+# syntax=docker/dockerfile:1
+# verl-vla + GR00T N1.7 + LIBERO runtime image (built from repo, public CUDA base).
+#
+# Why built-from-repo: the README's vemlp pi05-libero-sac image needs volces
+# registry creds (401) and, being a pi05 image, may lack Qwen3-VL/transformers>=4.57
+# that GR00T N1.7 requires. Docker Hub / nvidia public images are reachable.
+#
+# Build (run AFTER docker data-root is moved to the ext4 loop; the build writes
+# tens of GB):
+#   docker build -f docker/Dockerfile.gr00t -t verl-vla-gr00t:dev .
+#
+# Run (2x RTX A6000, headless MuJoCo via EGL):
+#   docker run --rm -it --gpus all --ipc=host \
+#     -v /home/lancel/Projects/verl-vla:/workspace/verl-vla \
+#     -v /mnt/dockerdisk/data:/data \
+#     verl-vla-gr00t:dev
+#
+# NOTE: this is a first draft; expect to iterate on dependency pins at build time
+# (verl==0.7.1 / lerobot==0.4.4 / transformers>=4.57.3 / flash-attn / LIBERO all
+# have tight version interactions).
+
+FROM nvidia/cuda:12.8.0-devel-ubuntu22.04
+
+SHELL ["/bin/bash", "-c"]
+ENV DEBIAN_FRONTEND=noninteractive \
+    NVIDIA_DRIVER_CAPABILITIES=graphics,utility,compute \
+    CUDA_HOME=/usr/local/cuda \
+    PATH=/usr/local/cuda/bin:/opt/venv/bin:${PATH} \
+    LD_LIBRARY_PATH=/usr/local/cuda/lib64:${LD_LIBRARY_PATH} \
+    PIP_NO_CACHE_DIR=1
+
+# ---- system deps (incl. ffmpeg + EGL for headless MuJoCo/LIBERO rendering) ----
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential ca-certificates git git-lfs curl wget cmake ninja-build \
+        pkg-config python3.10 python3.10-venv python3.10-dev python3-pip \
+        python-is-python3 \
+        ffmpeg libavdevice-dev libavfilter-dev libavformat-dev libavcodec-dev \
+        libavutil-dev libswresample-dev libswscale-dev \
+        libegl1 libegl1-mesa-dev libgl1-mesa-glx libglew-dev libosmesa6-dev \
+        libglfw3 libglib2.0-0 patchelf \
+    && rm -rf /var/lib/apt/lists/*
+
+# ---- python venv ----
+RUN python3.10 -m venv /opt/venv && \
+    pip install --upgrade pip setuptools wheel
+
+# ---- torch (CUDA 12.8 wheels) ----
+# Pin adjusted at build time to satisfy verl==0.7.1 + transformers>=4.57.3.
+RUN pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
+
+# ---- verl-vla deps ----
+WORKDIR /workspace/verl-vla
+COPY requirements.txt setup.py pyproject.toml README.md ./
+COPY src/verl_vla/version.py ./src/verl_vla/version.py
+# Dependency resolution note: verl 0.7.1 requires numpy<2, but lerobot 0.4.4
+# requires rerun-sdk>=0.24 (which requires numpy>=2). These cannot co-resolve.
+# Resolution: anchor numpy<2, install lerobot with --no-deps plus rerun-sdk
+# 0.23.1 (numpy<2-compatible, viz-only), and supply lerobot's runtime deps
+# explicitly — skipping flash-attn / pyrealsense (hardware/build-heavy, not
+# needed for sim SFT). opencv pinned to 4.10.0.84 (numpy<2-compatible).
+RUN pip install \
+        "numpy<2.0.0" \
+        "opencv-python-headless==4.10.0.84" "opencv-python==4.10.0.84" \
+        "rerun-sdk==0.23.1" \
+        verl==0.7.1 \
+        "transformers>=4.57.3" diffusers "timm==0.9.16" onnx-ir "feetech-servo-sdk==1.0.0" \
+ && pip install --no-deps lerobot==0.4.4 \
+ && pip install \
+        "draccus==0.10.0" "gymnasium>=1.1.1,<2.0.0" "av>=15.0.0,<16.0.0" \
+        "jsonlines>=4.0.0" "deepdiff>=7.0.1,<9.0.0" "imageio[ffmpeg]>=2.34.0,<3.0.0" \
+        "termcolor>=2.4.0" "einops>=0.8.0,<0.9.0" "torchcodec>=0.2.1,<0.11.0" \
+        "wandb>=0.24.0,<0.25.0" "pyserial>=3.5" "pynput>=1.7.7,<1.9.0" \
+        "jsonlines" "packaging>=24.2" "mock-serial>=0.0.1"
+
+# Pin transformers to 4.57.3: `>=4.57.3` above resolves to 5.x, which removes
+# transformers.tokenization_utils.PaddingStrategy (breaks openvla_oft, imported
+# at model-registration top-level) and diverges from the GR00T ckpt's 4.57.1.
+RUN pip install "transformers==4.57.3"
+
+# Small runtime deps used by verl_vla (teleop uses scipy; obs server uses
+# fastapi/uvicorn) that lerobot's --no-deps install skipped.
+RUN pip install scipy uvicorn fastapi
+
+# ---- flash-attn (optional; GR00T backbone can run without it) ----
+# RUN pip install flash-attn --no-build-isolation
+
+# ---- EGL vendor config for NVIDIA headless rendering ----
+RUN mkdir -p /usr/share/glvnd/egl_vendor.d && \
+    printf '{\n  "file_format_version":"1.0.0",\n  "ICD":{"library_path":"libEGL_nvidia.so.0"}\n}\n' \
+      > /usr/share/glvnd/egl_vendor.d/10_nvidia.json
+ENV MUJOCO_GL=egl \
+    PYOPENGL_PLATFORM=egl \
+    __EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/10_nvidia.json
+
+# ---- LIBERO simulator (for eval) ----
+# `pip install libero` pulls robosuite 1.4.0 + mujoco (latest). Pin mujoco==3.3.1:
+# robosuite 1.4.0 calls mj_fullM(model, dst, M), whose signature changed in
+# mujoco 3.10.0, crashing env creation. Keep numpy<2 (libero requirements would
+# otherwise float it).
+RUN pip install libero \
+ && pip install "mujoco==3.3.1" "robosuite==1.4.0" "numpy<2.0.0"
+
+WORKDIR /workspace/verl-vla
+CMD ["/bin/bash"]
