@@ -19,6 +19,7 @@ import time
 from pathlib import Path
 
 import numpy as np
+import torch
 from omegaconf import OmegaConf
 
 from verl_vla.recorder.config import (
@@ -33,6 +34,12 @@ from verl_vla.teleop.config import (
     TeleopServerConfig,
 )
 from verl_vla.utils.recorder import merge_lerobot_datasets
+
+
+def safe_bool(val):
+    if isinstance(val, (torch.Tensor | np.ndarray)):
+        return bool(val.any())
+    return bool(val)
 
 
 def create_libero_config(args):
@@ -67,21 +74,37 @@ def create_env_config(simulator_type, simulator_config, teleop_config, recorder_
 
 
 def create_env(simulator_type, cfg, rank=0, world_size=1, stage_id=0, task_id=0):
+    video_cfg = OmegaConf.create(
+        {
+            "save_video": cfg.recorder.video.enable,
+            "video_base_dir": cfg.recorder.video.root,
+            "fps": cfg.recorder.video.fps,
+        }
+    )
+
     if simulator_type == "libero":
         from verl_vla.envs.libero_env.libero_env import LiberoEnv
 
-        return LiberoEnv(cfg=cfg, rank=rank, world_size=world_size, stage_id=stage_id)
+        env_cfg = cfg
+        return LiberoEnv(cfg=env_cfg, rank=rank, world_size=world_size, stage_id=stage_id)
     elif simulator_type == "isaac":
-        os.environ["LIBERO_TASK_SUITE"] = cfg.simulator.libero.task_suite_name
+        os.environ["LIBERO_TASK_SUITE"] = cfg.simulator.isaac.task_suite_name
         os.environ["LIBERO_TASK_ID"] = str(task_id)
         os.environ["LIBERO_OSC_TYPE"] = "pose_rel"
         from verl_vla.envs.isaac_env.isaac_env import IsaacEnv
 
-        return IsaacEnv(cfg=cfg, rank=rank, world_size=world_size)
+        env_cfg = OmegaConf.create(OmegaConf.to_container(cfg, resolve=True))
+        env_cfg.video_cfg = video_cfg
+        env_cfg.simulator = cfg.simulator.isaac
+        return IsaacEnv(cfg=env_cfg, rank=rank, world_size=world_size)
     elif simulator_type == "lerobot":
         from verl_vla.envs.lerobot_env.lerobot_env import LeRobotEnv
 
-        return LeRobotEnv(cfg=cfg, rank=rank, world_size=world_size, stage_id=stage_id)
+        env_cfg = OmegaConf.create(OmegaConf.to_container(cfg, resolve=True))
+        env_cfg.video_cfg = video_cfg
+        for k, v in cfg.simulator.lerobot.items():
+            env_cfg[k] = v
+        return LeRobotEnv(cfg=env_cfg, rank=rank, world_size=world_size, stage_id=stage_id)
     else:
         raise ValueError(f"Unsupported simulator type: {simulator_type}")
 
@@ -99,9 +122,10 @@ def custom_reset_libero(env, task_id, trial_id):
     for _ in range(reset_warmup_steps):
         raw_obs, _reward, _terminations, _info_lists = env.env.step(zero_actions)
 
+    task_desc = env.task_descriptions[0] if isinstance(env.task_descriptions, (list | tuple)) else env.task_descriptions
     obs = {
         "observation": env._make_observations(raw_obs),
-        "task": [env.task_descriptions[0]],
+        "task": [task_desc],
         "task_id": env.task_ids[np.array([0])].astype(np.int64, copy=False),
         "eval_episode_id": env.eval_episode_ids[np.array([0])].astype(np.int64, copy=False),
     }
@@ -113,9 +137,10 @@ def custom_reset_isaac(env, task_id, trial_id):
     env._reset_metrics(np.array([0]))
     raw_obs, infos = env.env.reset()
     obs = env._wrap_obs(raw_obs)
+    task_desc = env.task_descriptions[0] if isinstance(env.task_descriptions, (list | tuple)) else env.task_descriptions
     return {
         "observation": obs,
-        "task": [env.task_descriptions[0]],
+        "task": [task_desc],
         "task_id": np.array([task_id], dtype=np.int64),
         "eval_episode_id": np.array([-1], dtype=np.int64),
     }
@@ -124,9 +149,10 @@ def custom_reset_isaac(env, task_id, trial_id):
 def custom_reset_lerobot(env, task_id, trial_id):
     state_id = trial_id
     obs, _ = env.reset_envs_to_state_ids([state_id], [task_id])
+    task_desc = env.task_descriptions[0] if isinstance(env.task_descriptions, (list | tuple)) else env.task_descriptions
     return {
         "observation": obs,
-        "task": [env.task_descriptions[0]],
+        "task": [task_desc],
         "task_id": np.array([task_id], dtype=np.int64),
         "eval_episode_id": np.array([-1], dtype=np.int64),
     }
@@ -277,6 +303,8 @@ def main():
 
         if args.trial_id is not None:
             trial_id = args.trial_id
+            if trial_id < 0 or trial_id >= num_trials_task0:
+                raise ValueError(f"trial_id {trial_id} is out of bounds [0, {num_trials_task0})")
         else:
             trial_id = np.random.randint(0, num_trials_task0)
 
@@ -300,17 +328,26 @@ def main():
 
         done = False
         episode_start = time.time()
+        step_count = 0
 
         while not done:
             zero_action = np.zeros((1, 1, 7), dtype=np.float32)
 
-            obs, rewards, terminateds, truncateds, success = env.step(zero_action)
+            step_results = env.step(zero_action)
+            if isinstance(step_results, dict):
+                terminateds = step_results.get("next.terminated", step_results.get("terminated"))
+                truncateds = step_results.get("next.truncated", step_results.get("truncated"))
+            else:
+                terminateds = step_results[2]
+                truncateds = step_results[3]
 
-            done = bool(terminateds[0, 0]) or bool(truncateds[0, 0])
+            is_terminated = safe_bool(terminateds)
+            is_truncated = safe_bool(truncateds)
+            done = is_terminated or is_truncated
+            step_count += 1
 
             if done:
-                step_count = env._elapsed_steps[0]
-                if bool(terminateds[0, 0]):
+                if is_terminated:
                     success_count += 1
                     print(f"  Success! (step {step_count})")
                 else:
