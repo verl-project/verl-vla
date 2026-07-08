@@ -152,6 +152,27 @@ class BaseEnv(gym.Env):
         self.close_teleops()
         self.env_close()
 
+    def record(self) -> None:
+        assert int(getattr(self, "stage_num", 1)) == 1
+        assert self.num_envs == 1
+        assert self.world_size == 1
+        assert len(self.teleops) == 1 and self.teleops[0] is not None
+
+        self.reset(options={"env_idx": [0]})
+        done = False
+        while not done:
+            action = np.asarray(self.teleops[0].get_action(), dtype=np.float32).reshape(1, -1)
+            step_result = self.mask_step(
+                action,
+                np.ones(self.num_envs, dtype=bool),
+                is_intervention=np.ones(self.num_envs, dtype=bool),
+                critic_value=np.zeros(self.num_envs, dtype=np.float32),
+            )
+            done = bool(
+                np.asarray(step_result["next.terminated"], dtype=bool).any()
+                or np.asarray(step_result["next.truncated"], dtype=bool).any()
+            )
+
     ### Step Control ###
 
     def env_init(self) -> None:

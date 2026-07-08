@@ -30,7 +30,12 @@ from verl.utils.config import omega_conf_to_dataclass
 
 from verl_vla.env_loop.env_loop import EnvLoop
 from verl_vla.trainer.train_cluster.checkpoint import CheckpointHelper
-from verl_vla.trainer.train_cluster.config import EnvLoopTrainClusterConfig, ResourceConfig, SFTTrainClusterConfig
+from verl_vla.trainer.train_cluster.config import (
+    EnvLoopTrainClusterConfig,
+    EnvTrainClusterConfig,
+    ResourceConfig,
+    SFTTrainClusterConfig,
+)
 from verl_vla.trainer.train_cluster.resource_pool import VLAResourcePoolManager
 from verl_vla.utils.ray_utils import remove_placement_group_with_timeout
 from verl_vla.utils.recorder import merge_lerobot_datasets
@@ -75,15 +80,19 @@ def ray_rollout_once(
 
 
 class TrainCluster:
-    def __init__(self, config: SFTTrainClusterConfig | EnvLoopTrainClusterConfig):
-        if not isinstance(config, SFTTrainClusterConfig | EnvLoopTrainClusterConfig):
-            raise TypeError(
-                "TrainCluster config must be SFTTrainClusterConfig or EnvLoopTrainClusterConfig, "
-                f"got {type(config).__name__}."
-            )
+    def __init__(self, config: SFTTrainClusterConfig | EnvLoopTrainClusterConfig | EnvTrainClusterConfig):
         self.config = config
-        self.cluster_type = "sft" if isinstance(config, SFTTrainClusterConfig) else "env_loop"
+        if isinstance(config, SFTTrainClusterConfig):
+            self.cluster_type = "sft"
+        elif isinstance(config, EnvLoopTrainClusterConfig):
+            self.cluster_type = "env_loop"
+        elif isinstance(config, EnvTrainClusterConfig):
+            self.cluster_type = "env"
+        else:
+            raise TypeError(f"Unsupported TrainCluster config type: {type(config).__name__}.")
+
         self.resource_pool_spec: dict[str, list[int]] = {}
+        self.resource_pool_devices: dict[str, str] = {}
         self.role_to_pool: dict[Role, str] = {}
         self.cpu_pool_names: set[str] = set()
         self.resource_labels: dict[str, str] = {}
@@ -122,7 +131,7 @@ class TrainCluster:
             )
             self._init_checkpoint_engine_manager()
 
-        if self.config.checkpoint is not None:
+        if self.cluster_type != "env" and self.config.checkpoint is not None:
             actor_config = self.config.actor_rollout_ref.actor
             assert actor_config is not None
             self.checkpoint_helper = CheckpointHelper(
@@ -190,7 +199,7 @@ class TrainCluster:
             self.worker_groups[worker_name] = RayWorkerGroup(
                 resource_pool=resource_pool,
                 ray_cls_with_init=ray_cls_with_init,
-                device_name=self.config.resource.model.device,
+                device_name=self.resource_pool_devices[pool_name],
             )
 
         for worker_name in [
@@ -205,6 +214,7 @@ class TrainCluster:
 
     def _build_resource_pool_plan(self) -> None:
         self.resource_pool_spec = {}
+        self.resource_pool_devices = {}
         self.role_to_pool = {}
         self.cpu_pool_names = set()
         self.resource_labels = {}
@@ -212,6 +222,12 @@ class TrainCluster:
         if self.cluster_type == "sft":
             self._add_resource_pool(pool_name="train_rollout_pool", resource=self.config.resource.model)
             self.role_to_pool = {Role.Actor: "train_rollout_pool"}
+
+        elif self.cluster_type == "env":
+            resource = self.config.resource
+            env_pool_name = "env_cpu_pool" if resource.env.device == "cpu" else "env_gpu_pool"
+            self._add_resource_pool(pool_name=env_pool_name, resource=resource.env)
+            self.role_to_pool[Role.Env] = env_pool_name
 
         elif self.cluster_type == "env_loop":
             resource = self.config.resource
@@ -238,6 +254,7 @@ class TrainCluster:
     def _add_resource_pool(self, pool_name: str, resource: ResourceConfig) -> None:
         processes_per_node = resource.workers_per_node if resource.device == "cpu" else resource.gpus_per_node
         self.resource_pool_spec[pool_name] = [processes_per_node] * resource.nnodes
+        self.resource_pool_devices[pool_name] = resource.device
         if resource.device == "cpu":
             self.cpu_pool_names.add(pool_name)
         if resource.resource_label is not None:
@@ -246,6 +263,9 @@ class TrainCluster:
     def _role_worker_mapping(self):
         if self.cluster_type == "sft":
             return {Role.Actor: VLAActorRolloutRefWorker}
+
+        elif self.cluster_type == "env":
+            return {Role.Env: EnvWorker}
 
         elif self.cluster_type == "env_loop":
             separate_rollout_model = self.config.resource.separate_rollout_model.enabled
@@ -277,8 +297,6 @@ class TrainCluster:
 
     def _worker_config(self, role: Role):
         if role == Role.Env:
-            if not isinstance(self.config, EnvLoopTrainClusterConfig) or self.config.env is None:
-                raise ValueError("Env worker requires EnvLoopTrainClusterConfig.env.")
             return self.config.env
         elif role in {Role.Actor, Role.Rollout, Role.ActorRollout}:
             return self.config.actor_rollout_ref
@@ -451,10 +469,40 @@ class TrainCluster:
         return collected_datasets, lerobot_collected_once
 
     def train(self, data: DataProto, *, async_update: bool = True) -> Any:
+        assert self.cluster_type in {"sft", "env_loop"}
         actor_wg = self.actor_worker_group
         if async_update:
             return actor_wg.update_actor_async(data)
         return actor_wg.update_actor(data)
+
+    def record(self) -> Path:
+        if self.cluster_type != "env":
+            raise RuntimeError("record is only wired for env-only train clusters.")
+        env_resource = self.config.resource.env
+        env_workers_per_node = (
+            env_resource.workers_per_node if env_resource.device == "cpu" else env_resource.gpus_per_node
+        )
+        assert env_resource.nnodes * env_workers_per_node == 1
+
+        env_wg = self.worker_groups.get(ROLE_TO_WORKER_NAME[Role.Env])
+        if env_wg is None:
+            raise RuntimeError("Env worker group is not initialized. Call start() before record().")
+        env_wg.record()
+
+        recorder_cfg = self.config.env.env_worker.recorder
+        output_root = Path(recorder_cfg.lerobot.root) / recorder_cfg.lerobot.repo_id
+        rank_datasets = [dataset for dataset in env_wg.pop_lerobot_dataset() if dataset is not None]
+        if not rank_datasets:
+            raise RuntimeError("No lerobot dataset was produced by record().")
+        output_dataset = merge_lerobot_datasets(
+            roots=[dataset["root"] for dataset in rank_datasets],
+            output_root=output_root,
+            repo_id=recorder_cfg.lerobot.repo_id,
+            repo_ids=[dataset["repo_id"] for dataset in rank_datasets],
+            append=True,
+            video_files_size_in_mb=recorder_cfg.lerobot.video_files_size_in_mb,
+        )
+        return Path(output_dataset["root"])
 
     def update_weights(self) -> None:
         assert self.cluster_type == "env_loop"

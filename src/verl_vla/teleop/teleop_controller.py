@@ -112,6 +112,12 @@ class TeleopController:
                 overridden_action = strategy.apply_action(overridden_action, input_device)
         return overridden_action
 
+    def get_action(self) -> Any:
+        if not self.input_devices:
+            raise RuntimeError("No teleop input devices are initialized.")
+        device_type = self.device if self.device in self.input_devices else next(iter(self.input_devices))
+        return self.strategies[device_type].get_action(self.input_devices[device_type])
+
     def _get_teleop_info(self) -> dict[str, Any]:
         device_infos = []
         active_info = None

@@ -37,6 +37,9 @@ class InterventionStrategyBase(ABC):
     def apply_action(self, action: Any, device: DeviceBase) -> Any:
         raise NotImplementedError
 
+    def get_action(self, device: DeviceBase) -> Any:
+        raise NotImplementedError(f"{type(self).__name__} does not support get_action.")
+
     @abstractmethod
     def snapshot(self, device: DeviceBase) -> dict[str, Any]:
         raise NotImplementedError
