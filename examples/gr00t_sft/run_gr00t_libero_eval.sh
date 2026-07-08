@@ -20,6 +20,10 @@ TASK_SUITE=${TASK_SUITE:-libero_spatial}
 TASK_IDS=${TASK_IDS:-"[0]"}          # limit tasks for a fast success check
 TRIALS_PER_TASK=${TRIALS_PER_TASK:-10}
 MAX_EPISODE_STEPS=${MAX_EPISODE_STEPS:-256}
+NUM_ACTION_CHUNKS=${NUM_ACTION_CHUNKS:-10}   # action steps executed per env-loop interaction
+# env-loop interactions per episode; each interaction runs num_action_chunks env
+# steps, so cover the full episode: ceil(MAX_EPISODE_STEPS / NUM_ACTION_CHUNKS).
+MAX_INTERACTIONS=${MAX_INTERACTIONS:-$(( (MAX_EPISODE_STEPS + NUM_ACTION_CHUNKS - 1) / NUM_ACTION_CHUNKS ))}
 WRAP_CLASSES=${WRAP_CLASSES:-"[Qwen3VLTextDecoderLayer,Qwen3VLVisionBlock,BasicTransformerBlock]"}
 
 export MUJOCO_GL=osmesa PYOPENGL_PLATFORM=osmesa VERL_LOGGING_LEVEL=INFO
@@ -53,6 +57,6 @@ python -m verl_vla.trainer.main_sac \
     trainer.logger="['console']" \
     trainer.project_name=gr00t_libero_eval \
     trainer.experiment_name=gr00t_libero_eval \
-    cluster.env.env_loop.max_interactions=30 \
+    cluster.env.env_loop.max_interactions=$MAX_INTERACTIONS \
     trainer.val_only=True \
     trainer.val_before_train=True

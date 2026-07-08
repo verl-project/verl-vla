@@ -45,6 +45,8 @@ TOTAL_EPOCHS=${TOTAL_EPOCHS:-100}
 MINI_BATCH_SIZE=${MINI_BATCH_SIZE:-16}
 MICRO_BATCH_SIZE=${MICRO_BATCH_SIZE:-4}
 LR=${LR:-1e-4}
+WEIGHT_DECAY=${WEIGHT_DECAY:-1e-5}
+WARMUP_RATIO=${WARMUP_RATIO:-0.05}
 SAVE_FREQ=${SAVE_FREQ:-500}
 MAX_ACTOR_CKPT_TO_KEEP=${MAX_ACTOR_CKPT_TO_KEEP:-3}
 
@@ -76,6 +78,8 @@ $PYTHON -m verl_vla.trainer.main_sft \
     cluster.actor_rollout_ref.actor.mini_batch_size=$MINI_BATCH_SIZE \
     cluster.actor_rollout_ref.actor.micro_batch_size=$MICRO_BATCH_SIZE \
     cluster.actor_rollout_ref.actor.optim.lr=$LR \
+    cluster.actor_rollout_ref.actor.optim.weight_decay=$WEIGHT_DECAY \
+    cluster.actor_rollout_ref.actor.optim.lr_warmup_steps_ratio=$WARMUP_RATIO \
     cluster.resource.model.gpus_per_node=$NUM_GPUS \
     cluster.resource.model.nnodes=$NUM_NODES \
     cluster.checkpoint.default_local_dir="$OUTPUT_DIR" \
