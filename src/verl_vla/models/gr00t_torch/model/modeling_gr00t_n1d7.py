@@ -426,7 +426,24 @@ class Gr00tN1d7ActionHead(nn.Module):
 
 
 class Gr00tN1d7Model(PreTrainedModel):
-    """Gr00tN1d7: VLA model with Cosmos-Reason2-2B (Qwen3-VL) backbone."""
+    """Gr00tN1d7: VLA model with Cosmos-Reason2-2B (Qwen3-VL) backbone.
+
+    ┌────────────────────────────────────┐
+    │                         actions    │
+    │                            ▲       │
+    │                         ┌──┴──┐    │
+    │  vl features            │ DiT │    │
+    │  ┌─────────────────────►│Head │    │
+    │  │                      └▲─▲─▲┘    │
+    │ ┌┴──────────┐            │ │ │     │
+    │ │ Qwen3-VL  │            │ │ │     │
+    │ │ Backbone  │            │ │ robot │
+    │ └▲──▲───────┘            │ │ state │
+    │  │  │                    │ noise   │
+    │  │  image(s)             timestep  │
+    │  language tokens                  │
+    └────────────────────────────────────┘
+    """
 
     config_class = Gr00tTorchConfig
     supports_gradient_checkpointing = True
