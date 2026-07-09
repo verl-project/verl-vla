@@ -129,6 +129,44 @@ def test_record_control_overrides_step_result(
     assert env.recorder_reset_calls == [[0]]
 
 
+@pytest.mark.parametrize(
+    ("event_key", "expected_reward", "expected_terminated", "expected_truncated", "expected_success"),
+    [
+        ("manual_reward", [[1.0, 0.0]], [[True, False]], [[False, False]], [[True, False]]),
+        ("stop_episode", [[0.0, 0.0]], [[False, False]], [[True, False]], [[False, False]]),
+    ],
+)
+def test_record_done_control_is_not_overwritten_by_later_chunk_step(
+    event_key: str,
+    expected_reward: list[list[float]],
+    expected_terminated: list[list[bool]],
+    expected_truncated: list[list[bool]],
+    expected_success: list[list[bool]],
+) -> None:
+    env = FakeBaseEnv(
+        num_envs=1,
+        events=[
+            {event_key: [0]},
+            {},
+        ],
+    )
+
+    obs, reward, terminated, truncated, success = env.step(np.asarray([[[100.0], [101.0]]], dtype=np.float32))
+
+    assert env.step_calls == [[0], [0]]
+    assert [action.tolist() for action in env.action_calls] == [
+        [[100.0]],
+        [[101.0]],
+    ]
+    assert obs["observation"] == ["reset-obs-0"]
+    assert reward.tolist() == expected_reward
+    assert terminated.tolist() == expected_terminated
+    assert truncated.tolist() == expected_truncated
+    assert success.tolist() == expected_success
+    assert env.reset_calls == [[0]]
+    assert env.recorder_reset_calls == [[0]]
+
+
 def test_restart_episode_resets_without_marking_transition_done() -> None:
     env = FakeBaseEnv(num_envs=1, events=[{"restart_episode": [0]}])
 
@@ -153,10 +191,15 @@ def test_intervention_done_env_is_not_stepped_again() -> None:
         terminate_env_ids=[0],
     )
 
-    step_result, restart_episode = env.step_with_teleop_and_recording(np.zeros((2, 1), dtype=np.float32))
+    step_result, restart_episode, chunk_intervened = env.step_with_teleop_and_recording(
+        np.zeros((2, 1), dtype=np.float32),
+        chunk_intervened=np.zeros(2, dtype=bool),
+        merged_step_result=None,
+    )
 
     assert env.step_calls == [[0], [1]]
     assert restart_episode.tolist() == [False, False]
+    assert chunk_intervened.tolist() == [True, False]
     assert step_result["observation"] == ["step-1-obs-0", "step-2-obs-1"]
     assert step_result["next.terminated"].tolist() == [True, False]
 
@@ -174,7 +217,11 @@ def test_multi_env_intervention_waits_until_all_envs_stop_or_finish() -> None:
         terminate_env_ids=[2],
     )
 
-    step_result, restart_episode = env.step_with_teleop_and_recording(np.zeros((3, 1), dtype=np.float32))
+    step_result, restart_episode, chunk_intervened = env.step_with_teleop_and_recording(
+        np.zeros((3, 1), dtype=np.float32),
+        chunk_intervened=np.zeros(3, dtype=bool),
+        merged_step_result=None,
+    )
 
     assert env.events == []
     assert env.step_calls == [[0], [2], [1], [0, 1]]
@@ -185,5 +232,101 @@ def test_multi_env_intervention_waits_until_all_envs_stop_or_finish() -> None:
         [[11.0], [31.0]],
     ]
     assert restart_episode.tolist() == [False, False, False]
+    assert chunk_intervened.tolist() == [True, True, True]
     assert step_result["observation"] == ["step-4-obs-0", "step-4-obs-1", "step-2-obs-2"]
     assert step_result["next.terminated"].tolist() == [False, False, True]
+
+
+def test_chunk_intervened_env_skips_remaining_policy_actions() -> None:
+    env = FakeBaseEnv(
+        num_envs=2,
+        events=[
+            {"intervention": [0], "next_action": np.asarray([[10.0], [0.0]], dtype=np.float32)},
+            {"intervention": []},
+        ],
+    )
+
+    action = np.asarray(
+        [
+            [[100.0], [101.0], [102.0]],
+            [[200.0], [201.0], [202.0]],
+        ],
+        dtype=np.float32,
+    )
+    obs, reward, terminated, truncated, success = env.step(action)
+
+    assert env.step_calls == [[0, 1], [1], [1]]
+    assert [action.tolist() for action in env.action_calls] == [
+        [[10.0], [200.0]],
+        [[201.0]],
+        [[202.0]],
+    ]
+    assert obs["observation"] == ["step-1-obs-0", "step-3-obs-1"]
+    assert reward.tolist() == [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]
+    assert terminated.tolist() == [[False, False, False], [False, False, False]]
+    assert truncated.tolist() == [[False, False, False], [False, False, False]]
+    assert success.tolist() == [[False, False, False], [False, False, False]]
+
+
+def test_execute_mask_keeps_policy_and_fresh_teleop_but_skips_old_intervention() -> None:
+    env = FakeBaseEnv(
+        num_envs=3,
+        events=[
+            {"intervention": [2], "next_action": np.asarray([[100.0], [200.0], [30.0]], dtype=np.float32)},
+            {"intervention": []},
+        ],
+    )
+    merged_step_result = {
+        "observation": ["previous-obs-0", "previous-obs-1", "previous-obs-2"],
+        "task": ["previous-task-0", "previous-task-1", "previous-task-2"],
+        "task_id": np.asarray([0, 1, 2], dtype=np.int64),
+        "next.reward": np.zeros(3, dtype=np.float32),
+        "next.terminated": np.zeros(3, dtype=bool),
+        "next.truncated": np.zeros(3, dtype=bool),
+        "next.success": np.zeros(3, dtype=bool),
+    }
+
+    step_result, restart_episode, chunk_intervened = env.step_with_teleop_and_recording(
+        np.asarray([[10.0], [20.0], [30.0]], dtype=np.float32),
+        chunk_intervened=np.asarray([False, True, True], dtype=bool),
+        merged_step_result=merged_step_result,
+    )
+
+    assert env.events == []
+    assert env.step_calls == [[0, 2]]
+    assert [action.tolist() for action in env.action_calls] == [
+        [[10.0], [30.0]],
+    ]
+    assert restart_episode.tolist() == [False, False, False]
+    assert chunk_intervened.tolist() == [False, True, True]
+    assert step_result["observation"] == ["step-1-obs-0", "previous-obs-1", "step-1-obs-2"]
+    assert step_result["next.terminated"].tolist() == [False, False, False]
+
+
+def test_all_chunk_intervened_envs_can_skip_remaining_policy_actions() -> None:
+    env = FakeBaseEnv(
+        num_envs=2,
+        events=[
+            {"intervention": [0, 1], "next_action": np.asarray([[10.0], [20.0]], dtype=np.float32)},
+            {"intervention": []},
+        ],
+    )
+
+    action = np.asarray(
+        [
+            [[100.0], [101.0]],
+            [[200.0], [201.0]],
+        ],
+        dtype=np.float32,
+    )
+    obs, reward, terminated, truncated, success = env.step(action)
+
+    assert env.step_calls == [[0, 1]]
+    assert [action.tolist() for action in env.action_calls] == [
+        [[10.0], [20.0]],
+    ]
+    assert obs["observation"] == ["step-1-obs-0", "step-1-obs-1"]
+    assert reward.tolist() == [[0.0, 0.0], [0.0, 0.0]]
+    assert terminated.tolist() == [[False, False], [False, False]]
+    assert truncated.tolist() == [[False, False], [False, False]]
+    assert success.tolist() == [[False, False], [False, False]]

@@ -223,10 +223,15 @@ class IsaacLabArenaEnv(BaseEnv):
     # Stable-action adapter: temporarily replace policy actions with a held pose.
 
     @override
-    def step_with_teleop_and_recording(self, action, critic_value=None):
+    def step_with_teleop_and_recording(self, action, chunk_intervened, merged_step_result, critic_value=None):
         if not self.USE_POLICY_ACTION:
             action = self._replace_with_stable_actions(action)
-        return super().step_with_teleop_and_recording(action, critic_value=critic_value)
+        return super().step_with_teleop_and_recording(
+            action,
+            chunk_intervened=chunk_intervened,
+            merged_step_result=merged_step_result,
+            critic_value=critic_value,
+        )
 
     def _replace_with_stable_actions(self, action) -> np.ndarray:
         action = np.asarray(action).copy()
