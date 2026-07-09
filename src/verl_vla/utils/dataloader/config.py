@@ -39,6 +39,7 @@ class LeRobotDataLoaderConfig(BaseConfig):
     seed: int | None = 42
     video_backend: str | None = "pyav"
     action_delta_steps: int = 64
+    action_key: str = "action"
 
     def __post_init__(self):
         if self.batch_size <= 0:
@@ -54,3 +55,5 @@ class LeRobotDataLoaderConfig(BaseConfig):
             )
         if self.action_delta_steps < 0:
             raise ValueError(f"action_delta_steps must be non-negative, got {self.action_delta_steps}")
+        if not self.action_key:
+            raise ValueError("action_key must be non-empty")

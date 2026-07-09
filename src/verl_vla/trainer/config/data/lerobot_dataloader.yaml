@@ -43,3 +43,6 @@ video_backend: pyav
 
 # Number of future action timestamps requested from LeRobot.
 action_delta_steps: 0
+
+# LeRobot feature key used when requesting future action timestamps.
+action_key: action

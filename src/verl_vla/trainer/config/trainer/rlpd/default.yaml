@@ -33,10 +33,13 @@ episodes: null
 max_transitions: 0
 
 # Flush prefill data to workers after this many transitions. A non-positive value submits once at the end.
-submit_max_transitions: 0
+submit_max_transitions: 256
 
 # Number of low-level LeRobot actions compressed into each SAC action chunk.
 action_chunk_steps: 10
 
-# Sparse terminal reward assigned when the dataset has no reward field.
-terminal_reward: 1.0
+# Number of low-level frames between replay transitions. Null uses action_chunk_steps; set 1 for full overlap.
+transition_stride: null
+
+# Add one terminal chunk per episode with s1=s0 and a1=a0 so sparse final rewards enter replay.
+include_final_transition: true
