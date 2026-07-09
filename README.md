@@ -73,6 +73,9 @@ Recommended SFT launcher:
 bash examples/lerobot_sft/run_pi05_lerobot_sft.sh
 ```
 
+Optional GR00T N1.6 source-package SFT and LIBERO Spatial validation are
+documented in [`examples/gr00t_sft/README.md`](examples/gr00t_sft/README.md).
+
 ## Disaggregation Mode
 
 Train-rollout workers and simulation workers can be placed on different nodes.

@@ -1,0 +1,13 @@
+# GR00T N1.6 SFT composition.
+defaults:
+
+  # Reuse the actor-only SFT cluster and trainer.
+  - /main_sft
+
+  # Replace the generic LeRobot loader with the official GR00T processor path.
+  - override /data@data: gr00t_n1d6_lerobot
+
+  # Remove PI0-only model fields from the shared HF model configuration.
+  - override /model/override@cluster.actor_rollout_ref.model.override_config: gr00t
+
+  - _self_
