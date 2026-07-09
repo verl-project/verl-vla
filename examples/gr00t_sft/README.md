@@ -119,10 +119,11 @@ GR00T SFT 需要 state/action 的 min、max、mean、std、q01 和 q99。生成�
 ### 原生环境
 
 ```bash
-python scripts/compute_gr00t_libero_norm_stats.py \
+python scripts/compute_norm_stats.py \
   --repo-id lerobot/libero_spatial_image \
   --root "$DATA_ROOT/datasets/libero_spatial_image" \
   --output-path "$DATA_ROOT/datasets/libero_spatial_image/norm_stats.json" \
+  --include-min-max \
   --batch-size 32 \
   --num-workers 8
 ```
@@ -136,10 +137,11 @@ docker run --rm \
   -v "$DATA_HOST:/data" \
   -e HF_HOME=/data/huggingface \
   "$IMAGE" \
-  python scripts/compute_gr00t_libero_norm_stats.py \
+  python scripts/compute_norm_stats.py \
     --repo-id lerobot/libero_spatial_image \
     --root /data/datasets/libero_spatial_image \
     --output-path /data/datasets/libero_spatial_image/norm_stats.json \
+    --include-min-max \
     --batch-size 32 \
     --num-workers 8
 ```

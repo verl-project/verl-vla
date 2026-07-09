@@ -13,7 +13,7 @@ NORM_STATS_PATH=${NORM_STATS_PATH:-}
 OUTPUT_DIR=${OUTPUT_DIR:-${DATA_ROOT}/output/gr00t_n1d6_libero_spatial_sft}
 
 if [[ -z "$NORM_STATS_PATH" ]]; then
-  echo "NORM_STATS_PATH is required. Generate it with scripts/compute_gr00t_libero_norm_stats.py." >&2
+  echo "NORM_STATS_PATH is required. Generate it with scripts/compute_norm_stats.py --include-min-max." >&2
   exit 2
 fi
 

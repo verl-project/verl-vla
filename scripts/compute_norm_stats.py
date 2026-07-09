@@ -18,11 +18,14 @@
 This script follows the same dataset loading style as the current VLA SFT pipeline:
 `LeRobotDataset` + `StatefulDataLoader`.
 
-It computes mean/std/q01/q99 for state and action tensors and writes a JSON file like:
+It computes mean/std/q01/q99 for state and action tensors, with optional min/max,
+and writes a JSON file like:
 {
-  "state": {"mean": [...], "std": [...], "q01": [...], "q99": [...]},
-  "action": {"mean": [...], "std": [...], "q01": [...], "q99": [...]}
+  "state": {"min": [...], "max": [...], "mean": [...], "std": [...], "q01": [...], "q99": [...]},
+  "action": {"min": [...], "max": [...], "mean": [...], "std": [...], "q01": [...], "q99": [...]}
 }
+
+``min`` and ``max`` are emitted only when ``--include-min-max`` is set.
 """
 
 from __future__ import annotations
@@ -153,7 +156,7 @@ class RunningStats:
         self._update_histograms(x)
         self.count += int(batch_count)
 
-    def get_statistics(self) -> dict[str, list[float]]:
+    def get_statistics(self, *, include_min_max: bool = False) -> dict[str, list[float]]:
         if self.sum_ is None or self.sq_sum_ is None or self.count == 0:
             raise ValueError("No data collected for running stats.")
 
@@ -161,12 +164,21 @@ class RunningStats:
         var = self.sq_sum_ / self.count - np.square(mean)
         std = np.sqrt(np.maximum(var, 1e-12))
         q01, q99 = self._compute_quantiles([0.01, 0.99])
-        return {
+        statistics = {
             "mean": mean.astype(np.float32).tolist(),
             "std": std.astype(np.float32).tolist(),
             "q01": q01.astype(np.float32).tolist(),
             "q99": q99.astype(np.float32).tolist(),
         }
+        if include_min_max:
+            if self.min_ is None or self.max_ is None:
+                raise ValueError("Running min/max are not initialized.")
+            statistics = {
+                "min": self.min_.astype(np.float32).tolist(),
+                "max": self.max_.astype(np.float32).tolist(),
+                **statistics,
+            }
+        return statistics
 
 
 def _to_numpy(value) -> np.ndarray | None:
@@ -194,9 +206,11 @@ def create_lerobot_dataloader(
     video_backend: str | None,
     drop_last: bool,
     max_frames: int | None,
+    root: str | None = None,
 ) -> tuple[StatefulDataLoader, int]:
     dataset = LeRobotDataset(
         repo_id=repo_id,
+        root=root,
         revision=revision,
         video_backend=video_backend,
     )
@@ -229,6 +243,7 @@ def create_lerobot_dataloader(
 def compute_norm_stats(
     repo_id: str,
     output_path: str,
+    root: str | None = None,
     batch_size: int = 32,
     num_workers: int = 0,
     max_frames: int | None = None,
@@ -237,6 +252,7 @@ def compute_norm_stats(
     revision: str | None = None,
     video_backend: str | None = "pyav",
     drop_last: bool = False,
+    include_min_max: bool = False,
 ) -> None:
     dataloader, num_batches = create_lerobot_dataloader(
         repo_id=repo_id,
@@ -248,6 +264,7 @@ def compute_norm_stats(
         video_backend=video_backend,
         drop_last=drop_last,
         max_frames=max_frames,
+        root=root,
     )
 
     state_stats = RunningStats()
@@ -289,10 +306,11 @@ def compute_norm_stats(
             break
 
     norm_stats = {
-        "state": state_stats.get_statistics(),
-        "action": action_stats.get_statistics(),
+        "state": state_stats.get_statistics(include_min_max=include_min_max),
+        "action": action_stats.get_statistics(include_min_max=include_min_max),
         "meta": {
             "repo_id": repo_id,
+            "root": root,
             "processed_frames": processed_frames,
         },
     }
@@ -308,6 +326,7 @@ def compute_norm_stats(
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Compute state/action normalization statistics for a LeRobot dataset.")
     parser.add_argument("--repo-id", type=str, required=True, help="LeRobot dataset repo id, e.g. Miical/record-test")
+    parser.add_argument("--root", type=str, default=None, help="Optional local LeRobot dataset root")
     parser.add_argument("--output-path", type=str, required=True, help="Output JSON path for computed stats")
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--num-workers", type=int, default=0)
@@ -317,6 +336,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--revision", type=str, default=None)
     parser.add_argument("--video-backend", type=str, default="pyav")
     parser.add_argument("--drop-last", action="store_true")
+    parser.add_argument(
+        "--include-min-max",
+        action="store_true",
+        help="Include per-dimension min/max values required by GR00T normalization.",
+    )
     return parser.parse_args()
 
 
@@ -325,6 +349,7 @@ def main() -> None:
     compute_norm_stats(
         repo_id=args.repo_id,
         output_path=args.output_path,
+        root=args.root,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
         max_frames=args.max_frames,
@@ -333,6 +358,7 @@ def main() -> None:
         revision=args.revision,
         video_backend=args.video_backend,
         drop_last=args.drop_last,
+        include_min_max=args.include_min_max,
     )
 
 
