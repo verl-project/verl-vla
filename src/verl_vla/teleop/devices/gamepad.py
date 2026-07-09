@@ -34,7 +34,6 @@ class GamepadDevice(DeviceBase):
         self._latest_state: dict[str, Any] = {}
         self._button_states: dict[str, bool] = {}
         self._axis_values: dict[str, float] = {}
-        self._previous_button_states: dict[str, bool] = {}
         self._connected = False
         self._device_id = ""
 
@@ -44,7 +43,6 @@ class GamepadDevice(DeviceBase):
             self._latest_state.clear()
             self._button_states.clear()
             self._axis_values.clear()
-            self._previous_button_states.clear()
             self._events.clear()
             self._clear_record_control()
             self._connected = False
@@ -63,27 +61,22 @@ class GamepadDevice(DeviceBase):
                 if not isinstance(axes_raw, dict):
                     axes_raw = {}
 
-                next_button_states: dict[str, bool] = {}
+                pressed_edges = set()
                 for key, value in buttons_raw.items():
                     if isinstance(value, dict):
                         pressed = bool(value.get("pressed", False))
                     else:
                         pressed = bool(value)
-                    next_button_states[key] = pressed
+                    if pressed and not self._button_states.get(key, False):
+                        pressed_edges.add(key)
                     self._button_states[key] = pressed
 
-                pressed_edges = {
-                    button_name
-                    for button_name, pressed in next_button_states.items()
-                    if pressed and not self._previous_button_states.get(button_name, False)
-                }
                 if "RB" in pressed_edges:
                     self._record_control["manual_reward"] = True
                 if "LT" in pressed_edges:
                     self._record_control["restart_episode"] = True
                 if "LB" in pressed_edges:
                     self._record_control["stop_episode"] = True
-                self._previous_button_states = dict(next_button_states)
 
                 for key, value in axes_raw.items():
                     self._axis_values[key] = float(value) if isinstance(value, int | float) else 0.0
@@ -97,7 +90,6 @@ class GamepadDevice(DeviceBase):
                 self._latest_state.clear()
                 self._button_states.clear()
                 self._axis_values.clear()
-                self._previous_button_states.clear()
 
             self._record_event(event)
 
