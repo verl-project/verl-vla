@@ -91,7 +91,7 @@ class TrainCluster:
     Public API:
         start() / shutdown(): create and tear down Ray workers/resources.
         rollout(), train(), update_weights(), eval(): env-loop RL operations.
-        record(): env-only teleop recording.
+        record(): env-only teleop recording, optionally without collecting outputs.
         load_checkpoint() / save_checkpoint(): actor checkpoint lifecycle.
         start_profiling(), stop_profiling(), dump_memory_snapshot(): diagnostics.
         actor_worker_group and train_world_size expose actor worker metadata.
@@ -492,7 +492,7 @@ class TrainCluster:
             return actor_wg.update_actor_async(data)
         return actor_wg.update_actor(data)
 
-    def record(self) -> Path:
+    def record(self, *, collect_dataset: bool = True) -> Path | None:
         if self.cluster_type != "env":
             raise RuntimeError("record is only wired for env-only train clusters.")
         env_resource = self.config.resource.env
@@ -505,6 +505,9 @@ class TrainCluster:
         if env_wg is None:
             raise RuntimeError("Env worker group is not initialized. Call start() before record().")
         env_wg.record()
+
+        if not collect_dataset:
+            return None
 
         recorder_cfg = self.config.env.env_worker.recorder
         output_root = Path(recorder_cfg.lerobot.root) / recorder_cfg.lerobot.repo_id
