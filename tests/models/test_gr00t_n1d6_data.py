@@ -19,6 +19,7 @@ from verl_vla.models.gr00t_n1d6.policy.libero_policy import (
     LiberoGr00tInput,
     LiberoGr00tOutput,
     image_to_uint8_hwc,
+    libero_gripper_to_gr00t,
     load_libero_statistics,
     prepare_libero_gripper_action,
 )
@@ -47,11 +48,38 @@ def test_load_flat_libero_statistics(tmp_path):
     assert tuple(nested["state"]) == LIBERO_KEYS
     assert nested["state"]["x"]["min"] == [0.0]
     assert nested["state"]["gripper"]["min"] == [6.0, 7.0]
-    assert nested["action"]["gripper"]["q99"] == [11.0]
+    assert nested["action"]["gripper"] == {
+        "min": [-3.0],
+        "max": [-2.5],
+        "mean": [-3.5],
+        "std": [4.5],
+        "q01": [-5.0],
+        "q99": [-4.5],
+    }
+
+
+def test_libero_gripper_to_gr00t_matches_official_training_semantics():
+    action = np.zeros((3, 7), dtype=np.float32)
+    action[:, -1] = np.array([-1.0, 0.0, 1.0], dtype=np.float32)
+
+    converted = libero_gripper_to_gr00t(action)
+
+    np.testing.assert_array_equal(converted[:, -1], np.array([1.0, 0.5, 0.0]))
+    np.testing.assert_array_equal(action[:, -1], np.array([-1.0, 0.0, 1.0]))
 
 
 def test_image_to_uint8_hwc_scales_chw_float_image():
     image = np.ones((3, 4, 5), dtype=np.float32) * 0.5
+
+    converted = image_to_uint8_hwc(image)
+
+    assert converted.shape == (4, 5, 3)
+    assert converted.dtype == np.uint8
+    assert np.all(converted == 127)
+
+
+def test_image_to_uint8_hwc_accepts_bfloat16_tensor():
+    image = torch.full((3, 4, 5), 0.5, dtype=torch.bfloat16)
 
     converted = image_to_uint8_hwc(image)
 
@@ -110,6 +138,7 @@ def test_libero_input_consumes_raw_dataproto_and_applies_valid_mask():
 
     assert tuple(policy_input.raw_states[0]) == LIBERO_KEYS
     assert policy_input.raw_states[0]["gripper"].shape == (1, 2)
+    np.testing.assert_array_equal(policy_input.steps[0].actions["gripper"], np.full((16, 1), 0.5))
 
     class FakeProcessor:
         def __call__(self, _messages):
@@ -124,6 +153,19 @@ def test_libero_input_consumes_raw_dataproto_and_applies_valid_mask():
     )
     assert processed[0]["action_mask"][14].all()
     assert not processed[0]["action_mask"][15].any()
+
+
+def test_libero_input_accepts_bfloat16_dataproto():
+    pytest.importorskip("gr00t")
+    obs, actions, _ = _raw_libero_batch()
+    for key, value in obs.batch.items():
+        if torch.is_floating_point(value):
+            obs.batch[key] = value.to(torch.bfloat16)
+
+    policy_input = LiberoGr00tInput.from_data_proto(obs, actions=actions.to(torch.bfloat16))
+
+    assert policy_input.raw_states[0]["x"].dtype == np.float32
+    assert policy_input.steps[0].actions["x"].dtype == np.float32
 
 
 def test_libero_output_decodes_and_prepares_gripper():

@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from threading import Lock
 from typing import Any
 
@@ -20,8 +21,10 @@ from gr00t.configs.model.gr00t_n1d6 import Gr00tN1d6Config
 from gr00t.model.gr00t_n1d6.gr00t_n1d6 import Gr00tN1d6
 from torch.distributed.fsdp import register_fsdp_forward_method
 from transformers import AutoModel
+from transformers.modeling_utils import no_init_weights
 from typing_extensions import override
 from verl import DataProto
+from verl.utils.transformers_compat import get_auto_model_for_vision2seq
 
 from verl_vla.models.base import SupportSFTTraining
 
@@ -75,7 +78,12 @@ class VerlGr00tN1d6(Gr00tN1d6, SupportSFTTraining):
         # samples it on CPU anyway, so construct just this object explicitly on CPU.
         import gr00t.model.gr00t_n1d6.gr00t_n1d6 as upstream_model
 
-        with _BETA_PATCH_LOCK:
+        # Training always loads pretrained weights, while verl's HF exporter
+        # constructs this model under ``init_empty_weights`` and supplies a full
+        # state dict. Skipping random initialization also avoids an upstream
+        # Eagle/SigLIP bug where its pruned module references unavailable model
+        # classes from ``_init_weights``.
+        with _BETA_PATCH_LOCK, no_init_weights():
             original_beta = upstream_model.Beta
             upstream_model.Beta = _CpuBeta
             try:
@@ -114,9 +122,13 @@ class VerlGr00tN1d6(Gr00tN1d6, SupportSFTTraining):
         output = self(inputs)
         element_loss = output["action_loss"]
         element_mask = output["action_mask"].to(element_loss.dtype)
-        per_sample = element_loss.flatten(1).sum(-1) / element_mask.flatten(1).sum(-1).clamp_min(1.0)
-        valid_weights = valids.to(device=per_sample.device, dtype=per_sample.dtype).reshape(-1)
-        loss = (per_sample * valid_weights).sum() / valid_weights.sum().clamp_min(1.0)
+        valid_weights = valids.to(device=element_loss.device, dtype=element_loss.dtype)
+        valid_weights = valid_weights.reshape(-1, *([1] * (element_loss.ndim - 1)))
+        weighted_mask = element_mask * valid_weights
+        # Match upstream GR00T's element-weighted flow-matching loss. A
+        # per-sample mean would over-weight episode-tail samples that contain
+        # fewer valid future actions.
+        loss = (element_loss * valid_weights).sum() / weighted_mask.sum().clamp_min(1e-6)
         self.sft_metrics = {
             "sft/action_loss": loss.detach(),
             "sft/valid_action_fraction": element_mask.float().mean().detach(),
@@ -147,6 +159,37 @@ class VerlGr00tN1d6(Gr00tN1d6, SupportSFTTraining):
         self._verl_processor_training = training
         return self._verl_processor
 
+    @override
+    def save_pretrained(self, save_directory, *args, **kwargs):
+        """Save a self-contained upstream-compatible GR00T HF checkpoint.
+
+        verl's FSDP checkpoint manager creates a fresh model and calls this
+        method when ``hf_model`` is enabled. GR00T keeps its normalization
+        statistics in the processor rather than the model state dict, so copy
+        that processor beside the consolidated weights as part of the same
+        export.
+        """
+        processor = self._get_verl_processor(training=False)
+        original_processor_path = getattr(self.config, "verl_processor_path", None)
+        original_norm_stats_path = getattr(self.config, "verl_norm_stats_path", None)
+        original_architectures = getattr(self.config, "architectures", None)
+
+        # The exported checkpoint must not retain paths from the training host.
+        self.config.verl_processor_path = None
+        self.config.verl_norm_stats_path = None
+        try:
+            result = super().save_pretrained(save_directory, *args, **kwargs)
+            self.config.architectures = ["Gr00tN1d6"]
+            self.config.save_pretrained(save_directory)
+            # GR00T's processor API expects ``Path`` (unlike Transformers,
+            # whose model/config APIs also accept ``str``).
+            processor.save_pretrained(Path(save_directory))
+            return result
+        finally:
+            self.config.verl_processor_path = original_processor_path
+            self.config.verl_norm_stats_path = original_norm_stats_path
+            self.config.architectures = original_architectures
+
     @torch.no_grad()
     def sac_sample_actions(
         self,
@@ -175,8 +218,9 @@ class VerlGr00tN1d6(Gr00tN1d6, SupportSFTTraining):
 
 
 def register_with_transformers() -> None:
-    """Replace only the N1.6 AutoModel mapping with the verl-capable subclass."""
+    """Register N1.6 for training and verl's direct HF checkpoint export."""
     AutoModel.register(Gr00tN1d6Config, VerlGr00tN1d6, exist_ok=True)
+    get_auto_model_for_vision2seq().register(Gr00tN1d6Config, VerlGr00tN1d6, exist_ok=True)
 
 
 __all__ = ["VerlGr00tN1d6", "register_with_transformers"]

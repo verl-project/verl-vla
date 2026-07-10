@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
@@ -33,6 +34,32 @@ LIBERO_STATE_SLICES = {
 LIBERO_ACTION_SLICES = {key: (index, index + 1) for index, key in enumerate(LIBERO_KEYS)}
 
 
+def libero_gripper_to_gr00t(action: np.ndarray) -> np.ndarray:
+    """Map LIBERO's ``-1=open, +1=close`` command to GR00T's ``1=open, 0=close``.
+
+    The LeRobot LIBERO dataset stores the simulator command, while the official
+    GR00T LIBERO policy and its normalization statistics use the standardized
+    ``[0, 1]`` representation. Keep this conversion on the policy boundary so
+    the shared LeRobot dataloader remains model agnostic.
+    """
+    converted = np.asarray(action, dtype=np.float32).copy()
+    converted[..., -1] = (1.0 - converted[..., -1]) * 0.5
+    return converted
+
+
+def _libero_gripper_stats_to_gr00t(stats: dict[str, list[float]]) -> dict[str, list[float]]:
+    """Apply ``y = (1 - x) / 2`` to scalar summary statistics."""
+    return {
+        "min": [(1.0 - float(stats["max"][0])) * 0.5],
+        "max": [(1.0 - float(stats["min"][0])) * 0.5],
+        "mean": [(1.0 - float(stats["mean"][0])) * 0.5],
+        "std": [float(stats["std"][0]) * 0.5],
+        # The transform is decreasing, so the quantile endpoints swap.
+        "q01": [(1.0 - float(stats["q99"][0])) * 0.5],
+        "q99": [(1.0 - float(stats["q01"][0])) * 0.5],
+    }
+
+
 def _stats_for_slice(flat_stats: dict[str, Any], start: int, end: int) -> dict[str, list[float]]:
     required = ("min", "max", "mean", "std", "q01", "q99")
     missing = [name for name in required if name not in flat_stats]
@@ -42,7 +69,13 @@ def _stats_for_slice(flat_stats: dict[str, Any], start: int, end: int) -> dict[s
 
 
 def load_libero_statistics(path: str | Path) -> dict[str, Any]:
-    """Load official nested stats or convert flat LIBERO state/action stats."""
+    """Load official nested stats or convert flat raw-LIBERO statistics.
+
+    Official nested GR00T statistics already contain a standardized ``[0, 1]``
+    gripper and are returned unchanged. Flat statistics produced by the shared
+    LeRobot script describe LIBERO's raw ``[-1, 1]`` simulator command, so its
+    gripper summaries are transformed together with the training actions.
+    """
     stats_path = Path(path).expanduser()
     if not stats_path.is_file():
         raise FileNotFoundError(f"NORM_STATS_PATH does not exist: {stats_path}")
@@ -63,7 +96,7 @@ def load_libero_statistics(path: str | Path) -> dict[str, Any]:
         if any(length != expected_dim for length in lengths.values()):
             raise ValueError(f"Expected {expected_dim} {modality} statistics in {stats_path}, got {lengths}.")
 
-    return {
+    converted = {
         "libero_panda": {
             modality: {
                 key: _stats_for_slice(raw[modality], start, end)
@@ -72,11 +105,21 @@ def load_libero_statistics(path: str | Path) -> dict[str, Any]:
             for modality in modality_slices
         }
     }
+    converted["libero_panda"]["action"]["gripper"] = _libero_gripper_stats_to_gr00t(
+        converted["libero_panda"]["action"]["gripper"]
+    )
+    return converted
 
 
 def image_to_uint8_hwc(value: torch.Tensor | np.ndarray) -> np.ndarray:
     """Convert one CHW/HWC image in [0, 1] or [0, 255] to uint8 HWC."""
-    image = value.detach().cpu().numpy() if isinstance(value, torch.Tensor) else np.asarray(value)
+    if isinstance(value, torch.Tensor):
+        value = value.detach().cpu()
+        if torch.is_floating_point(value):
+            value = value.float()
+        image = value.numpy()
+    else:
+        image = np.asarray(value)
     if image.ndim != 3:
         raise ValueError(f"Expected one image with three dimensions, got {image.shape}.")
     if image.shape[0] == 3 and image.shape[-1] != 3:
@@ -104,12 +147,26 @@ def load_gr00t_processor(model_path: str, norm_stats_path: str | None, *, traini
 
     register_gr00t_n1d6_model(required=True)
     from gr00t.configs.data.embodiment_configs import MODALITY_CONFIGS
+    from gr00t.data.types import ActionConfig, ActionFormat, ActionRepresentation, ActionType
     from gr00t.model.gr00t_n1d6.processing_gr00t_n1d6 import Gr00tN1d6Processor
 
+    # Match the validated upstream LIBERO processor metadata. The action groups
+    # are simulator deltas (ABSOLUTE here means "do not subtract state").
+    modality_config = deepcopy(MODALITY_CONFIGS["libero_panda"])
+    action_config = modality_config["action"]
+    if action_config.action_configs is None:
+        action_config.action_configs = [
+            ActionConfig(
+                rep=ActionRepresentation.ABSOLUTE,
+                type=ActionType.NON_EEF,
+                format=ActionFormat.DEFAULT,
+            )
+            for _ in action_config.modality_keys
+        ]
     processor = Gr00tN1d6Processor.from_pretrained(
         model_path,
-        modality_configs={"libero_panda": MODALITY_CONFIGS["libero_panda"]},
-        use_relative_action=False,
+        modality_configs={"libero_panda": modality_config},
+        use_relative_action=True,
     )
     if norm_stats_path:
         processor.set_statistics(load_libero_statistics(norm_stats_path), override=True)
@@ -119,7 +176,7 @@ def load_gr00t_processor(model_path: str, norm_stats_path: str | None, *, traini
 
 def _numpy_float32(value: torch.Tensor | np.ndarray) -> np.ndarray:
     if isinstance(value, torch.Tensor):
-        value = value.detach().cpu().numpy()
+        value = value.detach().to(device="cpu", dtype=torch.float32).numpy()
     return np.asarray(value, dtype=np.float32)
 
 
@@ -147,6 +204,7 @@ def _make_vla_step(
         expected_action_dim = max(end for _, end in LIBERO_ACTION_SLICES.values())
         if action_array.ndim != 2 or action_array.shape[-1] != expected_action_dim:
             raise ValueError(f"Expected LIBERO actions shaped [T, 7], got {action_array.shape}.")
+        action_array = libero_gripper_to_gr00t(action_array)
         actions = {key: action_array[:, start:end] for key, (start, end) in LIBERO_ACTION_SLICES.items()}
 
     return VLAStepData(
@@ -268,6 +326,7 @@ __all__ = [
     "LiberoGr00tInput",
     "LiberoGr00tOutput",
     "image_to_uint8_hwc",
+    "libero_gripper_to_gr00t",
     "load_gr00t_processor",
     "load_libero_statistics",
     "prepare_libero_gripper_action",

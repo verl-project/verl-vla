@@ -31,7 +31,7 @@ export LIBERO_CONFIG_PATH
 
 if [[ ! -f "${LIBERO_CONFIG_PATH}/config.yaml" ]]; then
   LIBERO_PACKAGE_ROOT=$(python -c \
-    'import importlib.util; from pathlib import Path; print(Path(importlib.util.find_spec("libero").origin).parent)')
+    'import importlib.util; from pathlib import Path; root = Path(importlib.util.find_spec("libero").origin).parent; nested = root / "libero"; print(nested if (nested / "bddl_files").is_dir() else root)')
   mkdir -p "$LIBERO_CONFIG_PATH"
   printf '%s\n' \
     "benchmark_root: ${LIBERO_PACKAGE_ROOT}" \
@@ -47,6 +47,8 @@ python scripts/check_gr00t_n1d6_install.py
 python -m verl_vla.trainer.main_sac \
   --config-path "$REPO_ROOT/src/verl_vla/trainer/config" \
   --config-name main_gr00t_eval \
+  ray_kwargs.ray_init.runtime_env.env_vars.MUJOCO_GL="$MUJOCO_GL" \
+  +ray_kwargs.ray_init.runtime_env.env_vars.PYOPENGL_PLATFORM="$PYOPENGL_PLATFORM" \
   cluster.actor_rollout_ref.model.path="$MODEL_PATH" \
   cluster.actor_rollout_ref.model.tokenizer_path=null \
   +cluster.actor_rollout_ref.model.load_tokenizer=False \

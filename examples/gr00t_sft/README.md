@@ -1,19 +1,21 @@
-# GR00T N1.6：LIBERO Spatial SFT 与验证
+# GR00T N1.6: LIBERO Spatial SFT and Validation
 
-verl-vla 不内置 GR00T 源码，也不把 GR00T 声明为默认依赖。只有需要使用
-GR00T 的用户才安装固定的上游 source package：
+verl-vla does not vendor the GR00T source code or declare GR00T as a default
+dependency. Only users who need GR00T should install the pinned upstream source
+package:
 
 ```text
 GR00T commit: e29d8fc50b0e4745120ae3fb72447986fe638aa6
 Community validation checkpoint revision: d690a226ad06e81736786f56cf879d2ed1dd3f0f
 ```
 
-下文每一步都分别提供原生环境和 Docker 命令。示例假设当前目录是
-verl-vla 仓库根目录。
+Each step below provides separate commands for a native environment and Docker.
+All examples assume that the current directory is the root of the verl-vla
+repository.
 
-## 0. 设置路径并创建目录
+## 0. Configure paths and create directories
 
-### 原生环境
+### Native environment
 
 ```bash
 export DATA_ROOT=/raid/lancel/Projects/verl-vla-data
@@ -42,7 +44,7 @@ mkdir -p \
   "$DATA_HOST/tmp"
 ```
 
-最终数据目录类似：
+The resulting directory layout should look like this:
 
 ```text
 verl-vla-data/
@@ -56,12 +58,13 @@ verl-vla-data/
 └── huggingface/
 ```
 
-## 1. 安装运行环境
+## 1. Install the runtime environment
 
-`--no-deps` 只表示 pip 不解析 GR00T 自身声明的依赖，并不表示 GR00T
-不需要运行时依赖。原生环境需要自行提供与 Dockerfile 对齐的依赖版本。
+`--no-deps` only prevents pip from resolving the dependencies declared by
+GR00T. It does not mean that GR00T has no runtime dependencies. A native
+environment must provide dependency versions compatible with the Dockerfile.
 
-### 原生环境
+### Native environment
 
 ```bash
 python -m pip install --no-deps \
@@ -72,8 +75,9 @@ python scripts/check_gr00t_n1d6_install.py
 
 ### Docker
 
-Docker 镜像会安装固定 GR00T commit、补齐上游 wheel 缺失的 Eagle assets，
-并安装 LIBERO、MuJoCo 和 headless rendering 依赖。
+The Docker image installs the pinned GR00T commit, adds the Eagle assets missing
+from the upstream wheel, and installs LIBERO, MuJoCo, and headless rendering
+dependencies.
 
 ```bash
 docker build \
@@ -82,14 +86,14 @@ docker build \
   .
 ```
 
-构建结束时已经执行 `scripts/check_gr00t_n1d6_install.py`，不需要在宿主机
-再次安装或检查 GR00T。
+The image build runs `scripts/check_gr00t_n1d6_install.py`. There is no need to
+install or verify GR00T again on the host.
 
-## 2. 下载 LIBERO Spatial 训练数据
+## 2. Download the LIBERO Spatial training dataset
 
-数据集固定到已验证的 LeRobot v3 revision。
+The dataset is pinned to the verified LeRobot v3 revision.
 
-### 原生环境
+### Native environment
 
 ```bash
 hf download lerobot/libero_spatial_image \
@@ -111,12 +115,20 @@ docker run --rm \
     --local-dir /data/datasets/libero_spatial_image
 ```
 
-## 3. 计算 SFT normalization statistics
+## 3. Compute SFT normalization statistics
 
-GR00T SFT 需要 state/action 的 min、max、mean、std、q01 和 q99。生成文件
-为 `datasets/libero_spatial_image/norm_stats.json`。
+GR00T SFT requires min, max, mean, std, q01, and q99 statistics for state and
+action values. This step creates
+`datasets/libero_spatial_image/norm_stats.json`.
 
-### 原生环境
+The dataset stores gripper actions using LIBERO simulator semantics:
+`-1=open, +1=close`. The generic statistics script preserves the raw dataset
+semantics. The GR00T policy adapter converts both training samples and flat
+statistics to the official GR00T semantics, `1=open, 0=close`. Native nested
+`libero_panda` statistics from GR00T are already converted and are therefore
+left unchanged.
+
+### Native environment
 
 ```bash
 python scripts/compute_norm_stats.py \
@@ -130,7 +142,7 @@ python scripts/compute_norm_stats.py \
 
 ### Docker
 
-这一步只使用 CPU，不需要 `--gpus`。
+This step is CPU-only and does not require `--gpus`.
 
 ```bash
 docker run --rm \
@@ -146,17 +158,24 @@ docker run --rm \
     --num-workers 8
 ```
 
-## 4. 启动多 GPU SFT
+## 4. Launch multi-GPU SFT
 
-`SFT_BATCH_SIZE` 是全局 dataloader batch；`MICRO_BATCH_SIZE` 是每个 rank
-每次 forward 的 batch。下面的配置使用本机全部 GPU，每张卡一个样本。
+`SFT_BATCH_SIZE` is the global dataloader batch size, while
+`MICRO_BATCH_SIZE` is the per-rank batch size for each forward pass. The
+configuration below is the exact setup that achieved a 90% success rate over 50
+LIBERO Spatial validation trials: 8 GPUs, global/mini batch size 64, micro batch
+size 8, 13 epochs, FP32 master weights, and BF16 mixed precision.
 
-### 原生环境
+With the pinned dataset and this batch size, each epoch contains 827 optimizer
+steps, so 13 epochs covers `global_step_10000`. The reported validation uses
+`global_step_10000`. No generic trainer or worker code is modified for GR00T.
+
+### Native environment
 
 ```bash
 export NUM_GPUS=$(nvidia-smi --query-gpu=index --format=csv,noheader | wc -l)
-export PER_GPU_BATCH=1
-export GLOBAL_BATCH_SIZE=$((NUM_GPUS * PER_GPU_BATCH))
+export GLOBAL_BATCH_SIZE=64
+export MICRO_BATCH_SIZE=8
 
 MODEL_PATH=nvidia/GR00T-N1.6-3B \
 NORM_STATS_PATH="$DATA_ROOT/datasets/libero_spatial_image/norm_stats.json" \
@@ -165,18 +184,29 @@ OUTPUT_DIR="$DATA_ROOT/output/gr00t_n1d6_libero_spatial_sft" \
 NUM_GPUS="$NUM_GPUS" \
 SFT_BATCH_SIZE="$GLOBAL_BATCH_SIZE" \
 MINI_BATCH_SIZE="$GLOBAL_BATCH_SIZE" \
-MICRO_BATCH_SIZE="$PER_GPU_BATCH" \
+MICRO_BATCH_SIZE="$MICRO_BATCH_SIZE" \
 SFT_NUM_WORKERS=8 \
-TOTAL_EPOCHS=4 \
+TOTAL_EPOCHS=13 \
+LR=1e-4 \
+WEIGHT_DECAY=1e-5 \
+SAVE_FREQ=500 \
+MAX_ACTOR_CKPT_TO_KEEP=3 \
+RESUME_DATALOADER_STATE=true \
 bash examples/gr00t_sft/run_gr00t_lerobot_sft.sh
 ```
+
+`TOTAL_EPOCHS=13` produces 10,751 steps. When
+`$DATA_ROOT/output/gr00t_n1d6_libero_spatial_sft/latest_checkpointed_iteration.txt`
+becomes `10000`, the step 10000 FSDP and Hugging Face checkpoints have been
+fully written and training can be stopped. All validation commands below use
+step 10000.
 
 ### Docker
 
 ```bash
 export NUM_GPUS=$(nvidia-smi --query-gpu=index --format=csv,noheader | wc -l)
-export PER_GPU_BATCH=1
-export GLOBAL_BATCH_SIZE=$((NUM_GPUS * PER_GPU_BATCH))
+export GLOBAL_BATCH_SIZE=64
+export MICRO_BATCH_SIZE=8
 
 docker run -d \
   --name gr00t_n1d6_sft \
@@ -200,63 +230,78 @@ docker run -d \
   -e NUM_NODES=1 \
   -e SFT_BATCH_SIZE="$GLOBAL_BATCH_SIZE" \
   -e MINI_BATCH_SIZE="$GLOBAL_BATCH_SIZE" \
-  -e MICRO_BATCH_SIZE="$PER_GPU_BATCH" \
+  -e MICRO_BATCH_SIZE="$MICRO_BATCH_SIZE" \
   -e SFT_NUM_WORKERS=8 \
-  -e TOTAL_EPOCHS=4 \
+  -e TOTAL_EPOCHS=13 \
+  -e LR=1e-4 \
+  -e WEIGHT_DECAY=1e-5 \
   -e SAVE_FREQ=500 \
   -e MAX_ACTOR_CKPT_TO_KEEP=3 \
+  -e RESUME_DATALOADER_STATE=true \
   "$IMAGE" \
   bash -lc 'nvidia-smi && bash examples/gr00t_sft/run_gr00t_lerobot_sft.sh'
 
 docker logs -f gr00t_n1d6_sft
 ```
 
-## 5. 合并 FSDP checkpoint
-
-合并结果保持上游 GR00T 的 state-dict key，并包含 processor config、statistics
-和 embodiment metadata。将 `global_step_1000` 替换为实际 checkpoint。
-
-### 原生环境
+Docker training continues to 10,751 steps. To reproduce the step 10000
+checkpoint exactly, run the following monitor in another terminal. The marker
+is updated only after the FSDP shards, Hugging Face weights, and dataloader state
+have all been written:
 
 ```bash
-python scripts/merge_gr00t_fsdp_checkpoint.py \
-  --local-dir "$DATA_ROOT/output/gr00t_n1d6_libero_spatial_sft/global_step_1000/actor" \
-  --base-model nvidia/GR00T-N1.6-3B \
-  --norm-stats "$DATA_ROOT/datasets/libero_spatial_image/norm_stats.json" \
-  --target-dir "$DATA_ROOT/models/gr00t_n1d6_libero_spatial_step1000" \
-  --verify
+TARGET_STEP=10000
+MARKER="$DATA_HOST/output/gr00t_n1d6_libero_spatial_sft/latest_checkpointed_iteration.txt"
+
+while true; do
+  SAVED_STEP=$(cat "$MARKER" 2>/dev/null || echo 0)
+  if (( SAVED_STEP >= TARGET_STEP )); then
+    docker stop -t 30 gr00t_n1d6_sft
+    break
+  fi
+  sleep 30
+done
+```
+
+## 5. Use the directly exported Hugging Face checkpoint
+
+The GR00T SFT configuration saves both the FSDP shards required to resume
+training and a complete Hugging Face checkpoint. No additional merge step is
+required. The directory includes the model weights, GR00T processor
+configuration, normalization statistics, and embodiment metadata.
+
+### Native environment
+
+```text
+$DATA_ROOT/output/gr00t_n1d6_libero_spatial_sft/global_step_10000/actor/huggingface
 ```
 
 ### Docker
 
-```bash
-docker run --rm \
-  -v "$DATA_HOST:/data" \
-  -e HF_HOME=/data/huggingface \
-  "$IMAGE" \
-  python scripts/merge_gr00t_fsdp_checkpoint.py \
-    --local-dir /data/output/gr00t_n1d6_libero_spatial_sft/global_step_1000/actor \
-    --base-model nvidia/GR00T-N1.6-3B \
-    --norm-stats /data/datasets/libero_spatial_image/norm_stats.json \
-    --target-dir /data/models/gr00t_n1d6_libero_spatial_step1000 \
-    --verify
+```text
+/data/output/gr00t_n1d6_libero_spatial_sft/global_step_10000/actor/huggingface
 ```
 
-## 6. 运行 LIBERO Spatial validation rollout
+## 6. Run LIBERO Spatial validation rollouts
 
-`run_gr00t_libero_eval.sh` 默认评测 10 个任务、每个任务 10 个 trial。快速验证
-可以设置 `TASK_IDS='[0]'` 和 `TRIALS_PER_TASK=3`。
+The commands below reproduce the protocol used for the reported 90% success
+rate: 10 tasks with 5 trials per task, for a total of 50 rollouts. Two
+environment workers run 25 environments each. `MAX_INTERACTIONS=90` corresponds
+to 720 simulator steps with an action chunk size of 8.
 
-### 原生环境
+### Native environment
 
 ```bash
-MODEL_PATH="$DATA_ROOT/models/gr00t_n1d6_libero_spatial_step1000" \
+MODEL_PATH="$DATA_ROOT/output/gr00t_n1d6_libero_spatial_sft/global_step_10000/actor/huggingface" \
 NORM_STATS_PATH=null \
 MODEL_GPUS=1 \
-ENV_WORKERS=1 \
-NUM_ENVS=3 \
-TASK_IDS='[0]' \
-TRIALS_PER_TASK=3 \
+ENV_WORKERS=2 \
+NUM_ENVS=25 \
+TASK_IDS=null \
+TRIALS_PER_TASK=5 \
+MAX_EPISODE_STEPS=720 \
+ACTION_CHUNK_SIZE=8 \
+MAX_INTERACTIONS=90 \
 MUJOCO_GL=osmesa \
 PYOPENGL_PLATFORM=osmesa \
 bash examples/gr00t_sft/run_gr00t_libero_eval.sh
@@ -264,12 +309,13 @@ bash examples/gr00t_sft/run_gr00t_libero_eval.sh
 
 ### Docker
 
-Docker 中需要 NVIDIA Container Toolkit。`device=7` 可以替换为希望使用的 GPU，
-也可以改成 `--gpus all`。
+Docker requires the NVIDIA Container Toolkit. Replace `device=7` with the GPU
+to use, or use `--gpus all`.
 
 ```bash
 docker run --rm \
   --gpus '"device=7"' \
+  --network host \
   --ipc host \
   --ulimit memlock=-1 \
   --ulimit stack=67108864 \
@@ -281,30 +327,34 @@ docker run --rm \
   -e LIBERO_CONFIG_PATH=/data/libero_config \
   -e MUJOCO_GL=osmesa \
   -e PYOPENGL_PLATFORM=osmesa \
-  -e MODEL_PATH=/data/models/gr00t_n1d6_libero_spatial_step1000 \
+  -e MODEL_PATH=/data/output/gr00t_n1d6_libero_spatial_sft/global_step_10000/actor/huggingface \
   -e NORM_STATS_PATH=null \
   -e MODEL_GPUS=1 \
-  -e ENV_WORKERS=1 \
-  -e NUM_ENVS=3 \
-  -e TASK_IDS='[0]' \
-  -e TRIALS_PER_TASK=3 \
+  -e ENV_WORKERS=2 \
+  -e NUM_ENVS=25 \
+  -e TASK_IDS=null \
+  -e TRIALS_PER_TASK=5 \
+  -e MAX_EPISODE_STEPS=720 \
+  -e ACTION_CHUNK_SIZE=8 \
+  -e MAX_INTERACTIONS=90 \
   "$IMAGE" \
   bash -lc 'bash examples/gr00t_sft/run_gr00t_libero_eval.sh'
 ```
 
-## 7. 验证社区 LIBERO checkpoint
+## 7. Validate the community LIBERO checkpoint
 
-`validate_community_checkpoint.sh` 默认下载并验证：
+`validate_community_checkpoint.sh` downloads and validates the following
+checkpoint by default:
 
 ```text
 0xAnkitSingh/GR00T-N1.6-LIBERO
 revision d690a226ad06e81736786f56cf879d2ed1dd3f0f
 ```
 
-默认配置评测 `libero_spatial task 0` 的 3 个 trial。该 checkpoint 是社区
-checkpoint，不是 NVIDIA 官方发布的 LIBERO checkpoint。
+The default configuration evaluates 3 trials of `libero_spatial` task 0. This
+is a community checkpoint, not an official NVIDIA LIBERO checkpoint.
 
-### 原生环境
+### Native environment
 
 ```bash
 DATA_ROOT="$DATA_ROOT" \
@@ -340,7 +390,7 @@ docker run --rm \
   bash -lc 'bash examples/gr00t_sft/validate_community_checkpoint.sh'
 ```
 
-成功的 validation 会输出：
+A successful validation prints the following metrics:
 
 ```text
 val/trajectory_count
@@ -350,5 +400,6 @@ val/trajectory_success_rate
 val/per_task_success_rate/task_0
 ```
 
-当前集成范围是 GR00T policy SFT、上游兼容 checkpoint export 和 val-only
-LIBERO rollout。GR00T SAC、RECAP 和 Flow-SDE 训练不在本集成范围内。
+This integration covers GR00T policy SFT, upstream-compatible checkpoint export,
+and validation-only LIBERO rollouts. GR00T SAC, RECAP, and Flow-SDE training are
+outside the scope of this integration.

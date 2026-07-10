@@ -20,20 +20,21 @@ fi
 SFT_REPO_ID=${SFT_REPO_ID:-lerobot/libero_spatial_image}
 SFT_ROOT=${SFT_ROOT:-${DATA_ROOT}/datasets/libero_spatial_image}
 SFT_REVISION=${SFT_REVISION:-main}
-SFT_BATCH_SIZE=${SFT_BATCH_SIZE:-32}
+SFT_BATCH_SIZE=${SFT_BATCH_SIZE:-64}
 SFT_NUM_WORKERS=${SFT_NUM_WORKERS:-4}
 SFT_VIDEO_BACKEND=${SFT_VIDEO_BACKEND:-pyav}
 
 NUM_GPUS=${NUM_GPUS:-2}
 NUM_NODES=${NUM_NODES:-1}
 TOTAL_EPOCHS=${TOTAL_EPOCHS:-100}
-MINI_BATCH_SIZE=${MINI_BATCH_SIZE:-16}
-MICRO_BATCH_SIZE=${MICRO_BATCH_SIZE:-2}
+MINI_BATCH_SIZE=${MINI_BATCH_SIZE:-64}
+MICRO_BATCH_SIZE=${MICRO_BATCH_SIZE:-1}
 LR=${LR:-1e-4}
 WEIGHT_DECAY=${WEIGHT_DECAY:-1e-5}
 WARMUP_RATIO=${WARMUP_RATIO:-0.05}
 SAVE_FREQ=${SAVE_FREQ:-500}
 MAX_ACTOR_CKPT_TO_KEEP=${MAX_ACTOR_CKPT_TO_KEEP:-3}
+RESUME_DATALOADER_STATE=${RESUME_DATALOADER_STATE:-true}
 WRAP_CLASSES=${WRAP_CLASSES:-"[Qwen3DecoderLayer,Siglip2EncoderLayer,BasicTransformerBlock]"}
 PROJECT_NAME=${PROJECT_NAME:-gr00t-n1d6-libero-sft}
 EXPERIMENT_NAME=${EXPERIMENT_NAME:-gr00t_n1d6_libero_spatial_sft}
@@ -55,7 +56,7 @@ python -m verl_vla.trainer.main_sft \
   cluster.actor_rollout_ref.model.override_config.verl_norm_stats_path="$NORM_STATS_PATH" \
   cluster.actor_rollout_ref.model.override_config.verl_action_chunk_size=8 \
   cluster.actor_rollout_ref.actor.strategy=fsdp2 \
-  cluster.actor_rollout_ref.actor.fsdp_config.model_dtype=bfloat16 \
+  cluster.actor_rollout_ref.actor.fsdp_config.model_dtype=float32 \
   cluster.actor_rollout_ref.actor.fsdp_config.use_torch_compile=False \
   cluster.actor_rollout_ref.actor.fsdp_config.ulysses_sequence_parallel_size=1 \
   cluster.actor_rollout_ref.actor.fsdp_config.wrap_policy.transformer_layer_cls_to_wrap="$WRAP_CLASSES" \
@@ -78,6 +79,7 @@ python -m verl_vla.trainer.main_sft \
   data.action_delta_steps=16 \
   trainer.total_epochs="$TOTAL_EPOCHS" \
   trainer.save_freq="$SAVE_FREQ" \
+  trainer.resume_dataloader_state="$RESUME_DATALOADER_STATE" \
   trainer.project_name="$PROJECT_NAME" \
   trainer.experiment_name="$EXPERIMENT_NAME" \
   trainer.logger="['console']"

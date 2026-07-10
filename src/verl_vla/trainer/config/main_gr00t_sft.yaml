@@ -11,3 +11,21 @@ defaults:
   - override /model/override@cluster.actor_rollout_ref.model.override_config: gr00t
 
   - _self_
+
+# Keep the sharded checkpoint for resume, and also export a directly loadable
+# Hugging Face model at global_step_<N>/actor/huggingface.
+cluster:
+  actor_rollout_ref:
+    model:
+      override_config:
+        # Eagle requires BF16 initialization at this GR00T commit.
+        load_bf16: true
+
+        # Select verl's vision-to-sequence HF exporter. The wrapper resets the
+        # exported architecture name to upstream Gr00tN1d6.
+        architectures: ["Gr00tN1d6ForConditionalGeneration"]
+
+    actor:
+      checkpoint:
+        save_contents: ["model", "optimizer", "extra", "hf_model"]
+        load_contents: ["model", "optimizer", "extra"]
