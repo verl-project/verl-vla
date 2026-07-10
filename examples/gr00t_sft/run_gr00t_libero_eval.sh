@@ -23,6 +23,7 @@ MAX_INTERACTIONS=${MAX_INTERACTIONS:-$(( (MAX_EPISODE_STEPS + ACTION_CHUNK_SIZE 
 WRAP_CLASSES=${WRAP_CLASSES:-"[Qwen3DecoderLayer,Siglip2EncoderLayer,BasicTransformerBlock]"}
 PROJECT_NAME=${PROJECT_NAME:-gr00t-n1d6-libero-eval}
 EXPERIMENT_NAME=${EXPERIMENT_NAME:-gr00t_n1d6_libero_eval}
+HYDRA_RUN_DIR=${HYDRA_RUN_DIR:-${DATA_ROOT}/output/${EXPERIMENT_NAME}/hydra}
 
 export MUJOCO_GL=${MUJOCO_GL:-egl}
 export PYOPENGL_PLATFORM=${PYOPENGL_PLATFORM:-egl}
@@ -46,7 +47,9 @@ python scripts/check_gr00t_n1d6_install.py
 
 python -m verl_vla.trainer.main_sac \
   --config-path "$REPO_ROOT/src/verl_vla/trainer/config" \
-  --config-name main_gr00t_eval \
+  --config-name main_sac \
+  model/override@cluster.actor_rollout_ref.model.override_config=gr00t \
+  hydra.run.dir="$HYDRA_RUN_DIR" \
   ray_kwargs.ray_init.runtime_env.env_vars.MUJOCO_GL="$MUJOCO_GL" \
   +ray_kwargs.ray_init.runtime_env.env_vars.PYOPENGL_PLATFORM="$PYOPENGL_PLATFORM" \
   cluster.actor_rollout_ref.model.path="$MODEL_PATH" \

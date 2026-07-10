@@ -11,6 +11,7 @@ DATA_ROOT=${DATA_ROOT:-/data}
 MODEL_PATH=${MODEL_PATH:-nvidia/GR00T-N1.6-3B}
 NORM_STATS_PATH=${NORM_STATS_PATH:-}
 OUTPUT_DIR=${OUTPUT_DIR:-${DATA_ROOT}/output/gr00t_n1d6_libero_spatial_sft}
+HYDRA_RUN_DIR=${HYDRA_RUN_DIR:-${OUTPUT_DIR}/hydra}
 
 if [[ -z "$NORM_STATS_PATH" ]]; then
   echo "NORM_STATS_PATH is required. Generate it with scripts/compute_norm_stats.py --include-min-max." >&2
@@ -42,8 +43,10 @@ EXPERIMENT_NAME=${EXPERIMENT_NAME:-gr00t_n1d6_libero_spatial_sft}
 python scripts/check_gr00t_n1d6_install.py
 
 python -m verl_vla.trainer.main_sft \
-  --config-path "$REPO_ROOT/src/verl_vla/trainer/config" \
+  --config-path "$SCRIPT_DIR" \
   --config-name main_gr00t_sft \
+  "hydra.searchpath=[file://$REPO_ROOT/src/verl_vla/trainer/config]" \
+  hydra.run.dir="$HYDRA_RUN_DIR" \
   cluster.actor_rollout_ref.model.path="$MODEL_PATH" \
   cluster.actor_rollout_ref.model.tokenizer_path=null \
   +cluster.actor_rollout_ref.model.load_tokenizer=False \

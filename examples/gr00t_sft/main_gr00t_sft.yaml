@@ -1,16 +1,30 @@
-# GR00T N1.6 SFT composition.
+# GR00T N1.6 SFT composition for this example.
 defaults:
 
   # Reuse the actor-only SFT cluster and trainer.
   - /main_sft
 
-  # Replace the generic LeRobot loader with the official GR00T processor path.
-  - override /data@data: gr00t_n1d6_lerobot
-
   # Remove PI0-only model fields from the shared HF model configuration.
   - override /model/override@cluster.actor_rollout_ref.model.override_config: gr00t
 
   - _self_
+
+# LIBERO Spatial demonstrations consumed through the LeRobot dataloader.
+data:
+  _target_: verl_vla.utils.dataloader.LeRobotDataLoaderConfig
+  repo_id: lerobot/libero_spatial_image
+  root: null
+  revision: main
+  batch_size: 32
+  num_workers: 4
+  persistent_workers: true
+  prefetch_factor: 2
+  pin_memory: true
+  shuffle: true
+  drop_last: true
+  seed: 42
+  video_backend: pyav
+  action_delta_steps: 16
 
 # Keep the sharded checkpoint for resume, and also export a directly loadable
 # Hugging Face model at global_step_<N>/actor/huggingface.

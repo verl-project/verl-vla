@@ -14,6 +14,8 @@ import pytest
 import torch
 from verl import DataProto
 
+pytest.importorskip("gr00t", reason="GR00T N1.6 is an optional dependency")
+
 from verl_vla.models.gr00t_n1d6.policy.libero_policy import (
     LIBERO_KEYS,
     LiberoGr00tInput,
@@ -131,7 +133,6 @@ def _raw_libero_batch() -> tuple[DataProto, torch.Tensor, torch.Tensor]:
 
 
 def test_libero_input_consumes_raw_dataproto_and_applies_valid_mask():
-    pytest.importorskip("gr00t")
     obs, actions, action_valid_mask = _raw_libero_batch()
 
     policy_input = LiberoGr00tInput.from_data_proto(obs, actions=actions)
@@ -156,7 +157,6 @@ def test_libero_input_consumes_raw_dataproto_and_applies_valid_mask():
 
 
 def test_libero_input_accepts_bfloat16_dataproto():
-    pytest.importorskip("gr00t")
     obs, actions, _ = _raw_libero_batch()
     for key, value in obs.batch.items():
         if torch.is_floating_point(value):
@@ -169,7 +169,6 @@ def test_libero_input_accepts_bfloat16_dataproto():
 
 
 def test_libero_output_decodes_and_prepares_gripper():
-    pytest.importorskip("gr00t")
     obs, _, _ = _raw_libero_batch()
     policy_input = LiberoGr00tInput.from_data_proto(obs)
 

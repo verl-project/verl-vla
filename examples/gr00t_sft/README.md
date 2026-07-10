@@ -18,7 +18,7 @@ repository.
 ### Native environment
 
 ```bash
-export DATA_ROOT=/raid/lancel/Projects/verl-vla-data
+export DATA_ROOT="${DATA_ROOT:-$PWD/.data/gr00t_sft}"
 
 mkdir -p \
   "$DATA_ROOT/datasets/libero_spatial_image" \
@@ -32,8 +32,9 @@ mkdir -p \
 ### Docker
 
 ```bash
-export DATA_HOST=/raid/lancel/Projects/verl-vla-data
-export IMAGE=verl-vla-gr00t:n1.6
+export DATA_HOST="${DATA_HOST:-$PWD/.data/gr00t_sft}"
+export REPO_HOST="${REPO_HOST:-$PWD}"
+export IMAGE="${IMAGE:-verl-vla-gr00t:n1.6}"
 
 mkdir -p \
   "$DATA_HOST/datasets/libero_spatial_image" \
@@ -43,6 +44,15 @@ mkdir -p \
   "$DATA_HOST/raytmp" \
   "$DATA_HOST/tmp"
 ```
+
+Override `DATA_ROOT` or `DATA_HOST` before running these commands if you want
+to place datasets, caches, and checkpoints on a larger disk.
+
+The Docker commands below bind-mount `REPO_HOST` into `/workspace/verl-vla` and
+set `PYTHONPATH=/workspace/verl-vla/src`. This keeps example scripts, configs,
+and Python source code live during development without rebuilding the image for
+every code change. Rebuild the image only when dependencies or the Dockerfile
+change.
 
 The resulting directory layout should look like this:
 
@@ -142,12 +152,17 @@ python scripts/compute_norm_stats.py \
 
 ### Docker
 
-This step is CPU-only and does not require `--gpus`.
+This step is CPU-only and does not require `--gpus`. Increase `/dev/shm` for
+the multi-worker PyTorch dataloader.
 
 ```bash
 docker run --rm \
+  --shm-size 64g \
   -v "$DATA_HOST:/data" \
+  -v "$REPO_HOST:/workspace/verl-vla:ro" \
   -e HF_HOME=/data/huggingface \
+  -e PYTHONPATH=/workspace/verl-vla/src \
+  -e PYTHONDONTWRITEBYTECODE=1 \
   "$IMAGE" \
   python scripts/compute_norm_stats.py \
     --repo-id lerobot/libero_spatial_image \
@@ -216,8 +231,11 @@ docker run -d \
   --ulimit memlock=-1 \
   --ulimit stack=67108864 \
   -v "$DATA_HOST:/data" \
+  -v "$REPO_HOST:/workspace/verl-vla:ro" \
   -e HF_HOME=/data/huggingface \
   -e HF_HUB_ENABLE_HF_TRANSFER=1 \
+  -e PYTHONPATH=/workspace/verl-vla/src \
+  -e PYTHONDONTWRITEBYTECODE=1 \
   -e RAY_TMPDIR=/data/raytmp \
   -e TMPDIR=/data/tmp \
   -e NO_ALBUMENTATIONS_UPDATE=1 \
@@ -320,8 +338,11 @@ docker run --rm \
   --ulimit memlock=-1 \
   --ulimit stack=67108864 \
   -v "$DATA_HOST:/data" \
+  -v "$REPO_HOST:/workspace/verl-vla:ro" \
   -v "$DATA_HOST/libero_cache/assets:/root/.cache/libero/assets:ro" \
   -e HF_HOME=/data/huggingface \
+  -e PYTHONPATH=/workspace/verl-vla/src \
+  -e PYTHONDONTWRITEBYTECODE=1 \
   -e RAY_TMPDIR=/data/raytmp_eval \
   -e TMPDIR=/data/tmp_eval \
   -e LIBERO_CONFIG_PATH=/data/libero_config \
@@ -375,8 +396,11 @@ docker run --rm \
   --ulimit memlock=-1 \
   --ulimit stack=67108864 \
   -v "$DATA_HOST:/data" \
+  -v "$REPO_HOST:/workspace/verl-vla:ro" \
   -v "$DATA_HOST/libero_cache/assets:/root/.cache/libero/assets:ro" \
   -e HF_HOME=/data/huggingface \
+  -e PYTHONPATH=/workspace/verl-vla/src \
+  -e PYTHONDONTWRITEBYTECODE=1 \
   -e RAY_TMPDIR=/data/raytmp_community_eval \
   -e TMPDIR=/data/tmp_community_eval \
   -e LIBERO_CONFIG_PATH=/data/libero_config \
