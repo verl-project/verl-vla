@@ -184,21 +184,21 @@ def create_app(
                 device_type = str(message.get("device") or "")
                 if device_type not in input_devices:
                     continue
-                if device_type == "keyboard" and message_type != "keyboard_event":
-                    continue
-                if device_type == "xr_controller" and message_type != "xr_frame":
-                    continue
-                if device_type == "gamepad" and message_type not in {"gamepad_update", "gamepad_disconnect"}:
-                    continue
-                if device_type == "lerobot" and message_type not in {
-                    "keyboard_event",
-                    "lerobot_open",
-                    "lerobot_rx",
-                    "lerobot_poll",
-                    "lerobot_close",
-                    "lerobot_error",
-                }:
-                    continue
+                if message_type != "keyboard_event":
+                    if device_type == "keyboard":
+                        continue
+                    if device_type == "xr_controller" and message_type != "xr_frame":
+                        continue
+                    if device_type == "gamepad" and message_type not in {"gamepad_update", "gamepad_disconnect"}:
+                        continue
+                    if device_type == "lerobot" and message_type not in {
+                        "lerobot_open",
+                        "lerobot_rx",
+                        "lerobot_poll",
+                        "lerobot_close",
+                        "lerobot_error",
+                    }:
+                        continue
                 payload = message.get("payload", {})
                 if message_type != "lerobot_poll":
                     input_devices[device_type].handle_event(DeviceEvent.from_payload(payload))

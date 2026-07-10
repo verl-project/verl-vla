@@ -129,7 +129,7 @@ class EnvLoop:
         }
 
         progress_bar = tqdm(total=self.max_interactions, desc="Rollout Progress", leave=False)
-        progress_counts = {"trajectories": 0, "success": 0}
+        progress_counts = {"done_eps": 0, "succ_eps": 0}
         progress_lane_state: dict[int, dict[str, torch.Tensor]] = {}
 
         async def _stage_loop(stage_id: int):
@@ -182,6 +182,12 @@ class EnvLoop:
             await asyncio.gather(*[asyncio.create_task(_stage_loop(sid)) for sid in range(self.stage_num)])
         finally:
             progress_bar.close()
+        success_count = progress_counts["succ_eps"]
+        trajectory_count = progress_counts["done_eps"]
+        print(
+            f"Rollout collected trajectories: success={success_count}, "
+            f"failed={trajectory_count - success_count}, total={trajectory_count}"
+        )
         self.env_wg.finish_rollout()
         collated_meta_info = dict(rollout_meta_info)
         output = self._collate_trajectories(trajectories, meta_info=collated_meta_info)

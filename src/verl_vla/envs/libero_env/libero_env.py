@@ -82,15 +82,26 @@ class LiberoResetStatePlanner:
         self.valid_reset_states_by_task = self._filter_reset_states_by_task()
         self.valid_reset_states = np.concatenate(list(self.valid_reset_states_by_task.values()), axis=0)
         self.benchmark_size = int(self.valid_reset_states.shape[0])
-        self.eval_process_queue = self._build_process_queue(self.valid_reset_states)
+        self.valid_eval_states = np.column_stack(
+            (
+                self.valid_reset_states,
+                np.arange(self.benchmark_size, dtype=np.int64),
+            )
+        )
+        self.eval_process_queue = self._build_process_queue(self.valid_eval_states)
 
     def sample_train_states(self, count: int) -> np.ndarray:
         indices = self.generator.integers(low=0, high=len(self.valid_reset_states), size=(count,))
-        return self.valid_reset_states[indices].astype(np.int64, copy=False)
+        return np.column_stack(
+            (
+                self.valid_reset_states[indices],
+                np.full(count, -1, dtype=np.int64),
+            )
+        ).astype(np.int64, copy=False)
 
     def reset_eval_cursor(self) -> None:
         self.eval_cursor = 0
-        self.eval_process_queue = self._build_process_queue(self.valid_reset_states)
+        self.eval_process_queue = self._build_process_queue(self.valid_eval_states)
 
     def next_eval_states(self, count: int) -> np.ndarray:
         process_states = self.eval_process_queue[self.global_process_id]
@@ -124,7 +135,9 @@ class LiberoResetStatePlanner:
         return reset_states_by_task
 
     def _build_process_queue(self, reset_states: np.ndarray) -> np.ndarray:
-        reset_states = np.asarray(reset_states, dtype=np.int64).reshape(-1, 3)
+        reset_states = np.asarray(reset_states, dtype=np.int64)
+        state_width = int(reset_states.shape[1])
+        reset_states = reset_states.reshape(-1, state_width)
         if len(reset_states) == 0:
             raise ValueError("LIBERO reset queue is empty.")
 
@@ -133,9 +146,9 @@ class LiberoResetStatePlanner:
         padded_size = max(total_env_slots, num_batches * total_env_slots)
         reset_states = reset_states[np.resize(np.arange(len(reset_states)), padded_size)]
         return (
-            reset_states.reshape(-1, self.global_process_count, self.envs_per_process, 3)
+            reset_states.reshape(-1, self.global_process_count, self.envs_per_process, state_width)
             .transpose(1, 0, 2, 3)
-            .reshape(self.global_process_count, -1, 3)
+            .reshape(self.global_process_count, -1, state_width)
         )
 
 
@@ -215,15 +228,17 @@ class LiberoResetStateMixin:
         self.task_ids = reset_states[:, 0].copy()
         self.trial_ids = reset_states[:, 1].copy()
         self.reset_state_ids = reset_states[:, 2].copy()
+        self.eval_episode_ids = reset_states[:, 3].copy()
         if self.only_eval:
             self.reset_planner.reset_eval_cursor()
 
     def _reset_to_states(self, reset_states, env_idx):
-        reset_states = np.asarray(reset_states, dtype=np.int64).reshape(-1, 3)
+        reset_states = np.asarray(reset_states, dtype=np.int64).reshape(-1, 4)
         old_task_ids = self.task_ids[env_idx].copy()
         self.task_ids[env_idx] = reset_states[:, 0]
         self.trial_ids[env_idx] = reset_states[:, 1]
         self.reset_state_ids[env_idx] = reset_states[:, 2]
+        self.eval_episode_ids[env_idx] = reset_states[:, 3]
 
         reconfig_env_idx = env_idx[old_task_ids != self.task_ids[env_idx]]
         if len(reconfig_env_idx):
@@ -344,11 +359,13 @@ class LiberoEnv(LiberoResetStateMixin, BaseEnv):
         obs_env_ids = env_ids if partial_reset else np.arange(self.num_envs)
         tasks = [self.task_descriptions[env_id] for env_id in obs_env_ids]
         task_id = self.task_ids[obs_env_ids].astype(np.int64, copy=False)
+        eval_episode_id = self.eval_episode_ids[obs_env_ids].astype(np.int64, copy=False)
 
         obs = {
             "observation": self._make_observations(raw_obs),
             "task": tasks,
             "task_id": task_id,
+            "eval_episode_id": eval_episode_id,
         }
         self._reset_elapsed_steps(env_ids)
 
@@ -367,6 +384,7 @@ class LiberoEnv(LiberoResetStateMixin, BaseEnv):
             "observation": self._make_observations(raw_obs),
             "task": [self.task_descriptions[env_id] for env_id in env_ids],
             "task_id": self.task_ids[env_ids].astype(np.int64, copy=False),
+            "eval_episode_id": self.eval_episode_ids[env_ids].astype(np.int64, copy=False),
             "next.reward": to_tensor(step_reward),
             "next.terminated": to_tensor(np.asarray(terminations, dtype=bool)),
             "next.truncated": to_tensor(np.asarray(truncations, dtype=bool)),

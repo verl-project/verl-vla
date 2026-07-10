@@ -1,3 +1,7 @@
+default_install_hook_types:
+  - pre-commit
+  - commit-msg
+
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: "v0.12.2"
@@ -14,6 +18,12 @@ repos:
 
   - repo: local
     hooks:
+      - id: check-commit-message
+        name: Check commit message
+        entry: python3 scripts/check_commit_message.py
+        language: python
+        stages: [commit-msg]
+
       - id: check-license
         name: Check license
         entry: python3 tests/special_sanity/check_license.py --directories .

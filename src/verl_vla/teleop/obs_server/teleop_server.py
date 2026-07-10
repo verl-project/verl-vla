@@ -245,6 +245,10 @@ class TeleopServer:
             task_description=task_description,
         )
 
+    def write_console(self, text: str) -> None:
+        if self._server is not None:
+            self._server.console.write_backend(text)
+
     def close(self) -> None:
         if self._server is not None:
             self._server.stop()

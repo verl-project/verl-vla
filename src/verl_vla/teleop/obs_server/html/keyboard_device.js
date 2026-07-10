@@ -15,47 +15,32 @@ limitations under the License.
 */
 
 class TeleopKeyboardDevice {
-  constructor(socketProvider) {
-    this.socketProvider = socketProvider;
-    this.controlCodes = new Set([
+  keyboardEventCodes() {
+    return [
+      "KeyW",
+      "KeyS",
+      "KeyA",
+      "KeyD",
+      "KeyQ",
+      "KeyE",
+      "KeyZ",
+      "KeyX",
+      "KeyT",
+      "KeyG",
+      "KeyC",
+      "KeyV",
       "ArrowDown",
       "ArrowLeft",
       "ArrowRight",
       "ArrowUp",
       "PageDown",
-      "PageUp"
-    ]);
-    this.handleEvent = this.handleEvent.bind(this);
-  }
-
-  attach() {
-    window.addEventListener("keydown", this.handleEvent);
-    window.addEventListener("keyup", this.handleEvent);
-  }
-
-  detach() {
-    window.removeEventListener("keydown", this.handleEvent);
-    window.removeEventListener("keyup", this.handleEvent);
-  }
-
-  handleEvent(event) {
-    if (this.controlCodes.has(event.code)) {
-      event.preventDefault();
-    }
-    const socket = this.socketProvider();
-    if (!socket || socket.readyState !== WebSocket.OPEN) {
-      return;
-    }
-    socket.send(JSON.stringify({
-      type: "keyboard_event",
-      device: "keyboard",
-      payload: {
-        event_type: event.type,
-        key: event.key,
-        code: event.code,
-        repeat: event.repeat,
-        timestamp: Date.now() / 1000
-      }
-    }));
+      "PageUp",
+      "Space",
+      "KeyK",
+      "KeyL",
+      "KeyR",
+      "Backspace",
+      "Enter"
+    ];
   }
 }

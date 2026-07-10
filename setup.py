@@ -56,8 +56,16 @@ setup(
     description="VLA training framework of Volcano Engine",
     install_requires=INSTALL_REQUIRES,
     extras_require=extras_require,
+    entry_points={
+        "console_scripts": [
+            "vvla-dagger=verl_vla.entrypoints.main_dagger:main",
+            "vvla-record=verl_vla.entrypoints.main_record:main",
+            "vvla-teleop=verl_vla.entrypoints.main_teleop:main",
+        ],
+    },
     package_data={
         "verl_vla": [
+            "entrypoints/config/*.yaml",
             "trainer/config/*.yaml",
             "trainer/config/*/*.yaml",
             "trainer/config/*/*/*.yaml",

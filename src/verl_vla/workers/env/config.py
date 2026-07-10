@@ -50,6 +50,7 @@ class EnvWorkerConfig(BaseConfig):
     """Configuration for environment workers."""
 
     auto_reset: bool = False
+    confirm_before_record: bool = False
     modes: list[str] = field(default_factory=lambda: ["train"])
     num_envs: int = 1
     simulator: SimulatorConfig = field(default_factory=SimulatorConfig)

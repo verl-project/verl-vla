@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, cast
@@ -21,7 +22,6 @@ from typing import Any, Callable, cast
 import numpy as np
 import ray
 import torch
-from ray.util.placement_group import remove_placement_group
 from verl import DataProto
 from verl.checkpoint_engine import CheckpointEngineManager
 from verl.single_controller.ray import RayClassWithInitArgs, RayWorkerGroup
@@ -30,8 +30,14 @@ from verl.utils.config import omega_conf_to_dataclass
 
 from verl_vla.env_loop.env_loop import EnvLoop
 from verl_vla.trainer.train_cluster.checkpoint import CheckpointHelper
-from verl_vla.trainer.train_cluster.config import EnvLoopTrainClusterConfig, ResourceConfig, SFTTrainClusterConfig
+from verl_vla.trainer.train_cluster.config import (
+    EnvLoopTrainClusterConfig,
+    EnvTrainClusterConfig,
+    ResourceConfig,
+    SFTTrainClusterConfig,
+)
 from verl_vla.trainer.train_cluster.resource_pool import VLAResourcePoolManager
+from verl_vla.utils.ray_utils import remove_placement_group_with_timeout
 from verl_vla.utils.recorder import merge_lerobot_datasets
 from verl_vla.utils.recorder.lerobot import REQUIRED_LEROBOT_META_FILES
 from verl_vla.workers.engine import VLAActorRolloutRefWorker, VLAActorWorker, VLARolloutWorker
@@ -50,13 +56,13 @@ ROLE_TO_WORKER_NAME = {
     Role.Env: "env",
 }
 
+logger = logging.getLogger(__name__)
+
 
 @dataclass
 class RolloutState:
     reset_future: Any | None = None
-    carry_state: dict[str, np.ndarray | None] = field(
-        default_factory=lambda: {"length": None, "reward": None, "task_id": None}
-    )
+    carry_state: dict[str, np.ndarray | None] = field(default_factory=lambda: {"length": None, "reward": None})
     lerobot_collected_once: bool = False
 
 
@@ -74,15 +80,36 @@ def ray_rollout_once(
 
 
 class TrainCluster:
-    def __init__(self, config: SFTTrainClusterConfig | EnvLoopTrainClusterConfig):
-        if not isinstance(config, SFTTrainClusterConfig | EnvLoopTrainClusterConfig):
-            raise TypeError(
-                "TrainCluster config must be SFTTrainClusterConfig or EnvLoopTrainClusterConfig, "
-                f"got {type(config).__name__}."
-            )
+    """Ray-backed worker cluster used by trainer entrypoints.
+
+    Supported cluster configs:
+        SFTTrainClusterConfig: actor-only cluster for supervised fine-tuning.
+        EnvLoopTrainClusterConfig: env + rollout/model cluster for RL rollout,
+            policy updates, evaluation, and optional separate rollout workers.
+        EnvTrainClusterConfig: env-only cluster for teleop/data recording.
+
+    Public API:
+        start() / shutdown(): create and tear down Ray workers/resources.
+        rollout(), train(), update_weights(), eval(): env-loop RL operations.
+        record(): env-only teleop recording, optionally without collecting outputs.
+        load_checkpoint() / save_checkpoint(): actor checkpoint lifecycle.
+        start_profiling(), stop_profiling(), dump_memory_snapshot(): diagnostics.
+        actor_worker_group and train_world_size expose actor worker metadata.
+    """
+
+    def __init__(self, config: SFTTrainClusterConfig | EnvLoopTrainClusterConfig | EnvTrainClusterConfig):
         self.config = config
-        self.cluster_type = "sft" if isinstance(config, SFTTrainClusterConfig) else "env_loop"
+        if isinstance(config, SFTTrainClusterConfig):
+            self.cluster_type = "sft"
+        elif isinstance(config, EnvLoopTrainClusterConfig):
+            self.cluster_type = "env_loop"
+        elif isinstance(config, EnvTrainClusterConfig):
+            self.cluster_type = "env"
+        else:
+            raise TypeError(f"Unsupported TrainCluster config type: {type(config).__name__}.")
+
         self.resource_pool_spec: dict[str, list[int]] = {}
+        self.resource_pool_devices: dict[str, str] = {}
         self.role_to_pool: dict[Role, str] = {}
         self.cpu_pool_names: set[str] = set()
         self.resource_labels: dict[str, str] = {}
@@ -121,7 +148,7 @@ class TrainCluster:
             )
             self._init_checkpoint_engine_manager()
 
-        if self.config.checkpoint is not None:
+        if self.cluster_type != "env" and self.config.checkpoint is not None:
             actor_config = self.config.actor_rollout_ref.actor
             assert actor_config is not None
             self.checkpoint_helper = CheckpointHelper(
@@ -156,9 +183,9 @@ class TrainCluster:
             for resource_pool in self.resource_pool_manager.resource_pool_dict.values():
                 for pg in getattr(resource_pool, "pgs", None) or []:
                     try:
-                        remove_placement_group(pg)
+                        remove_placement_group_with_timeout(pg)
                     except Exception:
-                        pass
+                        logger.warning("Failed to remove Ray placement group during shutdown.", exc_info=True)
                 resource_pool.pgs = None
 
         self.worker_groups = {}
@@ -189,7 +216,7 @@ class TrainCluster:
             self.worker_groups[worker_name] = RayWorkerGroup(
                 resource_pool=resource_pool,
                 ray_cls_with_init=ray_cls_with_init,
-                device_name=self.config.resource.model.device,
+                device_name=self.resource_pool_devices[pool_name],
             )
 
         for worker_name in [
@@ -204,6 +231,7 @@ class TrainCluster:
 
     def _build_resource_pool_plan(self) -> None:
         self.resource_pool_spec = {}
+        self.resource_pool_devices = {}
         self.role_to_pool = {}
         self.cpu_pool_names = set()
         self.resource_labels = {}
@@ -211,6 +239,12 @@ class TrainCluster:
         if self.cluster_type == "sft":
             self._add_resource_pool(pool_name="train_rollout_pool", resource=self.config.resource.model)
             self.role_to_pool = {Role.Actor: "train_rollout_pool"}
+
+        elif self.cluster_type == "env":
+            resource = self.config.resource
+            env_pool_name = "env_cpu_pool" if resource.env.device == "cpu" else "env_gpu_pool"
+            self._add_resource_pool(pool_name=env_pool_name, resource=resource.env)
+            self.role_to_pool[Role.Env] = env_pool_name
 
         elif self.cluster_type == "env_loop":
             resource = self.config.resource
@@ -237,6 +271,7 @@ class TrainCluster:
     def _add_resource_pool(self, pool_name: str, resource: ResourceConfig) -> None:
         processes_per_node = resource.workers_per_node if resource.device == "cpu" else resource.gpus_per_node
         self.resource_pool_spec[pool_name] = [processes_per_node] * resource.nnodes
+        self.resource_pool_devices[pool_name] = resource.device
         if resource.device == "cpu":
             self.cpu_pool_names.add(pool_name)
         if resource.resource_label is not None:
@@ -245,6 +280,9 @@ class TrainCluster:
     def _role_worker_mapping(self):
         if self.cluster_type == "sft":
             return {Role.Actor: VLAActorRolloutRefWorker}
+
+        elif self.cluster_type == "env":
+            return {Role.Env: EnvWorker}
 
         elif self.cluster_type == "env_loop":
             separate_rollout_model = self.config.resource.separate_rollout_model.enabled
@@ -276,8 +314,6 @@ class TrainCluster:
 
     def _worker_config(self, role: Role):
         if role == Role.Env:
-            if not isinstance(self.config, EnvLoopTrainClusterConfig) or self.config.env is None:
-                raise ValueError("Env worker requires EnvLoopTrainClusterConfig.env.")
             return self.config.env
         elif role in {Role.Actor, Role.Rollout, Role.ActorRollout}:
             return self.config.actor_rollout_ref
@@ -450,10 +486,43 @@ class TrainCluster:
         return collected_datasets, lerobot_collected_once
 
     def train(self, data: DataProto, *, async_update: bool = True) -> Any:
+        assert self.cluster_type in {"sft", "env_loop"}
         actor_wg = self.actor_worker_group
         if async_update:
             return actor_wg.update_actor_async(data)
         return actor_wg.update_actor(data)
+
+    def record(self, *, collect_dataset: bool = True) -> Path | None:
+        if self.cluster_type != "env":
+            raise RuntimeError("record is only wired for env-only train clusters.")
+        env_resource = self.config.resource.env
+        env_workers_per_node = (
+            env_resource.workers_per_node if env_resource.device == "cpu" else env_resource.gpus_per_node
+        )
+        assert env_resource.nnodes * env_workers_per_node == 1
+
+        env_wg = self.worker_groups.get(ROLE_TO_WORKER_NAME[Role.Env])
+        if env_wg is None:
+            raise RuntimeError("Env worker group is not initialized. Call start() before record().")
+        env_wg.record()
+
+        if not collect_dataset:
+            return None
+
+        recorder_cfg = self.config.env.env_worker.recorder
+        output_root = Path(recorder_cfg.lerobot.root) / recorder_cfg.lerobot.repo_id
+        rank_datasets = [dataset for dataset in env_wg.pop_lerobot_dataset() if dataset is not None]
+        if not rank_datasets:
+            raise RuntimeError("No lerobot dataset was produced by record().")
+        output_dataset = merge_lerobot_datasets(
+            roots=[dataset["root"] for dataset in rank_datasets],
+            output_root=output_root,
+            repo_id=recorder_cfg.lerobot.repo_id,
+            repo_ids=[dataset["repo_id"] for dataset in rank_datasets],
+            append=True,
+            video_files_size_in_mb=recorder_cfg.lerobot.video_files_size_in_mb,
+        )
+        return Path(output_dataset["root"])
 
     def update_weights(self) -> None:
         assert self.cluster_type == "env_loop"
@@ -474,24 +543,41 @@ class TrainCluster:
         benchmark_size = int(env_wg.get_eval_benchmark_size()[0])
         target_episodes = benchmark_size if max_episodes is None else int(max_episodes)
 
+        base_count = target_episodes // benchmark_size
+        extra_count = target_episodes % benchmark_size
+        target_eval_episode_counts = np.full(benchmark_size, base_count, dtype=np.int64)
+        target_eval_episode_counts[:extra_count] += 1
+        accepted_eval_episode_counts = np.zeros(benchmark_size, dtype=np.int64)
+
         eval_step = 0
         rollout_metric_lists: dict[str, list[float]] = {}
         trajectory_records: list[dict[str, float | int | bool]] = []
-        carry_state: dict[str, np.ndarray | None] = {"length": None, "reward": None, "task_id": None}
+        carry_state: dict[str, np.ndarray | None] = {
+            "length": None,
+            "reward": None,
+        }
         while len(trajectory_records) < target_episodes:
             reset_future = env_wg.reset_env(mode="eval", reset_eval=eval_step == 0)
             rollout_output = self.env_loop.generate_sequences(reset_future, eval=True)
             for key, value in rollout_output.meta_info.get("metrics", {}).items():
                 rollout_metric_lists.setdefault(key, []).append(float(value))
 
-            trajectory_records.extend(
-                self._collect_trajectory_records(
-                    rollout_output,
-                    auto_reset=self.config.env.env_worker.auto_reset,
-                    remaining=target_episodes - len(trajectory_records),
-                    carry_state=carry_state,
-                )
+            new_records = self._collect_trajectory_records(
+                rollout_output,
+                auto_reset=self.config.env.env_worker.auto_reset,
+                carry_state=carry_state,
             )
+            if "obs.eval_episode_id" in rollout_output.non_tensor_batch:
+                for record in new_records:
+                    eval_episode_id = int(record.get("eval_episode_id", -1))
+                    if eval_episode_id < 0 or eval_episode_id >= benchmark_size:
+                        continue
+                    if accepted_eval_episode_counts[eval_episode_id] >= target_eval_episode_counts[eval_episode_id]:
+                        continue
+                    trajectory_records.append(record)
+                    accepted_eval_episode_counts[eval_episode_id] += 1
+            else:
+                trajectory_records.extend(new_records[: target_episodes - len(trajectory_records)])
             eval_step += 1
 
         metrics = self._trajectory_metrics_from_records(
@@ -517,23 +603,29 @@ class TrainCluster:
         raw_done_steps = output.batch["next.terminated"].bool() | output.batch["next.truncated"].bool()
         raw_reward_steps = output.batch["next.reward"].float()
         raw_success_steps = output.batch["next.success"].bool()
-        chunk_steps = int(raw_done_steps.shape[-1]) if raw_done_steps.ndim > 2 else 1
-        done_steps = raw_done_steps.reshape(raw_done_steps.shape[0], -1)
-        reward_steps = raw_reward_steps.reshape(raw_reward_steps.shape[0], -1)
-        success_steps = raw_success_steps.reshape(raw_success_steps.shape[0], -1)
-        if done_steps.ndim == 1:
-            done_steps = done_steps[:, None]
-            reward_steps = reward_steps[:, None]
-            success_steps = success_steps[:, None]
+        done_chunks = raw_done_steps.reshape(raw_done_steps.shape[0], raw_done_steps.shape[1], -1)
+        reward_chunks = raw_reward_steps.reshape(raw_reward_steps.shape[0], raw_reward_steps.shape[1], -1)
+        success_chunks = raw_success_steps.reshape(raw_success_steps.shape[0], raw_success_steps.shape[1], -1)
+        chunk_steps = int(done_chunks.shape[-1])
+        done_steps = done_chunks.reshape(done_chunks.shape[0], -1)
+        reward_steps = reward_chunks.reshape(reward_chunks.shape[0], -1)
+        success_steps = success_chunks.reshape(success_chunks.shape[0], -1)
         task_id_steps = np.asarray(output.non_tensor_batch["obs.task_id"])
-        task_id_steps = np.repeat(task_id_steps, chunk_steps, axis=1)
+        eval_episode_id_steps = output.non_tensor_batch.get("obs.eval_episode_id")
+        if eval_episode_id_steps is not None:
+            eval_episode_id_steps = np.asarray(eval_episode_id_steps)
+        flat_task_id_steps = np.repeat(task_id_steps, chunk_steps, axis=1)
+        flat_eval_episode_id_steps = (
+            np.repeat(eval_episode_id_steps, chunk_steps, axis=1) if eval_episode_id_steps is not None else None
+        )
 
         if not auto_reset:
             return TrainCluster._collect_non_auto_reset_trajectory_records(
                 done_steps,
                 reward_steps,
                 success_steps,
-                task_id_steps=task_id_steps,
+                task_id_steps=flat_task_id_steps,
+                eval_episode_id_steps=flat_eval_episode_id_steps,
                 chunk_steps=chunk_steps,
                 remaining=remaining,
             )
@@ -543,86 +635,60 @@ class TrainCluster:
 
         carry_lengths = carry_state.get("length")
         carry_rewards = carry_state.get("reward")
-        carry_successes = carry_state.get("success")
-        carry_task_ids = carry_state.get("task_id")
-        if carry_lengths is None or carry_lengths.shape[0] != batch_size:
+        if carry_lengths is None:
             carry_lengths = np.zeros(batch_size, dtype=np.int64)
             carry_rewards = np.zeros(batch_size, dtype=np.float32)
-            carry_successes = np.zeros(batch_size, dtype=bool)
-            carry_task_ids = np.full(batch_size, -1, dtype=np.int64)
             carry_state["length"] = carry_lengths
             carry_state["reward"] = carry_rewards
-            carry_state["success"] = carry_successes
-            carry_state["task_id"] = carry_task_ids
-        else:
-            if carry_successes is None or carry_successes.shape[0] != batch_size:
-                carry_successes = np.zeros(batch_size, dtype=bool)
-                carry_state["success"] = carry_successes
-            if not carry_lengths.flags.writeable:
-                carry_lengths = carry_lengths.copy()
-                carry_state["length"] = carry_lengths
-            if carry_rewards is not None and not carry_rewards.flags.writeable:
-                carry_rewards = carry_rewards.copy()
-                carry_state["reward"] = carry_rewards
-            if carry_successes is not None and not carry_successes.flags.writeable:
-                carry_successes = carry_successes.copy()
-                carry_state["success"] = carry_successes
-            if carry_task_ids is not None and not carry_task_ids.flags.writeable:
-                carry_task_ids = carry_task_ids.copy()
-                carry_state["task_id"] = carry_task_ids
         assert carry_lengths is not None
         assert carry_rewards is not None
-        assert carry_successes is not None
-        assert carry_task_ids is not None
 
         for batch_idx in range(done_steps.shape[0]):
             if remaining is not None and len(records) >= remaining:
                 break
 
-            done_row = done_steps[batch_idx].reshape(-1)
-            reward_row = reward_steps[batch_idx].reshape(-1)
-            success_row = success_steps[batch_idx].reshape(-1)
-            done_indices = torch.nonzero(done_row, as_tuple=False).flatten().tolist()
-            start_idx = 0
             segment_prefix_length = int(carry_lengths[batch_idx])
             segment_prefix_return = float(carry_rewards[batch_idx])
-            segment_prefix_success = bool(carry_successes[batch_idx])
-            segment_task_id = int(carry_task_ids[batch_idx])
-            if segment_prefix_length == 0 and task_id_steps.shape[1] > 0:
-                segment_task_id = int(task_id_steps[batch_idx, 0])
 
-            for done_idx in done_indices:
+            for chunk_idx in range(done_chunks.shape[1]):
                 if remaining is not None and len(records) >= remaining:
                     break
 
-                segment = slice(start_idx, done_idx + 1)
-                trajectory_return = segment_prefix_return + float(reward_row[segment].sum().item())
-                trajectory_success = segment_prefix_success or bool(success_row[segment].any().item())
-                trajectory_length = segment_prefix_length + done_idx - start_idx + 1
-                trajectory_chunk_length = (trajectory_length + chunk_steps - 1) // chunk_steps
-                records.append(
-                    {
-                        "length": int(trajectory_length),
-                        "chunk_length": int(trajectory_chunk_length),
-                        "return": float(trajectory_return),
-                        "success": trajectory_success,
-                        "task_id": int(segment_task_id),
-                    }
-                )
+                chunk_done = done_chunks[batch_idx, chunk_idx].reshape(-1)
+                chunk_reward = reward_chunks[batch_idx, chunk_idx].reshape(-1)
+                chunk_success = success_chunks[batch_idx, chunk_idx].reshape(-1)
+                done_indices = torch.nonzero(chunk_done, as_tuple=False).flatten().tolist()
+                if not done_indices:
+                    segment_prefix_length += chunk_steps
+                    segment_prefix_return += float(chunk_reward.sum().item())
+                    continue
 
-                start_idx = done_idx + 1
+                done_idx = int(done_indices[0])
+                segment = slice(0, done_idx + 1)
+                task_id = int(task_id_steps[batch_idx, chunk_idx])
+                eval_episode_id = (
+                    int(eval_episode_id_steps[batch_idx, chunk_idx]) if eval_episode_id_steps is not None else None
+                )
+                trajectory_length = segment_prefix_length
+                trajectory_length += done_idx + 1
+                trajectory_chunk_length = (trajectory_length + chunk_steps - 1) // chunk_steps
+                record = {
+                    "length": int(trajectory_length),
+                    "chunk_length": int(trajectory_chunk_length),
+                    "return": float(segment_prefix_return + float(chunk_reward[segment].sum().item())),
+                    "success": bool(chunk_success[segment].any().item()),
+                    "task_id": task_id,
+                }
+                if eval_episode_id is not None:
+                    record["eval_episode_id"] = eval_episode_id
+                records.append(record)
+
                 segment_prefix_length = 0
                 segment_prefix_return = 0.0
-                segment_prefix_success = False
-                if start_idx < task_id_steps.shape[1]:
-                    segment_task_id = int(task_id_steps[batch_idx, start_idx])
 
             if remaining is None or len(records) < remaining:
-                remaining_steps = int(done_row.numel()) - start_idx
-                carry_lengths[batch_idx] = segment_prefix_length + remaining_steps
-                carry_rewards[batch_idx] = segment_prefix_return + float(reward_row[start_idx:].sum().item())
-                carry_successes[batch_idx] = segment_prefix_success or bool(success_row[start_idx:].any().item())
-                carry_task_ids[batch_idx] = segment_task_id
+                carry_lengths[batch_idx] = segment_prefix_length
+                carry_rewards[batch_idx] = segment_prefix_return
 
         return records
 
@@ -633,6 +699,7 @@ class TrainCluster:
         success_steps: torch.Tensor,
         *,
         task_id_steps: np.ndarray,
+        eval_episode_id_steps: np.ndarray | None,
         chunk_steps: int,
         remaining: int | None,
     ) -> list[dict[str, float | int | bool]]:
@@ -648,17 +715,19 @@ class TrainCluster:
             done_idx = int(done_indices[0]) if done_indices else int(done_row.numel()) - 1
             segment = slice(0, done_idx + 1)
             task_id = int(task_id_steps[batch_idx, 0])
+            eval_episode_id = int(eval_episode_id_steps[batch_idx, 0]) if eval_episode_id_steps is not None else None
 
             trajectory_return = float(reward_row[segment].sum().item())
-            records.append(
-                {
-                    "length": int(done_idx + 1),
-                    "chunk_length": int(done_idx // chunk_steps + 1),
-                    "return": trajectory_return,
-                    "success": bool(success_row[segment].any().item()),
-                    "task_id": task_id,
-                }
-            )
+            record = {
+                "length": int(done_idx + 1),
+                "chunk_length": int(done_idx // chunk_steps + 1),
+                "return": trajectory_return,
+                "success": bool(success_row[segment].any().item()),
+                "task_id": task_id,
+            }
+            if eval_episode_id is not None:
+                record["eval_episode_id"] = eval_episode_id
+            records.append(record)
         return records
 
     @staticmethod

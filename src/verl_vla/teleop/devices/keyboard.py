@@ -38,6 +38,7 @@ class KeyboardDevice(DeviceBase):
         with self._lock:
             self._pressed_keys.clear()
             self._events.clear()
+            self._clear_record_control()
 
     @override
     def handle_event(self, event: DeviceEvent) -> None:
@@ -78,6 +79,9 @@ class KeyboardDevice(DeviceBase):
             "Space": "toggle intervention",
             "K": "toggle gripper",
             "L": "reset device",
+            "R": "manual reward",
+            "Backspace": "restart recording episode",
+            "Enter": "stop recording episode",
         }
 
     @staticmethod

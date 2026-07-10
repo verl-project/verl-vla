@@ -24,6 +24,26 @@ from .config import LeRobotDataLoaderConfig
 logger = logging.getLogger(__name__)
 
 
+def resolve_multiprocessing_context(data_config: LeRobotDataLoaderConfig, num_workers: int) -> str | None:
+    if num_workers <= 0:
+        return None
+    if data_config.multiprocessing_context is not None:
+        return data_config.multiprocessing_context
+
+    try:
+        import ray
+    except ImportError:
+        return None
+
+    if ray.is_initialized():
+        # Ray actor handles created before DataLoader construction can be
+        # inherited by forked workers, and we observed workers hang while
+        # cleaning up those inherited handles. forkserver keeps multiprocessing
+        # workers isolated from the trainer's live Ray runtime state.
+        return "forkserver"
+    return None
+
+
 def build_lerobot_dataset(
     data_config: LeRobotDataLoaderConfig,
     *,
@@ -45,7 +65,7 @@ def build_lerobot_sft_dataset(data_config: LeRobotDataLoaderConfig):
     delta_timestamps = None
     if action_delta_steps > 0:
         probe_dataset = build_lerobot_dataset(data_config)
-        delta_timestamps = {"action": [t / probe_dataset.fps for t in range(action_delta_steps)]}
+        delta_timestamps = {data_config.action_key: [t / probe_dataset.fps for t in range(action_delta_steps)]}
     return build_lerobot_dataset(data_config, delta_timestamps=delta_timestamps)
 
 
@@ -96,6 +116,7 @@ def build_lerobot_sft_dataloader(
         sampler = SequentialSampler(data_source=dataset)
 
     num_workers = int(data_config.num_workers)
+    multiprocessing_context = resolve_multiprocessing_context(data_config, num_workers)
     return StatefulDataLoader(
         dataset=dataset,
         batch_size=batch_size,
@@ -104,6 +125,7 @@ def build_lerobot_sft_dataloader(
         sampler=sampler,
         pin_memory=bool(data_config.pin_memory),
         persistent_workers=bool(data_config.persistent_workers) if num_workers > 0 else False,
+        multiprocessing_context=multiprocessing_context,
         prefetch_factor=int(data_config.prefetch_factor) if num_workers > 0 else None,
     )
 
@@ -113,6 +135,8 @@ class RLPDTransitionDataset(Dataset):
         self,
         repo_id: str,
         action_chunk_steps: int,
+        transition_stride: int = 1,
+        include_final_transition: bool = True,
         root: str | None = None,
         revision: str | None = None,
         video_backend: str | None = None,
@@ -129,6 +153,8 @@ class RLPDTransitionDataset(Dataset):
             iter_lerobot_transition_records(
                 self.dataset,
                 action_chunk_steps=action_chunk_steps,
+                transition_stride=transition_stride,
+                include_final_transition=include_final_transition,
                 episodes=episodes,
                 max_transitions=max_transitions,
             )
@@ -145,6 +171,7 @@ class RLPDTransitionDataset(Dataset):
             "start": start,
             "next": next_index,
             "terminal": bool(record["terminal"]),
+            "episode_success": bool(record["episode_success"]),
             "t0_item": self.dataset[start],
             "t1_item": self.dataset[next_index],
         }
@@ -153,12 +180,21 @@ class RLPDTransitionDataset(Dataset):
 def iter_lerobot_transition_records(
     dataset,
     action_chunk_steps: int,
+    transition_stride: int = 1,
+    include_final_transition: bool = True,
     episodes: list[int] | None = None,
     max_transitions: int = 0,
 ):
+    transition_stride = int(transition_stride)
+    if transition_stride <= 0:
+        raise ValueError(f"transition_stride must be positive, got {transition_stride}")
     selected_episodes = set(int(episode) for episode in episodes) if episodes is not None else None
     transition_window = action_chunk_steps * 2
     emitted = 0
+
+    def as_bool(value) -> bool:
+        return bool(value.item()) if torch.is_tensor(value) else bool(value)
+
     for episode in dataset.meta.episodes:
         episode_index = int(episode["episode_index"])
         if selected_episodes is not None and episode_index not in selected_episodes:
@@ -166,17 +202,30 @@ def iter_lerobot_transition_records(
 
         start = int(episode["dataset_from_index"])
         end = int(episode["dataset_to_index"])
+        episode_length = end - start
+        episode_success = as_bool(dataset.hf_dataset["next.success"][end - 1]) if episode_length > 0 else False
         num_transitions = end - start - transition_window + 1
-        if num_transitions <= 0:
-            continue
+        if num_transitions > 0:
+            for transition_offset in range(0, num_transitions, transition_stride):
+                if max_transitions > 0 and emitted >= max_transitions:
+                    return
+                transition_start = start + transition_offset
+                yield {
+                    "start": transition_start,
+                    "next": transition_start + action_chunk_steps,
+                    "terminal": False,
+                    "episode_success": episode_success,
+                }
+                emitted += 1
 
-        for transition_offset in range(num_transitions):
+        if include_final_transition and episode_length >= action_chunk_steps:
             if max_transitions > 0 and emitted >= max_transitions:
                 return
-            transition_start = start + transition_offset
+            transition_start = end - action_chunk_steps
             yield {
                 "start": transition_start,
-                "next": transition_start + action_chunk_steps,
-                "terminal": transition_start + transition_window == end,
+                "next": transition_start,
+                "terminal": True,
+                "episode_success": episode_success,
             }
             emitted += 1

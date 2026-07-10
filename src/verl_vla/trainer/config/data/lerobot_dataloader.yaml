@@ -25,6 +25,10 @@ prefetch_factor: 4
 # Whether to pin host memory before GPU transfer.
 pin_memory: True
 
+# Optional PyTorch dataloader multiprocessing context. Null keeps the default
+# outside Ray and automatically uses forkserver inside Ray workers.
+multiprocessing_context: null
+
 # Whether to shuffle dataset samples.
 shuffle: True
 
@@ -39,3 +43,6 @@ video_backend: pyav
 
 # Number of future action timestamps requested from LeRobot.
 action_delta_steps: 0
+
+# LeRobot feature key used when requesting future action timestamps.
+action_key: action

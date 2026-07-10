@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import queue
 import traceback
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -36,7 +36,7 @@ from verl_vla.trainer.recap.compute_return import (
     RECAP_VALUE_FIELD,
 )
 from verl_vla.utils.data import dataloader_batch_to_dataproto
-from verl_vla.utils.dataloader import LeRobotDataLoaderConfig
+from verl_vla.utils.dataloader import LeRobotDataLoaderConfig, resolve_multiprocessing_context
 from verl_vla.utils.dataloader.lerobot import build_lerobot_dataset
 from verl_vla.utils.dtype import precision_to_torch_dtype
 from verl_vla.utils.lerobot import iter_lerobot_frame_records, write_lerobot_frame_columns
@@ -51,6 +51,23 @@ class _ValueInferConfig:
     n_step: int
     positive_ratio: float
     force_intervention_positive: bool
+    indicator_strategy: str
+    advantage_smoothing_window: int
+    advantage_smoothing_decay: float
+
+    def __post_init__(self) -> None:
+        if self.n_step <= 0:
+            raise ValueError("recap.value_infer.n_step must be positive.")
+        if not 0.0 <= self.positive_ratio <= 1.0:
+            raise ValueError("recap.value_infer.positive_ratio must be within [0, 1].")
+        if self.indicator_strategy not in {"raw_advantage", "future_smoothed_advantage"}:
+            raise ValueError(
+                "recap.value_infer.indicator_strategy must be one of {'raw_advantage', 'future_smoothed_advantage'}."
+            )
+        if self.advantage_smoothing_window <= 0:
+            raise ValueError("recap.value_infer.advantage_smoothing_window must be positive.")
+        if not 0.0 < self.advantage_smoothing_decay <= 1.0:
+            raise ValueError("recap.value_infer.advantage_smoothing_decay must be within (0, 1].")
 
     @classmethod
     def from_config(cls, config: DictConfig) -> _ValueInferConfig:
@@ -63,9 +80,12 @@ class _ValueInferConfig:
             torch_dtype=precision_to_torch_dtype(precision),
             precision=precision,
             num_gpus=int(infer_cfg.get("num_gpus", 1)),
-            n_step=int(infer_cfg.get("n_step", 10)),
+            n_step=int(infer_cfg.get("n_step", 50)),
             positive_ratio=float(infer_cfg.get("positive_ratio", 0.3)),
             force_intervention_positive=bool(infer_cfg.get("force_intervention_positive", True)),
+            indicator_strategy=str(infer_cfg.get("indicator_strategy", "future_smoothed_advantage")),
+            advantage_smoothing_window=int(infer_cfg.get("advantage_smoothing_window", 50)),
+            advantage_smoothing_decay=float(infer_cfg.get("advantage_smoothing_decay", 0.95)),
         )
 
 
@@ -94,6 +114,9 @@ def infer_recap_values(config: DictConfig, dataset: dict[str, str | Path], model
         n_step=infer_cfg.n_step,
         positive_ratio=infer_cfg.positive_ratio,
         force_intervention_positive=infer_cfg.force_intervention_positive,
+        indicator_strategy=infer_cfg.indicator_strategy,
+        advantage_smoothing_window=infer_cfg.advantage_smoothing_window,
+        advantage_smoothing_decay=infer_cfg.advantage_smoothing_decay,
     )
     return {
         "recap/value_infer_num_samples": float(len(value_lookup)),
@@ -234,14 +257,10 @@ def _infer_value_shard_worker(
 ) -> None:
     try:
         config = OmegaConf.create(config_container)
-        infer_cfg = _ValueInferConfig(
+        infer_cfg = replace(
+            _ValueInferConfig.from_config(config),
             device=torch.device(f"cuda:{rank}"),
-            torch_dtype=precision_to_torch_dtype(precision),
-            precision=precision,
             num_gpus=world_size,
-            n_step=0,
-            positive_ratio=0.0,
-            force_intervention_positive=False,
         )
         torch.cuda.set_device(infer_cfg.device)
         data_config: LeRobotDataLoaderConfig = instantiate(config.recap.value_infer.data)
@@ -286,6 +305,7 @@ def _infer_value_lookup_on_device(
         num_workers=data_config.num_workers,
         pin_memory=data_config.pin_memory and device.type == "cuda",
         persistent_workers=data_config.persistent_workers if data_config.num_workers > 0 else False,
+        multiprocessing_context=resolve_multiprocessing_context(data_config, data_config.num_workers),
         prefetch_factor=data_config.prefetch_factor if data_config.num_workers > 0 else None,
     )
 
@@ -332,18 +352,19 @@ def _write_recap_value_columns(
     n_step: int,
     positive_ratio: float,
     force_intervention_positive: bool,
+    indicator_strategy: str,
+    advantage_smoothing_window: int,
+    advantage_smoothing_decay: float,
 ) -> dict[str, float]:
-    if n_step <= 0:
-        raise ValueError("recap.value_infer.n_step must be positive.")
-    if not 0.0 <= positive_ratio <= 1.0:
-        raise ValueError("recap.value_infer.positive_ratio must be within [0, 1].")
-
     annotations = _compute_recap_annotations(
         dataset_root=dataset_root,
         value_lookup=value_lookup,
         n_step=n_step,
         positive_ratio=positive_ratio,
         force_intervention_positive=force_intervention_positive,
+        indicator_strategy=indicator_strategy,
+        advantage_smoothing_window=advantage_smoothing_window,
+        advantage_smoothing_decay=advantage_smoothing_decay,
     )
     write_lerobot_frame_columns(
         dataset_root,
@@ -360,10 +381,13 @@ def _write_recap_value_columns(
     )
 
     advantages_np = np.asarray([item["advantage"] for item in annotations.values()], dtype=np.float32)
+    indicator_scores_np = np.asarray([item["indicator_score"] for item in annotations.values()], dtype=np.float32)
     indicators_np = np.asarray([item["indicator"] for item in annotations.values()], dtype=np.float32)
     return {
         "recap/advantage_mean": float(np.mean(advantages_np)),
         "recap/advantage_std": float(np.std(advantages_np)),
+        "recap/indicator_score_mean": float(np.mean(indicator_scores_np)),
+        "recap/indicator_score_std": float(np.std(indicator_scores_np)),
         "recap/indicator_positive_ratio": float(np.mean(indicators_np)),
     }
 
@@ -375,13 +399,22 @@ def _compute_recap_annotations(
     n_step: int,
     positive_ratio: float,
     force_intervention_positive: bool,
+    indicator_strategy: str,
+    advantage_smoothing_window: int,
+    advantage_smoothing_decay: float,
 ) -> dict[int, dict[str, np.float32 | np.int64]]:
     records = _load_recap_records(dataset_root=dataset_root, value_lookup=value_lookup)
-    rewards = _compute_dense_rewards(records)
-    advantages = _compute_n_step_advantages(records, rewards, n_step=n_step)
-    indicators = _binarize_advantages(
+    advantages = _compute_n_step_advantages(records, n_step=n_step)
+    indicator_scores = _compute_indicator_scores(
         records=records,
         advantages=advantages,
+        strategy=indicator_strategy,
+        smoothing_window=advantage_smoothing_window,
+        smoothing_decay=advantage_smoothing_decay,
+    )
+    indicators = _binarize_indicator_scores(
+        records=records,
+        scores=indicator_scores,
         positive_ratio=positive_ratio,
         force_intervention_positive=force_intervention_positive,
     )
@@ -390,9 +423,12 @@ def _compute_recap_annotations(
         int(record["index"]): {
             "value": np.float32(record["value"]),
             "advantage": np.float32(advantage),
+            "indicator_score": np.float32(indicator_score),
             "indicator": np.int64(indicator),
         }
-        for record, advantage, indicator in zip(records, advantages, indicators, strict=True)
+        for record, advantage, indicator_score, indicator in zip(
+            records, advantages, indicator_scores, indicators, strict=True
+        )
     }
 
 
@@ -433,79 +469,94 @@ def _load_recap_records(
     return records
 
 
-def _compute_dense_rewards(records: list[dict[str, object]]) -> np.ndarray:
-    rewards = np.zeros(len(records), dtype=np.float32)
-    for i, record in enumerate(records):
-        has_next = i + 1 < len(records)
-        next_in_episode = (
-            has_next
-            and records[i + 1]["episode_index"] == record["episode_index"]
-            and int(records[i + 1]["frame_index"]) == int(record["frame_index"]) + 1
-        )
-        if next_in_episode:
-            rewards[i] = float(record["return"]) - float(records[i + 1]["return"])
-        else:
-            rewards[i] = float(record["return"])
-    return rewards
-
-
-def _compute_n_step_advantages(
-    records: list[dict[str, object]],
-    rewards: np.ndarray,
-    *,
-    n_step: int,
-) -> np.ndarray:
+def _compute_n_step_advantages(records: list[dict[str, object]], *, n_step: int) -> np.ndarray:
     advantages = np.zeros(len(records), dtype=np.float32)
     for i, record in enumerate(records):
-        reward_sum, next_index = _sum_n_step_rewards(records=records, rewards=rewards, start_index=i, n_step=n_step)
-        bootstrap = _next_value_if_contiguous(records=records, current=record, next_index=next_index, n_step=n_step)
-        advantages[i] = np.float32(reward_sum + bootstrap - float(record["value"]))
+        reward_sum = 0.0
+        for offset in range(n_step):
+            current_record = _n_step_record_or_episode_tail(records=records, start_index=i, offset=offset)
+            next_record = _n_step_record_or_episode_tail(records=records, start_index=i, offset=offset + 1)
+            reward_sum += float(current_record["return"]) - float(next_record["return"])
+
+        bootstrap_record = _n_step_record_or_episode_tail(records=records, start_index=i, offset=n_step)
+        advantages[i] = np.float32(reward_sum + float(bootstrap_record["value"]) - float(record["value"]))
     return advantages
 
 
-def _sum_n_step_rewards(
+def _n_step_record_or_episode_tail(
     *,
     records: list[dict[str, object]],
-    rewards: np.ndarray,
     start_index: int,
-    n_step: int,
-) -> tuple[float, int]:
+    offset: int,
+) -> dict[str, object]:
+    # When n-step reaches past the episode tail, reuse the last contiguous frame
+    # for both recap.return and recap.value instead of padding either side with 0.
     current = records[start_index]
-    reward_sum = 0.0
-    next_index = start_index
-    steps = 0
-    while steps < n_step and next_index < len(records):
-        record = records[next_index]
-        same_episode = record["episode_index"] == current["episode_index"]
-        contiguous = int(record["frame_index"]) == int(current["frame_index"]) + steps
+    future_index = start_index
+    for step in range(1, offset + 1):
+        candidate_index = start_index + step
+        if candidate_index >= len(records):
+            break
+        candidate = records[candidate_index]
+        same_episode = candidate["episode_index"] == current["episode_index"]
+        contiguous = int(candidate["frame_index"]) == int(current["frame_index"]) + step
         if not same_episode or not contiguous:
             break
-        reward_sum += float(rewards[next_index])
-        steps += 1
-        next_index += 1
-    return reward_sum, next_index
+        future_index = candidate_index
+    return records[future_index]
 
 
-def _next_value_if_contiguous(
-    *,
-    records: list[dict[str, object]],
-    current: dict[str, object],
-    next_index: int,
-    n_step: int,
-) -> float:
-    if (
-        next_index < len(records)
-        and records[next_index]["episode_index"] == current["episode_index"]
-        and int(records[next_index]["frame_index"]) == int(current["frame_index"]) + n_step
-    ):
-        return float(records[next_index]["value"])
-    return 0.0
-
-
-def _binarize_advantages(
+def _compute_indicator_scores(
     *,
     records: list[dict[str, object]],
     advantages: np.ndarray,
+    strategy: str,
+    smoothing_window: int,
+    smoothing_decay: float,
+) -> np.ndarray:
+    if strategy == "raw_advantage":
+        return advantages
+    if strategy == "future_smoothed_advantage":
+        return _smooth_future_scores(
+            records=records,
+            scores=advantages,
+            window=smoothing_window,
+            decay=smoothing_decay,
+        )
+    raise ValueError(f"Unsupported RECAP indicator strategy: {strategy}")
+
+
+def _smooth_future_scores(
+    *,
+    records: list[dict[str, object]],
+    scores: np.ndarray,
+    window: int,
+    decay: float,
+) -> np.ndarray:
+    smoothed = np.zeros(len(records), dtype=np.float32)
+    for i, record in enumerate(records):
+        weighted_sum = 0.0
+        weight_sum = 0.0
+        for offset in range(window):
+            next_index = i + offset
+            if next_index >= len(records):
+                break
+            next_record = records[next_index]
+            same_episode = next_record["episode_index"] == record["episode_index"]
+            contiguous = int(next_record["frame_index"]) == int(record["frame_index"]) + offset
+            if not same_episode or not contiguous:
+                break
+            weight = decay**offset
+            weighted_sum += weight * float(scores[next_index])
+            weight_sum += weight
+        smoothed[i] = np.float32(weighted_sum / weight_sum if weight_sum > 0.0 else scores[i])
+    return smoothed
+
+
+def _binarize_indicator_scores(
+    *,
+    records: list[dict[str, object]],
+    scores: np.ndarray,
     positive_ratio: float,
     force_intervention_positive: bool,
 ) -> np.ndarray:
@@ -514,14 +565,14 @@ def _binarize_advantages(
 
     for task_idx in np.unique(task_indices):
         task_mask = task_indices == task_idx
-        task_advantages = advantages[task_mask]
-        if task_advantages.size == 0:
+        task_scores = scores[task_mask]
+        if task_scores.size == 0:
             continue
-        positive_count = int(np.ceil(float(task_advantages.size) * positive_ratio))
+        positive_count = int(np.ceil(float(task_scores.size) * positive_ratio))
         if positive_count <= 0:
             continue
-        task_indicators = np.zeros(task_advantages.size, dtype=np.int64)
-        positive_order = np.argsort(task_advantages)[-positive_count:]
+        task_indicators = np.zeros(task_scores.size, dtype=np.int64)
+        positive_order = np.argsort(task_scores)[-positive_count:]
         task_indicators[positive_order] = 1
         indicators[task_mask] = task_indicators
 

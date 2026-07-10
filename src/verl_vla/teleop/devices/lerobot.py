@@ -245,6 +245,7 @@ class LerobotDevice(DeviceBase):
     def reset(self) -> None:
         with self._lock:
             self._events.clear()
+            self._clear_record_control()
 
     @override
     def handle_event(self, event: DeviceEvent) -> None:
@@ -302,6 +303,9 @@ class LerobotDevice(DeviceBase):
             "Move leader arm": "relative position control",
             "Rotate leader wrist": "relative rotation control when enabled",
             "Leader gripper": "open / close gripper",
+            "R": "manual reward",
+            "Backspace": "restart recording episode",
+            "Enter": "stop recording episode",
         }
 
     def browser_config(self) -> dict[str, Any]:

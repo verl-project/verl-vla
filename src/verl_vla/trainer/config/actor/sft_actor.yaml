@@ -13,14 +13,8 @@ defaults:
 # Target class for this configuration.
 _target_: verl_vla.workers.config.SFTActorConfig
 
-# Actor EMA config.
-ema:
-
-  # Whether to maintain EMA weights for actor parameters.
-  enable: false
-
-  # EMA decay for actor parameters.
-  decay: 0.995
+# EMA decay for actor parameters. Null disables actor EMA.
+ema_decay: null
 
 # Advantage-conditioned prompt config.
 acp:

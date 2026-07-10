@@ -214,7 +214,7 @@ class PI0ForActionPrediction(PreTrainedModel, SupportSACTraining, SupportSFTTrai
                 noise_scale=self.flow_sde_rollout_noise_scale,
                 requires_grad=False,
                 return_log_prob=True,
-                task_ids=torch.tensor(env_obs.non_tensor_batch["task_ids"], device=state.device, dtype=torch.long),
+                task_ids=torch.tensor(env_obs.non_tensor_batch["task_id"], device=state.device, dtype=torch.long),
             )
         else:
             pred_action = self.model.sample_actions(images, pi0_input.img_masks, lang_tokens, lang_masks, state=state)
@@ -573,12 +573,7 @@ class PI0ForActionPrediction(PreTrainedModel, SupportSACTraining, SupportSFTTrai
         state_features = self.sac_forward_state_features(obs, tokenizer)
         task_ids = None
         if self.critic_api.uses_task_ids:
-            if obs.batch is not None and "task_ids" in obs.batch:
-                task_ids = obs.batch["task_ids"]
-            elif "task_ids" in obs.non_tensor_batch:
-                task_ids = torch.tensor(obs.non_tensor_batch["task_ids"], device=actions.action.device)
-            else:
-                raise ValueError(f"critic_type={self.critic_type} requires task_ids in obs.")
+            task_ids = torch.tensor(obs.non_tensor_batch["task_id"], device=actions.action.device, dtype=torch.long)
         critic_q_values = self.sac_forward_critic(
             a={"action": actions.action},
             state_features=state_features,

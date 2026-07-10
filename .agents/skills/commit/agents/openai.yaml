@@ -1,0 +1,4 @@
+interface:
+  display_name: "Create Commit"
+  short_description: "Prepare and create a conventional local commit"
+  default_prompt: "Use $commit to prepare and create a verl-vla commit."

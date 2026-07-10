@@ -44,6 +44,7 @@ class GamepadDevice(DeviceBase):
             self._button_states.clear()
             self._axis_values.clear()
             self._events.clear()
+            self._clear_record_control()
             self._connected = False
             self._device_id = ""
 
@@ -60,11 +61,22 @@ class GamepadDevice(DeviceBase):
                 if not isinstance(axes_raw, dict):
                     axes_raw = {}
 
+                pressed_edges = set()
                 for key, value in buttons_raw.items():
                     if isinstance(value, dict):
-                        self._button_states[key] = bool(value.get("pressed", False))
+                        pressed = bool(value.get("pressed", False))
                     else:
-                        self._button_states[key] = bool(value)
+                        pressed = bool(value)
+                    if pressed and not self._button_states.get(key, False):
+                        pressed_edges.add(key)
+                    self._button_states[key] = pressed
+
+                if "RB" in pressed_edges:
+                    self._record_control["manual_reward"] = True
+                if "LT" in pressed_edges:
+                    self._record_control["restart_episode"] = True
+                if "LB" in pressed_edges:
+                    self._record_control["stop_episode"] = True
 
                 for key, value in axes_raw.items():
                     self._axis_values[key] = float(value) if isinstance(value, int | float) else 0.0
@@ -108,6 +120,9 @@ class GamepadDevice(DeviceBase):
             "D-Pad Up/Down": "+pitch / -pitch",
             "RT": "intervention (hold)",
             "X": "toggle gripper",
+            "LT": "restart recording episode",
+            "LB": "start/stop recording episode",
+            "RB": "manual reward",
         }
 
     def is_active(self) -> bool:

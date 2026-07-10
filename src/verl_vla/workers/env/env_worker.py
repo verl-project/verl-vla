@@ -78,6 +78,7 @@ def create_env_batch_dataproto(obs, rewards, terminations, truncations, successe
         "observation": obs["observation"],
         "task": obs["task"],
         "task_id": obs.get("task_id"),
+        "eval_episode_id": obs.get("eval_episode_id"),
         "next.reward": rewards,
         "next.terminated": terminations,
         "next.truncated": truncations,
@@ -102,8 +103,9 @@ def create_env_batch_dataproto(obs, rewards, terminations, truncations, successe
         "next.success": step_result["next.success"],
     }
     non_tensor_batch = {"obs.task": step_result["task"]}
-    if step_result["task_id"] is not None:
-        non_tensor_batch["obs.task_id"] = np.asarray(step_result["task_id"], dtype=np.int64)
+    non_tensor_batch["obs.task_id"] = np.asarray(step_result["task_id"], dtype=np.int64)
+    if step_result["eval_episode_id"] is not None:
+        non_tensor_batch["obs.eval_episode_id"] = np.asarray(step_result["eval_episode_id"], dtype=np.int64)
     output = DataProto.from_dict(tensors=tensor_batch, non_tensors=non_tensor_batch)
 
     return output
@@ -345,11 +347,21 @@ class EnvWorker(Worker, DistProfilerExtension):
                 output_tensor_dict[key] = torch.as_tensor(np.stack([observation[key] for observation in observations]))
         output_non_tensor_dict["task"] = [task for obs, _info in result_list for task in obs["task"]]
         task_ids = [task_id for obs, _info in result_list for task_id in obs.get("task_id", [])]
-        if task_ids:
-            output_non_tensor_dict["task_id"] = np.asarray(task_ids, dtype=np.int64)
+        output_non_tensor_dict["task_id"] = np.asarray(task_ids, dtype=np.int64)
+        eval_episode_ids = [
+            eval_episode_id for obs, _info in result_list for eval_episode_id in obs.get("eval_episode_id", [])
+        ]
+        if eval_episode_ids:
+            output_non_tensor_dict["eval_episode_id"] = np.asarray(eval_episode_ids, dtype=np.int64)
 
         output = DataProto.from_dict(tensors=output_tensor_dict, non_tensors=output_non_tensor_dict)
         return output
+
+    @register(dispatch_mode=Dispatch.ONE_TO_ALL)
+    @DistProfiler.annotate(color="blue", role="env_record")
+    def record(self):
+        assert self.stage_num == 1
+        self.simulator_list[0].record()
 
     @register(dispatch_mode=Dispatch.ONE_TO_ALL)
     @DistProfiler.annotate(color="gray", role="env_finish_rollout")

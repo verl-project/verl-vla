@@ -66,6 +66,7 @@ limitations under the License.
       <div id="state"></div>
     </section>
   </main>
+  <script src="/static/keyboard_event_router.js"></script>
   <script src="/static/keyboard_device.js"></script>
   <script src="/static/gamepad_device.js"></script>
   <script src="/static/lerobot_device.js"></script>
@@ -86,15 +87,29 @@ limitations under the License.
       left: {property: "--left-panel-width", storageKey: "teleop-left-panel-width", min: 360, max: 680, fallback: 440},
       right: {property: "--right-panel-width", storageKey: "teleop-right-panel-width", min: 300, max: 620, fallback: 390}
     };
-    const keyboardDevice = new TeleopKeyboardDevice(() => inputSocket);
+    const keyboardDevice = new TeleopKeyboardDevice();
     const gamepadDevice = new TeleopGamepadDevice(() => inputSocket);
     const lerobotDevice = new TeleopLerobotDevice(
       () => inputSocket,
       () => TELEOP_DEVICE_CONFIGS.lerobot || {}
     );
+    const keyboardRouter = new TeleopKeyboardEventRouter(() => inputSocket);
     const xrRenderer = new TeleopXRRenderer();
     let consoleInputStart = 0;
     let lastConsoleEventId = 0;
+
+    if (TELEOP_DEVICE_TYPES.includes("keyboard")) {
+      keyboardRouter.register("keyboard", keyboardDevice.keyboardEventCodes());
+    }
+    if (TELEOP_DEVICE_TYPES.includes("gamepad")) {
+      keyboardRouter.register("gamepad", gamepadDevice.keyboardEventCodes());
+    }
+    if (TELEOP_DEVICE_TYPES.includes("lerobot")) {
+      keyboardRouter.register("lerobot", lerobotDevice.keyboardEventCodes());
+    }
+    if (TELEOP_DEVICE_TYPES.includes("xr_controller")) {
+      keyboardRouter.register("xr_controller", ["KeyR", "Backspace", "Enter"]);
+    }
 
     function clearElement(element) {
       while (element.firstChild) {
@@ -455,7 +470,7 @@ limitations under the License.
         renderConsole(input.console);
       }
       const devices = input.devices || [];
-      const {console: _console, ...summaryInput} = input;
+      const {console: _console, record_control: _recordControl, ...summaryInput} = input;
       let activeDevice = input.active_device || {};
       for (const device of devices) {
         if (!activeDevice.device && isDeviceIntervening(device)) {
@@ -564,7 +579,9 @@ limitations under the License.
         buttons: {
           trigger: buttons[0] || {pressed: false, touched: false, value: 0},
           squeeze: buttons[1] || {pressed: false, touched: false, value: 0},
-          thumbstick: buttons[3] || {pressed: false, touched: false, value: 0}
+          thumbstick: buttons[3] || {pressed: false, touched: false, value: 0},
+          primary: buttons[4] || {pressed: false, touched: false, value: 0},
+          secondary: buttons[5] || {pressed: false, touched: false, value: 0}
         }
       };
     }
@@ -647,9 +664,6 @@ limitations under the License.
       }
     }
 
-    if (TELEOP_DEVICE_TYPES.includes("keyboard")) {
-      keyboardDevice.attach();
-    }
     if (TELEOP_DEVICE_TYPES.includes("gamepad")) {
       gamepadDevice.attach();
     }
@@ -718,6 +732,7 @@ limitations under the License.
       }
     }
 
+    keyboardRouter.attach();
     connectObsStream();
     connectInputStream();
   </script>

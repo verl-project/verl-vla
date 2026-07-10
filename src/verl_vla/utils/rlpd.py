@@ -37,9 +37,10 @@ class RLPDConfig(BaseConfig):
     enable: bool = False
     episodes: list[int] | None = None
     max_transitions: int = 0
-    submit_max_transitions: int = 0
+    submit_max_transitions: int = 256
     action_chunk_steps: int = 10
-    terminal_reward: float = 1.0
+    transition_stride: int | None = None
+    include_final_transition: bool = True
 
     def __post_init__(self):
         if self.max_transitions < 0:
@@ -48,6 +49,8 @@ class RLPDConfig(BaseConfig):
             raise ValueError(f"submit_max_transitions must be non-negative, got {self.submit_max_transitions}")
         if self.action_chunk_steps <= 0:
             raise ValueError(f"action_chunk_steps must be positive, got {self.action_chunk_steps}")
+        if self.transition_stride is not None and self.transition_stride <= 0:
+            raise ValueError(f"transition_stride must be positive when set, got {self.transition_stride}")
 
 
 def pad_dataproto_to_divisor_with_valid_mask(
@@ -74,6 +77,9 @@ def iter_rlpd_replay_prefill_batches(rlpd_config: RLPDConfig, global_steps: int)
 
     dataloader_config = rlpd_config.dataloader
     action_chunk_steps = int(rlpd_config.action_chunk_steps)
+    transition_stride = (
+        action_chunk_steps if rlpd_config.transition_stride is None else int(rlpd_config.transition_stride)
+    )
     max_prefill_transitions = int(rlpd_config.max_transitions)
     submit_max_transitions = int(rlpd_config.submit_max_transitions)
     num_workers = int(dataloader_config.num_workers)
@@ -84,6 +90,8 @@ def iter_rlpd_replay_prefill_batches(rlpd_config: RLPDConfig, global_steps: int)
     transition_dataset = RLPDTransitionDataset(
         repo_id=dataloader_config.repo_id,
         action_chunk_steps=action_chunk_steps,
+        transition_stride=transition_stride,
+        include_final_transition=bool(rlpd_config.include_final_transition),
         root=dataloader_config.root,
         revision=dataloader_config.revision,
         video_backend=dataloader_config.video_backend,
@@ -120,17 +128,6 @@ def iter_rlpd_replay_prefill_batches(rlpd_config: RLPDConfig, global_steps: int)
     yield from tqdm(loader, total=len(loader), desc="RLPD replay prefill")
 
 
-def extract_lerobot_step_actions(action: torch.Tensor) -> torch.Tensor:
-    # TODO(remove after datasets are fixed): old LeRobot datasets stored an action chunk
-    # inside each action entry. Standard RLPD data should be per-step action [T, D].
-    if action.ndim >= 3:
-        action = action[:, 0, :]
-    # End legacy compatibility block.
-    if action.ndim != 2:
-        raise ValueError(f"Expected LeRobot actions with shape [T, D], got {tuple(action.shape)}")
-    return action
-
-
 def stack_lerobot_hf_rows(dataset, key: str, indices: list[int]) -> torch.Tensor:
     values = dataset.hf_dataset[key][indices]
     return torch.stack([value if torch.is_tensor(value) else torch.as_tensor(value) for value in values], dim=0)
@@ -139,12 +136,18 @@ def stack_lerobot_hf_rows(dataset, key: str, indices: list[int]) -> torch.Tensor
 def read_lerobot_action_chunks(dataset, start_indices: torch.Tensor, chunk_size: int) -> torch.Tensor:
     offsets = torch.arange(chunk_size, dtype=torch.long)
     chunk_indices = (start_indices[:, None] + offsets[None, :]).reshape(-1).tolist()
-    raw_actions = stack_lerobot_hf_rows(dataset, "action", chunk_indices)
-    step_actions = extract_lerobot_step_actions(raw_actions)
-    return step_actions.reshape(len(start_indices), chunk_size, step_actions.shape[-1])
+    actions = stack_lerobot_hf_rows(dataset, "action", chunk_indices)
+    return actions.reshape(len(start_indices), chunk_size, actions.shape[-1])
 
 
-def stack_transition_observations(items: list[dict], prefix: str) -> tuple[dict[str, torch.Tensor], np.ndarray]:
+def read_lerobot_scalar_chunks(dataset, key: str, start_indices: torch.Tensor, chunk_size: int) -> torch.Tensor:
+    offsets = torch.arange(chunk_size, dtype=torch.long)
+    chunk_indices = (start_indices[:, None] + offsets[None, :]).reshape(-1).tolist()
+    values = stack_lerobot_hf_rows(dataset, key, chunk_indices)
+    return values.reshape(len(start_indices), chunk_size)
+
+
+def stack_transition_observations(items: list[dict], prefix: str) -> dict[str, torch.Tensor]:
     fields = {}
     obs_keys = [
         key
@@ -155,8 +158,7 @@ def stack_transition_observations(items: list[dict], prefix: str) -> tuple[dict[
         value = torch.stack([item[key] for item in items], dim=0)
         fields[f"{prefix}.obs.{key}"] = value
 
-    task_descriptions = np.asarray([item.get("task", "") for item in items], dtype=object)
-    return fields, task_descriptions
+    return fields
 
 
 def rlpd_transition_samples_to_actor_input(
@@ -168,20 +170,28 @@ def rlpd_transition_samples_to_actor_input(
     action_chunk_steps = int(rlpd_config.action_chunk_steps)
     start_indices = torch.as_tensor([sample["start"] for sample in samples], dtype=torch.long)
     next_indices = torch.as_tensor([sample["next"] for sample in samples], dtype=torch.long)
-    terminated_mask = torch.as_tensor([sample["terminal"] for sample in samples], dtype=torch.bool)
-
     t0_items = [sample["t0_item"] for sample in samples]
     t1_items = [sample["t1_item"] for sample in samples]
-    t0_obs_fields, t0_task_descriptions = stack_transition_observations(t0_items, "t0")
-    t1_obs_fields, t1_task_descriptions = stack_transition_observations(t1_items, "t1")
+    reward_chunks = read_lerobot_scalar_chunks(dataset, "next.reward", start_indices, action_chunk_steps)
+    terminated_chunks = read_lerobot_scalar_chunks(dataset, "next.terminated", start_indices, action_chunk_steps)
+    rewards = reward_chunks.to(torch.float32).sum(dim=1)
+    terminated_mask = terminated_chunks.to(torch.bool).any(dim=1)
+    success_mask = torch.as_tensor([bool(sample["episode_success"]) for sample in samples], dtype=torch.bool)
+    t0_obs_fields = stack_transition_observations(t0_items, "t0")
+    t1_obs_fields = stack_transition_observations(t1_items, "t1")
+    t0_task_descriptions = np.asarray([item.get("task", "") for item in t0_items], dtype=object)
+    t1_task_descriptions = np.asarray([item.get("task", "") for item in t1_items], dtype=object)
+    t0_task_ids = np.asarray(
+        [item["task_index"].item() if torch.is_tensor(item["task_index"]) else item["task_index"] for item in t0_items],
+        dtype=np.int64,
+    )
+    t1_task_ids = np.asarray(
+        [item["task_index"].item() if torch.is_tensor(item["task_index"]) else item["task_index"] for item in t1_items],
+        dtype=np.int64,
+    )
 
     t0_action_chunks = read_lerobot_action_chunks(dataset, start_indices, action_chunk_steps)
     t1_action_chunks = read_lerobot_action_chunks(dataset, next_indices, action_chunk_steps)
-    rewards = terminated_mask.to(torch.float32) * float(rlpd_config.terminal_reward)
-    task_ids = torch.as_tensor(
-        [item["task_index"].item() if torch.is_tensor(item["task_index"]) else item["task_index"] for item in t0_items],
-        dtype=torch.long,
-    )
 
     return DataProto.from_dict(
         tensors={
@@ -192,12 +202,13 @@ def rlpd_transition_samples_to_actor_input(
             "info.rewards": rewards,
             "info.terminateds": terminated_mask.to(torch.float32),
             "info.valids": torch.ones(len(samples), dtype=torch.float32),
-            "info.success_mask": torch.ones(len(samples), dtype=torch.float32),
-            "info.task_ids": task_ids,
+            "info.success_mask": success_mask.to(torch.float32),
         },
         non_tensors={
-            "t0.obs.task_descriptions": t0_task_descriptions,
-            "t1.obs.task_descriptions": t1_task_descriptions,
+            "t0.obs.task_id": t0_task_ids,
+            "t0.obs.task": t0_task_descriptions,
+            "t1.obs.task_id": t1_task_ids,
+            "t1.obs.task": t1_task_descriptions,
         },
-        meta_info={"global_steps": global_steps, "global_token_num": [0]},
+        meta_info={"global_steps": global_steps},
     )

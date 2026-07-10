@@ -38,9 +38,17 @@ precision: bfloat16
 num_gpus: 1
 
 # ACP label settings written from inferred values.
-n_step: 10
+n_step: 50
 positive_ratio: 0.3
 force_intervention_positive: true
+
+# Indicator score strategy:
+# - raw_advantage: current behavior, top positive_ratio by n-step advantage.
+# - future_smoothed_advantage: top positive_ratio by exponentially weighted
+#   future n-step advantages.
+indicator_strategy: future_smoothed_advantage
+advantage_smoothing_window: 50
+advantage_smoothing_decay: 0.95
 
 # Value inference reads one frame at a time and does not need future action chunks.
 data:

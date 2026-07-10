@@ -66,6 +66,10 @@ class LiberoKeyboardStrategy(InterventionStrategyBase):
         return command
 
     @override
+    def get_action(self, device: DeviceBase) -> Any:
+        return self._command_from_device(device)
+
+    @override
     def snapshot(self, device: DeviceBase) -> dict[str, Any]:
         command = self._command_from_device(device)
         return {

@@ -22,8 +22,8 @@ from omegaconf import OmegaConf
 
 from verl_vla.trainer.recap.compute_return import CollectedDatasets
 from verl_vla.trainer.train_cluster import TrainCluster
-from verl_vla.utils.lerobot import count_lerobot_episodes, truncate_lerobot_episodes
 from verl_vla.utils.ray_utils import ensure_ray_initialized, get_controller_remote_options
+from verl_vla.utils.rollout_collection import collect_lerobot_rollout_dataset
 
 logger = logging.getLogger(__name__)
 
@@ -51,52 +51,14 @@ def run_env_loop(config, policy_path: Optional[str] = None):
     cluster = TrainCluster(instantiate(collect_config.cluster, _recursive_=False))
     cluster.start()
     try:
-        collected_datasets = {}
         target_episodes = int(collect_config.max_episodes)
-        if target_episodes <= 0:
-            raise ValueError(f"recap.collect_data.max_episodes must be positive, got {target_episodes}.")
-
-        completed_episodes = 0
-        rollout_idx = 0
-        while completed_episodes < target_episodes:
-            _rollout_output, collected_datasets, metrics = cluster.rollout()
-            collected_dataset = collected_datasets.get("collected_dataset")
-            if collected_dataset is None:
-                logger.info(
-                    "Finished recap env loop rollout %s without completed trajectories: "
-                    "collected_episodes=%s/%s, dataset_keys=%s, metrics=%s",
-                    rollout_idx,
-                    completed_episodes,
-                    target_episodes,
-                    list(collected_datasets.keys()),
-                    metrics,
-                )
-                rollout_idx += 1
-                continue
-
-            previous_completed_episodes = completed_episodes
-            completed_episodes = count_lerobot_episodes(collected_dataset["root"])
-            logger.info(
-                "Finished recap env loop rollout %s: collected_episodes=%s/%s, metrics=%s",
-                rollout_idx,
-                completed_episodes,
-                target_episodes,
-                metrics,
-            )
-            if completed_episodes <= previous_completed_episodes:
-                logger.info(
-                    "Recap env loop rollout %s did not add completed trajectories; continuing.",
-                    rollout_idx,
-                )
-                rollout_idx += 1
-                continue
-            if completed_episodes > target_episodes:
-                dataset_root = collected_datasets["collected_dataset"]["root"]
-                truncate_lerobot_episodes(dataset_root, target_episodes)
-                completed_episodes = target_episodes
-            rollout_idx += 1
-
-        return collected_datasets
+        return collect_lerobot_rollout_dataset(
+            cluster,
+            target_episodes=target_episodes,
+            log_prefix="recap env loop rollout",
+            max_episodes_name="recap.collect_data.max_episodes",
+            log=logger,
+        )
     finally:
         cluster.shutdown()
 

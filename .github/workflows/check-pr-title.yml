@@ -1,0 +1,30 @@
+name: Check PR title and description
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize]
+
+permissions:
+  contents: read
+
+jobs:
+  check-title-and-description:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Check PR title
+        run: python3 scripts/check_pr_title.py --title "$PR_TITLE"
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+
+      - name: Check PR description
+        run: python3 tests/special_sanity/check_pr_description.py
+        env:
+          GITHUB_EVENT_PATH: ${{ github.event_path }}

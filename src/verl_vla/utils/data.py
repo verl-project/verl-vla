@@ -66,39 +66,18 @@ def update_progress_trajectory_counts(
     progress_counts: dict[str, int],
     progress_lane_state: dict[int, dict[str, torch.Tensor]],
 ) -> None:
+    del stage_id, progress_lane_state
+
     batch = env_result.batch
     episode_done = batch["next.terminated"].bool() | batch["next.truncated"].bool()
     success = batch["next.success"].bool()
-    episode_done = episode_done.reshape(episode_done.shape[0], -1)
-    success = success.reshape(success.shape[0], -1)
+    first_done_idx = episode_done.float().argmax(dim=1)
+    chunk_done = episode_done.any(dim=1)
+    step_idx = torch.arange(episode_done.shape[1], device=episode_done.device).unsqueeze(0)
+    success_before_done = (success & (step_idx <= first_done_idx.unsqueeze(1))).any(dim=1)
 
-    state = progress_lane_state.get(stage_id)
-    if state is None or state["completed"].shape[0] != episode_done.shape[0]:
-        state = {
-            "completed": torch.zeros(episode_done.shape[0], dtype=torch.bool),
-            "success": torch.zeros(episode_done.shape[0], dtype=torch.bool),
-        }
-        progress_lane_state[stage_id] = state
-
-    completed = state["completed"]
-    carried_success = state["success"]
-    for step_idx in range(episode_done.shape[1]):
-        step_done = episode_done[:, step_idx].cpu()
-        step_success = success[:, step_idx].cpu()
-
-        active = ~completed
-        carried_success[active] |= step_success[active]
-
-        newly_done = active & step_done
-        progress_counts["trajectories"] += int(newly_done.sum().item())
-        progress_counts["success"] += int((newly_done & carried_success).sum().item())
-
-        completed[newly_done] = True
-        carried_success[newly_done] = False
-
-        restarted = completed & ~step_done
-        completed[restarted] = False
-        carried_success[restarted] = step_success[restarted]
+    progress_counts["done_eps"] += int(chunk_done.sum().item())
+    progress_counts["succ_eps"] += int((chunk_done & success_before_done).sum().item())
 
 
 def dataloader_batch_to_dataproto(batch: dict) -> DataProto:

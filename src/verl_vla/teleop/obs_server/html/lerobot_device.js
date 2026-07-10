@@ -24,8 +24,6 @@ class TeleopLerobotDevice {
     this.reading = false;
     this.pollTimer = null;
     this.connecting = false;
-    this.keyboardCodes = new Set(["Space", "Tab"]);
-    this.handleKeyboardEvent = this.handleKeyboardEvent.bind(this);
   }
 
   attach() {
@@ -33,16 +31,16 @@ class TeleopLerobotDevice {
       this.appendConsole("WebSerial is unavailable. Use Chrome or Edge over HTTPS.");
       return;
     }
-    window.addEventListener("keydown", this.handleKeyboardEvent, true);
-    window.addEventListener("keyup", this.handleKeyboardEvent, true);
     this.startPolling();
     this.connectAuthorizedPort();
   }
 
   detach() {
-    window.removeEventListener("keydown", this.handleKeyboardEvent, true);
-    window.removeEventListener("keyup", this.handleKeyboardEvent, true);
     this.stopPolling();
+  }
+
+  keyboardEventCodes() {
+    return ["Space", "Tab", "KeyR", "Backspace", "Enter"];
   }
 
   async requestConnect() {
@@ -135,42 +133,6 @@ class TeleopLerobotDevice {
         throw error;
       }
     }
-  }
-
-  handleKeyboardEvent(event) {
-    if (!this.keyboardCodes.has(event.code) || this.isTextInput(event.target)) {
-      return;
-    }
-    event.preventDefault();
-    const socket = this.socketProvider();
-    if (!socket || socket.readyState !== WebSocket.OPEN) {
-      if (event.type === "keydown" && !event.repeat) {
-        this.appendConsole(`LeRobot key ${event.code} skipped: input socket not ready`);
-      }
-      return;
-    }
-    socket.send(JSON.stringify({
-      type: "keyboard_event",
-      device: "lerobot",
-      payload: {
-        event_type: event.type,
-        key: event.key,
-        code: event.code,
-        repeat: event.repeat,
-        timestamp: Date.now() / 1000
-      }
-    }));
-    if (event.type === "keydown" && !event.repeat) {
-      this.appendConsole(`LeRobot key ${event.code} sent`);
-    }
-  }
-
-  isTextInput(target) {
-    if (!target) {
-      return false;
-    }
-    const tagName = target.tagName ? target.tagName.toLowerCase() : "";
-    return target.isContentEditable || tagName === "input" || tagName === "textarea" || tagName === "select";
   }
 
   startPolling() {

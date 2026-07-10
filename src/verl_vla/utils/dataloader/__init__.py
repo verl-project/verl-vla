@@ -13,6 +13,6 @@
 # limitations under the License.
 
 from .config import LeRobotDataLoaderConfig
-from .lerobot import build_lerobot_sft_dataloader
+from .lerobot import build_lerobot_sft_dataloader, resolve_multiprocessing_context
 
-__all__ = ["LeRobotDataLoaderConfig", "build_lerobot_sft_dataloader"]
+__all__ = ["LeRobotDataLoaderConfig", "build_lerobot_sft_dataloader", "resolve_multiprocessing_context"]

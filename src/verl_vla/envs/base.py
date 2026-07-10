@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 import gymnasium as gym
@@ -72,6 +73,7 @@ class BaseEnv(gym.Env):
         self.teleops = self.create_teleops()
         self.recorder = self.create_recorder()
         self._recorder_episode_done = np.zeros(self.num_envs, dtype=bool)
+        self._confirm_before_record_enabled = bool(cfg.confirm_before_record)
 
     ### Gym Environment API ###
     @override
@@ -95,17 +97,27 @@ class BaseEnv(gym.Env):
         terminated_chunks = []
         truncated_chunks = []
         success_chunks = []
-        step_result = None
+        restart_episode = np.zeros(self.num_envs, dtype=bool)
+        chunk_intervened = np.zeros(self.num_envs, dtype=bool)
+        merged_step_result = None
         for step_idx in range(num_chunk_steps):
             step_actions = action[:, step_idx]
             step_values = chunk_values if chunk_values.ndim <= 1 else chunk_values[:, step_idx]
 
-            step_result = self.step_with_teleop_and_recording(step_actions, critic_value=step_values)
+            merged_step_result, step_restart_episode, chunk_intervened = self.step_with_teleop_and_recording(
+                step_actions,
+                critic_value=step_values,
+                chunk_intervened=chunk_intervened,
+                merged_step_result=merged_step_result,
+            )
+            restart_episode |= step_restart_episode
 
-            reward_chunks.append(step_result["next.reward"])
-            terminated_chunks.append(step_result["next.terminated"])
-            truncated_chunks.append(step_result["next.truncated"])
-            success_chunks.append(step_result["next.success"])
+            # Snapshot per-substep feedback before later partial env updates
+            # mutate the reused merged_step_result buffers in place.
+            reward_chunks.append(np.asarray(merged_step_result["next.reward"]).copy())
+            terminated_chunks.append(np.asarray(merged_step_result["next.terminated"]).copy())
+            truncated_chunks.append(np.asarray(merged_step_result["next.truncated"]).copy())
+            success_chunks.append(np.asarray(merged_step_result["next.success"]).copy())
 
         reward_steps = torch.stack([torch.as_tensor(chunk) for chunk in reward_chunks], dim=1)
         terminated_steps = torch.stack([torch.as_tensor(chunk) for chunk in terminated_chunks], dim=1)
@@ -113,12 +125,18 @@ class BaseEnv(gym.Env):
         success_steps = torch.stack([torch.as_tensor(chunk) for chunk in success_chunks], dim=1)
 
         done_mask = (terminated_steps.bool() | truncated_steps.bool()).any(dim=1).numpy()
-        step_result = self._reset_done_envs(step_result, np.arange(self.num_envs), done_mask=done_mask)
+        merged_step_result = self._reset_done_envs(
+            merged_step_result,
+            np.arange(self.num_envs),
+            done_mask=done_mask | restart_episode,
+        )
         obs = {
-            "observation": step_result["observation"],
-            "task": step_result["task"],
-            "task_id": step_result["task_id"],
+            "observation": merged_step_result["observation"],
+            "task": merged_step_result["task"],
+            "task_id": merged_step_result["task_id"],
         }
+        if "eval_episode_id" in merged_step_result:
+            obs["eval_episode_id"] = merged_step_result["eval_episode_id"]
 
         self._latest_obs = obs
         return (
@@ -142,6 +160,8 @@ class BaseEnv(gym.Env):
         self._latest_obs = obs
         self.reset_teleops()
         self.reset_recorder_envs(env_ids)
+        self.publish_reset_obs_to_teleop(obs, env_ids=env_ids)
+        self._confirm_before_record(env_ids)
         return obs, {}
 
     @override
@@ -149,6 +169,34 @@ class BaseEnv(gym.Env):
         self.close_recorder()
         self.close_teleops()
         self.env_close()
+
+    def record(self) -> None:
+        assert int(getattr(self, "stage_num", 1)) == 1
+        assert self.num_envs == 1
+        assert self.world_size == 1
+        assert len(self.teleops) == 1 and self.teleops[0] is not None
+
+        self.reset(options={"env_idx": [0]})
+        done = False
+        while not done:
+            action, manual_reward, restart_episode, stop_episode = self.teleops[0].get_action()
+            if restart_episode:
+                self.reset(options={"env_idx": [0]})
+                continue
+
+            action = np.asarray(action, dtype=np.float32).reshape(1, -1)
+            step_result = self.mask_step(
+                action,
+                np.ones(self.num_envs, dtype=bool),
+                is_intervention=np.ones(self.num_envs, dtype=bool),
+                critic_value=np.zeros(self.num_envs, dtype=np.float32),
+                manual_reward=np.full(self.num_envs, manual_reward, dtype=bool),
+                force_truncated=np.full(self.num_envs, stop_episode, dtype=bool),
+            )
+            done = bool(
+                np.asarray(step_result["next.terminated"], dtype=bool).any()
+                or np.asarray(step_result["next.truncated"], dtype=bool).any()
+            )
 
     ### Step Control ###
 
@@ -188,6 +236,10 @@ class BaseEnv(gym.Env):
                     ``observation.images.*`` and ``observation.state``.
                 task: Sequence with shape ``[B]`` containing task descriptions
                     or ids for each stepped env.
+                task_id: Array with shape ``[B]`` containing task ids.
+                eval_episode_id: Optional array with shape ``[B]`` containing
+                    eval benchmark ids for fixed-case deduplication and repeat
+                    quotas.
                 next.reward: Array or tensor with shape ``[B]`` containing the
                     reward after stepping.
                 next.terminated: Boolean array or tensor with shape ``[B]``
@@ -217,11 +269,41 @@ class BaseEnv(gym.Env):
             "reset_eval": reset_eval,
         }
 
-    def mask_step(self, action, execute_mask, is_intervention, critic_value):
+    def mask_step(self, action, execute_mask, is_intervention, critic_value, manual_reward=None, force_truncated=None):
+        """Step selected envs and apply optional manual record overrides.
+
+        Args:
+            action: Shape ``[num_envs, action_dim]``, indexed by global env id.
+            execute_mask: Shape ``[num_envs]``, indexed by global env id. Only
+                true envs are stepped; their ids become ``env_ids``.
+            is_intervention: Shape ``[num_envs]``, indexed by global env id and
+                recorded as intervention metadata.
+            critic_value: Shape ``[num_envs]``, indexed by global env id.
+            manual_reward: Optional shape ``[num_envs]``, indexed by global env
+                id. Values > 0 mark that env's local step result as successful
+                termination and set ``next.reward`` to the manual value.
+            force_truncated: Optional shape ``[num_envs]``, indexed by global
+                env id. True values mark that env's local step result as failed
+                truncation. Applied after ``manual_reward`` if both are set for
+                the same env.
+
+        Notes:
+            ``result`` returned by ``env_step`` is indexed by local result id:
+            ``local_id`` position ``i`` corresponds to global env id
+            ``env_ids[i]``.
+        """
         is_intervention = np.asarray(is_intervention, dtype=bool)
         env_ids = np.flatnonzero(execute_mask)
         action = action[env_ids]
+
         result = self.env_step(action, env_ids=env_ids)
+        result = self._apply_manual_step_overrides(
+            result,
+            env_ids=env_ids,
+            manual_reward=manual_reward,
+            force_truncated=force_truncated,
+        )
+
         critic_value = critic_value[env_ids]
         self.publish_to_teleop(result, env_ids=env_ids, critic_value=critic_value)
         self.record_step_result(
@@ -234,27 +316,132 @@ class BaseEnv(gym.Env):
         self._update_latest_obs(env_ids, result)
         return result
 
-    def step_with_teleop_and_recording(self, action, critic_value=None):
+    def _apply_manual_step_overrides(self, result, *, env_ids, manual_reward=None, force_truncated=None):
+        env_ids = np.asarray(env_ids, dtype=np.int64).reshape(-1)
+
+        if manual_reward is not None:
+            manual_reward = np.asarray(manual_reward, dtype=np.float32).reshape(-1)
+            for local_id, env_id in enumerate(env_ids):
+                reward = float(manual_reward[env_id])
+                if reward > 0.0:
+                    result["next.reward"][local_id] = reward
+                    result["next.success"][local_id] = True
+                    result["next.terminated"][local_id] = True
+                    result["next.truncated"][local_id] = False
+
+        if force_truncated is not None:
+            force_truncated = np.asarray(force_truncated, dtype=bool).reshape(-1)
+            for local_id, env_id in enumerate(env_ids):
+                if force_truncated[env_id]:
+                    result["next.reward"][local_id] = 0.0
+                    result["next.success"][local_id] = False
+                    result["next.terminated"][local_id] = False
+                    result["next.truncated"][local_id] = True
+
+        return result
+
+    def step_with_teleop_and_recording(
+        self,
+        action,
+        chunk_intervened,
+        merged_step_result,
+        critic_value=None,
+    ):
         if critic_value is None:
             critic_value = np.zeros(self.num_envs, dtype=np.float32)
         is_intervened = np.zeros(self.num_envs, dtype=bool)
+        done = np.zeros(self.num_envs, dtype=bool)
+        manual_reward = np.zeros(self.num_envs, dtype=np.float32)
+        force_truncated = np.zeros(self.num_envs, dtype=bool)
+        restart_episode = np.zeros(self.num_envs, dtype=bool)
+        chunk_intervened = np.asarray(chunk_intervened, dtype=bool).copy()
+        chunk_intervened_before_step = chunk_intervened.copy()
 
-        while self.is_intervening():
-            next_action, intervention_mask = self.apply_teleop_action(action)
+        while True:
+            next_action, intervention_mask, step_manual_reward, step_restart_episode, stop_episode = (
+                self.apply_teleop_action(action)
+            )
+            manual_reward[step_manual_reward & ~done] = 1.0
+            restart_episode |= step_restart_episode & ~done
+            force_truncated |= stop_episode & ~done
+            intervention_mask = intervention_mask & ~done
+            if not intervention_mask.any():
+                break
+
             need_execute = is_intervened & intervention_mask
             if need_execute.any():
-                self.mask_step(
+                step_result = self.mask_step(
                     action,
                     need_execute,
                     is_intervention=intervention_mask,
                     critic_value=critic_value,
+                    manual_reward=manual_reward,
+                    force_truncated=force_truncated,
+                )
+                step_env_ids = np.flatnonzero(need_execute)
+                merged_step_result = self._update_step_result(merged_step_result, step_env_ids, step_result)
+                done[step_env_ids] |= np.asarray(step_result["next.terminated"], dtype=bool) | np.asarray(
+                    step_result["next.truncated"], dtype=bool
                 )
 
-            action[intervention_mask] = next_action[intervention_mask]
-            is_intervened |= intervention_mask
+            active_mask = intervention_mask & ~done
+            action[active_mask] = next_action[active_mask]
+            is_intervened |= active_mask
+            chunk_intervened |= active_mask
 
-        execute_mask = np.ones(self.num_envs, dtype=bool)
-        return self.mask_step(action, execute_mask, is_intervention=is_intervened, critic_value=critic_value)
+        # Skip remaining policy actions for envs already intervened earlier in
+        # this chunk, but still execute a fresh teleop action from this step.
+        execute_mask = ~done & (~chunk_intervened_before_step | is_intervened)
+        if execute_mask.any():
+            step_result = self.mask_step(
+                action,
+                execute_mask,
+                is_intervention=is_intervened,
+                critic_value=critic_value,
+                manual_reward=manual_reward,
+                force_truncated=force_truncated,
+            )
+            merged_step_result = self._update_step_result(
+                merged_step_result,
+                np.flatnonzero(execute_mask),
+                step_result,
+            )
+        return merged_step_result, restart_episode, chunk_intervened
+
+    def _update_step_result(self, merged_step_result, env_ids, step_result):
+        env_ids = np.asarray(env_ids, dtype=np.int64).reshape(-1)
+        task_ids = self._to_numpy(step_result["task_id"])
+        rewards = self._to_numpy(step_result["next.reward"])
+        terminations = self._to_numpy(step_result["next.terminated"])
+        truncations = self._to_numpy(step_result["next.truncated"])
+        successes = self._to_numpy(step_result["next.success"])
+        eval_episode_ids = self._to_numpy(step_result.get("eval_episode_id"))
+        if merged_step_result is None:
+            merged_step_result = {
+                "observation": [None] * self.num_envs,
+                "task": [None] * self.num_envs,
+                "task_id": np.empty(self.num_envs, dtype=task_ids.dtype),
+                "next.reward": np.empty(self.num_envs, dtype=rewards.dtype),
+                "next.terminated": np.empty(self.num_envs, dtype=bool),
+                "next.truncated": np.empty(self.num_envs, dtype=bool),
+                "next.success": np.empty(self.num_envs, dtype=bool),
+            }
+            if eval_episode_ids is not None:
+                merged_step_result["eval_episode_id"] = np.empty(self.num_envs, dtype=eval_episode_ids.dtype)
+
+        for local_id, env_id in enumerate(env_ids):
+            env_id = int(env_id)
+            merged_step_result["observation"][env_id] = step_result["observation"][local_id]
+            merged_step_result["task"][env_id] = step_result["task"][local_id]
+            merged_step_result["task_id"][env_id] = task_ids[local_id]
+            merged_step_result["next.reward"][env_id] = rewards[local_id]
+            merged_step_result["next.terminated"][env_id] = terminations[local_id]
+            merged_step_result["next.truncated"][env_id] = truncations[local_id]
+            merged_step_result["next.success"][env_id] = successes[local_id]
+            if eval_episode_ids is not None:
+                merged_step_result["eval_episode_id"][env_id] = eval_episode_ids[local_id]
+
+        return merged_step_result
 
     def _reset_done_envs(self, step_result, env_ids, done_mask):
         if not self.auto_reset_enabled:
@@ -267,10 +454,14 @@ class BaseEnv(gym.Env):
         reset_obs = self.env_reset(
             env_ids=env_ids[reset_local_ids],
         )
-        for key in ("observation", "task", "task_id"):
+        for key in ("observation", "task", "task_id", "eval_episode_id"):
+            if key not in step_result or key not in reset_obs:
+                continue
             for reset_idx, local_id in enumerate(reset_local_ids):
                 step_result[key][local_id] = reset_obs[key][reset_idx]
         self.reset_recorder_envs(env_ids[reset_local_ids])
+        self.publish_reset_obs_to_teleop(reset_obs, env_ids=env_ids[reset_local_ids])
+        self._confirm_before_record(env_ids[reset_local_ids])
         return step_result
 
     def _slice_latest_obs(self, env_ids):
@@ -280,6 +471,8 @@ class BaseEnv(gym.Env):
             "task": [self._latest_obs["task"][env_id] for env_id in env_ids],
             "task_id": [self._latest_obs["task_id"][env_id] for env_id in env_ids],
         }
+        if "eval_episode_id" in self._latest_obs:
+            current_obs["eval_episode_id"] = [self._latest_obs["eval_episode_id"][env_id] for env_id in env_ids]
         return current_obs
 
     def _update_latest_obs(self, env_ids, step_result) -> None:
@@ -288,6 +481,8 @@ class BaseEnv(gym.Env):
             self._latest_obs["observation"][env_id] = step_result["observation"][local_id]
             self._latest_obs["task"][env_id] = step_result["task"][local_id]
             self._latest_obs["task_id"][env_id] = step_result["task_id"][local_id]
+            if "eval_episode_id" in step_result and "eval_episode_id" in self._latest_obs:
+                self._latest_obs["eval_episode_id"][env_id] = step_result["eval_episode_id"][local_id]
 
     @staticmethod
     def _to_numpy(value, *, copy: bool = False):
@@ -324,11 +519,33 @@ class BaseEnv(gym.Env):
     def apply_teleop_action(self, action):
         action = np.asarray(action).copy()
         intervention_mask = np.zeros(self.num_envs, dtype=bool)
+        manual_reward = np.zeros(self.num_envs, dtype=bool)
+        restart_episode = np.zeros(self.num_envs, dtype=bool)
+        stop_episode = np.zeros(self.num_envs, dtype=bool)
         for env_id, teleop in enumerate(self.teleops):
-            if teleop.is_intervening():
+            is_intervening = teleop.is_intervening()
+            action_candidate, env_manual_reward, env_restart_episode, env_stop_episode = teleop.apply_action(
+                action[env_id]
+            )
+            if is_intervening:
                 intervention_mask[env_id] = True
-                action[env_id] = teleop.apply_action(action[env_id])
-        return action, intervention_mask
+                action[env_id] = action_candidate
+            manual_reward[env_id] |= bool(env_manual_reward)
+            restart_episode[env_id] |= bool(env_restart_episode)
+            stop_episode[env_id] |= bool(env_stop_episode)
+        return action, intervention_mask, manual_reward, restart_episode, stop_episode
+
+    def _confirm_before_record(self, env_ids) -> None:
+        if not self._confirm_before_record_enabled or not self.teleops:
+            return
+
+        for env_id in np.asarray(env_ids, dtype=np.int64).reshape(-1):
+            teleop = self.teleops[int(env_id)]
+            while True:
+                _, _, _, stop_episode = teleop.get_action(wait_for_confirm=True)
+                if stop_episode:
+                    break
+                time.sleep(0.05)
 
     def reset_teleops(self) -> None:
         for teleop in self.teleops:
@@ -371,6 +588,27 @@ class BaseEnv(gym.Env):
                 extra=extra,
                 task_description=str(tasks[local_id]),
             )
+
+    def publish_reset_obs_to_teleop(self, obs, env_ids) -> None:
+        env_ids = np.asarray(env_ids, dtype=np.int64).reshape(-1)
+        if not self.teleops or len(env_ids) == 0:
+            return
+
+        num_envs = len(env_ids)
+        step_result = {
+            "observation": obs["observation"],
+            "task": obs["task"],
+            "task_id": obs["task_id"],
+            "next.reward": np.zeros(num_envs, dtype=np.float32),
+            "next.terminated": np.zeros(num_envs, dtype=bool),
+            "next.truncated": np.zeros(num_envs, dtype=bool),
+            "next.success": np.zeros(num_envs, dtype=bool),
+        }
+        self.publish_to_teleop(
+            step_result,
+            env_ids=env_ids,
+            critic_value=np.zeros(num_envs, dtype=np.float32),
+        )
 
     ### Recorder Control ###
 

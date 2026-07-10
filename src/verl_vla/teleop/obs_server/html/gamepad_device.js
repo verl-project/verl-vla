@@ -59,6 +59,10 @@ class TeleopGamepadDevice {
     this.stopPolling();
   }
 
+  keyboardEventCodes() {
+    return ["KeyR", "Backspace", "Enter"];
+  }
+
   handleConnect(event) {
     this.connected = true;
     console.log("Gamepad connected:", event.gamepad.id);

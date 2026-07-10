@@ -17,7 +17,9 @@ from verl_vla.trainer.train_cluster.config import (
     ActorRolloutRefConfig,
     EnvLoopTrainClusterConfig,
     EnvLoopTrainResourceConfig,
+    EnvTrainClusterConfig,
     EnvTrainConfig,
+    EnvTrainResourceConfig,
     OptionalResourceConfig,
     ResourceConfig,
     SFTTrainClusterConfig,
@@ -27,6 +29,8 @@ from verl_vla.trainer.train_cluster.resource_pool import VLAResourcePoolManager
 
 __all__ = [
     "ActorRolloutRefConfig",
+    "EnvTrainClusterConfig",
+    "EnvTrainResourceConfig",
     "EnvLoopTrainClusterConfig",
     "EnvLoopTrainResourceConfig",
     "EnvTrainConfig",

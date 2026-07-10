@@ -223,10 +223,15 @@ class IsaacLabArenaEnv(BaseEnv):
     # Stable-action adapter: temporarily replace policy actions with a held pose.
 
     @override
-    def step_with_teleop_and_recording(self, action, critic_value=None):
+    def step_with_teleop_and_recording(self, action, chunk_intervened, merged_step_result, critic_value=None):
         if not self.USE_POLICY_ACTION:
             action = self._replace_with_stable_actions(action)
-        return super().step_with_teleop_and_recording(action, critic_value=critic_value)
+        return super().step_with_teleop_and_recording(
+            action,
+            chunk_intervened=chunk_intervened,
+            merged_step_result=merged_step_result,
+            critic_value=critic_value,
+        )
 
     def _replace_with_stable_actions(self, action) -> np.ndarray:
         action = np.asarray(action).copy()
@@ -237,11 +242,11 @@ class IsaacLabArenaEnv(BaseEnv):
     @override
     def apply_teleop_action(self, action):
         action = action if self.USE_POLICY_ACTION else self._replace_with_stable_actions(action)
-        action, intervention_mask = super().apply_teleop_action(action)
+        action, intervention_mask, manual_reward, restart_episode, stop_episode = super().apply_teleop_action(action)
         if not self.USE_POLICY_ACTION:
             self._stable_actions[intervention_mask, :43] = action[intervention_mask, :43]
             self._stable_actions[intervention_mask, 46] = action[intervention_mask, 46]
-        return action, intervention_mask
+        return action, intervention_mask, manual_reward, restart_episode, stop_episode
 
     def _update_stable_actions_from_obs(self, observations: list[dict[str, Any]], env_ids: np.ndarray) -> None:
         for obs, env_id in zip(observations, np.asarray(env_ids, dtype=np.int64), strict=True):

@@ -53,10 +53,18 @@ class DeviceEvent:
 
 class DeviceBase(ABC):
     name: str = "base"
+    _MANUAL_REWARD_KEYS = {"R"}
+    _RESTART_EPISODE_KEYS = {"BACKSPACE"}
+    _STOP_EPISODE_KEYS = {"ENTER"}
 
     def __init__(self, max_events: int = 256):
         self._lock = Lock()
         self._events: deque[dict[str, Any]] = deque(maxlen=max_events)
+        self._record_control = {
+            "manual_reward": False,
+            "restart_episode": False,
+            "stop_episode": False,
+        }
 
     @abstractmethod
     def reset(self) -> None:
@@ -76,5 +84,40 @@ class DeviceBase(ABC):
             self._events.clear()
         return events
 
+    def pop_record_control(self) -> dict[str, bool]:
+        with self._lock:
+            control = dict(self._record_control)
+            self._clear_record_control()
+        return control
+
     def _record_event(self, event: DeviceEvent) -> None:
         self._events.append(event.to_dict())
+
+        event_type = event.event_type.lower()
+        if event_type == "keyboard_event":
+            event_type = str(event.raw.get("event_type", "")).lower()
+        if event_type != "keydown" or event.repeat:
+            return
+
+        key_name = self._normalize_key_name(event.code or event.key)
+        if key_name in self._MANUAL_REWARD_KEYS:
+            self._record_control["manual_reward"] = True
+        elif key_name in self._RESTART_EPISODE_KEYS:
+            self._record_control["restart_episode"] = True
+        elif key_name in self._STOP_EPISODE_KEYS:
+            self._record_control["stop_episode"] = True
+
+    def _clear_record_control(self) -> None:
+        for key in self._record_control:
+            self._record_control[key] = False
+
+    @staticmethod
+    def _normalize_key_name(value: str | None) -> str:
+        if not value:
+            return ""
+        value = str(value)
+        if value.startswith("Key") and len(value) == 4:
+            return value[-1].upper()
+        if value == "Space":
+            return "SPACE"
+        return value.upper()

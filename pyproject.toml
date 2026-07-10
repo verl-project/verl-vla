@@ -26,6 +26,11 @@ authors = [
 [project.urls]
 Repository = "https://github.com/verl-project/verl-vla"
 
+[project.scripts]
+vvla-dagger = "verl_vla.entrypoints.main_dagger:main"
+vvla-record = "verl_vla.entrypoints.main_record:main"
+vvla-teleop = "verl_vla.entrypoints.main_teleop:main"
+
 # -------------------------------
 # tool.ruff - Linting configuration
 # -------------------------------
@@ -109,6 +114,7 @@ where = ["src"]
 # Include package-local config files when present.
 [tool.setuptools.package-data]
 verl_vla = [
+    "entrypoints/config/*.yaml",
     "trainer/config/*.yaml",
     "trainer/config/*/*.yaml",
     "trainer/config/*/*/*.yaml",

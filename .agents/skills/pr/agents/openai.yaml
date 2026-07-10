@@ -1,0 +1,4 @@
+interface:
+  display_name: "Create Pull Request"
+  short_description: "Create or update verl-vla pull requests"
+  default_prompt: "Use $pr to prepare and create a verl-vla pull request."
