@@ -30,8 +30,8 @@ class SFTTrainingWorker(TrainingWorker):
         self.actor_config = actor_config
         self.tokenizer = tokenizer or self.model_config.tokenizer
         self._sft_initialized = False
-        self.actor_ema_enabled = bool(self.actor_config.ema.enable)
-        self.actor_ema_decay = float(self.actor_config.ema.decay)
+        self.actor_ema_enabled = self.actor_config.ema_decay is not None
+        self.actor_ema_decay = 0.0 if self.actor_config.ema_decay is None else float(self.actor_config.ema_decay)
         self.actor_ema_shadow: dict[str, torch.Tensor] = {}
         self.actor_ema_initialized = False
 

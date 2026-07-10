@@ -28,7 +28,6 @@ __all__ = [
     "SACReplayConfig",
     "SACTD3Config",
     "SACCQLConfig",
-    "EMAConfig",
     "ACPConfig",
     "ActorDataKeysConfig",
     "BaseVLAActorConfig",
@@ -156,18 +155,6 @@ class SACReplayConfig(BaseConfig):
 
 
 @dataclass
-class EMAConfig(BaseConfig):
-    """Configuration for actor exponential moving average weights."""
-
-    enable: bool = False
-    decay: float = 0.995
-
-    def __post_init__(self):
-        if not 0 < self.decay < 1:
-            raise ValueError(f"EMA decay must be in (0, 1), got {self.decay}")
-
-
-@dataclass
 class ACPConfig(BaseConfig):
     """Configuration for advantage-conditioned prompt tagging."""
 
@@ -253,14 +240,17 @@ class SFTActorConfig(BaseVLAActorConfig):
 
     _target_: str = "verl_vla.workers.config.SFTActorConfig"
 
-    ema: EMAConfig = field(default_factory=EMAConfig)
     acp: ACPConfig = field(default_factory=ACPConfig)
 
+    ema_decay: float | None = None
     mini_batch_size: int = 256
     micro_batch_size: int | None = None
 
     def __post_init__(self):
         super().__post_init__()
+
+        if self.ema_decay is not None and not 0 < self.ema_decay < 1:
+            raise ValueError(f"ema_decay must be in (0, 1) when provided, got {self.ema_decay}")
 
         if self.mini_batch_size <= 0:
             raise ValueError(f"mini_batch_size must be positive, got {self.mini_batch_size}")
