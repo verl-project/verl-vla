@@ -76,8 +76,8 @@ def register_gr00t_n1d6_model(*, required: bool = False) -> bool:
         if required:
             raise ModuleNotFoundError(
                 "GR00T N1.6 is not installed. Install the pinned source package with "
-                "`python -m pip install --no-deps \"gr00t @ "
-                f"git+https://github.com/NVIDIA/Isaac-GR00T.git@{GR00T_N1D6_COMMIT}\"`."
+                '`python -m pip install --no-deps "gr00t @ '
+                f'git+https://github.com/NVIDIA/Isaac-GR00T.git@{GR00T_N1D6_COMMIT}"`.'
             )
         return False
 

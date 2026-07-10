@@ -17,7 +17,6 @@ from pathlib import Path
 from verl_vla.models.gr00t_n1d6 import GR00T_N1D6_COMMIT
 from verl_vla.models.register_vla_models import register_gr00t_n1d6_model
 
-
 _EAGLE_ASSETS = (
     "added_tokens.json",
     "chat_template.json",
@@ -63,13 +62,7 @@ def main() -> None:
     import gr00t
     from transformers import AutoConfig
 
-    eagle_dir = (
-        Path(gr00t.__file__).parent
-        / "model"
-        / "modules"
-        / "nvidia"
-        / "Eagle-Block2A-2B-v2"
-    )
+    eagle_dir = Path(gr00t.__file__).parent / "model" / "modules" / "nvidia" / "Eagle-Block2A-2B-v2"
     missing_assets = [name for name in _EAGLE_ASSETS if not (eagle_dir / name).is_file()]
     if missing_assets:
         raise RuntimeError(
@@ -79,9 +72,7 @@ def main() -> None:
 
     eagle_config = AutoConfig.from_pretrained(eagle_dir, trust_remote_code=True)
     if eagle_config.model_type != "eagle_3_vl":
-        raise RuntimeError(
-            f"Expected Eagle config model_type 'eagle_3_vl', got {eagle_config.model_type!r}."
-        )
+        raise RuntimeError(f"Expected Eagle config model_type 'eagle_3_vl', got {eagle_config.model_type!r}.")
 
     print(f"GR00T N1.6 source package and Eagle assets verified at {commit}")
 
