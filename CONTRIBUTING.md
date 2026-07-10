@@ -52,3 +52,25 @@ Install the repository hooks after cloning:
 pip install pre-commit
 pre-commit install
 ```
+
+## Pull Requests
+
+Pull request titles follow the commit title convention above. A related PR
+series may add a leading progress marker such as `[1/N]`:
+
+```text
+[env] fix: preserve terminal signals across action chunks
+[1/N][trainer] feat: add a staged training pipeline
+[BREAKING][cfg] refactor: rename rollout configuration fields
+```
+
+Before opening or updating a pull request:
+
+- Search for existing pull requests that address the same change.
+- Fill out every applicable section of the pull request template.
+- Run `pre-commit run --all-files --show-diff-on-failure --color=always`.
+- Add or update tests, or explain why automated coverage is not feasible.
+- Report the exact checks and experiments run. For GPU, LIBERO, Isaac, or
+  LeRobot validation that cannot run locally, state what remains unverified.
+- Document user-visible API, CLI, and configuration changes.
+- Disclose AI assistance when applicable.
