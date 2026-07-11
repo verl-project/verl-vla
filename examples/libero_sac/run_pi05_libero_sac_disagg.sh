@@ -61,7 +61,7 @@ fi
 
 export VERL_LOGGING_LEVEL=INFO
 
-$PYTHON -m verl_vla.trainer.main_sac \
+$PYTHON -m verl_vla.entrypoints.train.sac \
     data.train_files="$train_files" \
     data.val_files="$test_files" \
     data.train_batch_size=$TRAIN_BATCH_SIZE \

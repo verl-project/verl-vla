@@ -23,7 +23,16 @@ from .config import (
 )
 from .impl.lerobot import LeRobotDatasetRecorder, LeRobotRecorder
 from .impl.video import VideoRecorder
+from .lerobot import (
+    get_lerobot_dataset_cls,
+    get_merge_datasets_fn,
+    merge_lerobot_datasets,
+    pack_lerobot_dataset,
+    unpack_lerobot_dataset,
+)
+from .output import is_lerobot_dataset, move_lerobot_dataset_to_output, prepare_lerobot_output_root
 from .recorder import MultiRecorder
+from .tar import pack_directory_to_tar_bytes, unpack_tar_bytes_to_directory
 
 __all__ = [
     "BaseRecorder",
@@ -35,4 +44,14 @@ __all__ = [
     "RecorderConfig",
     "VideoRecorder",
     "VideoRecorderConfig",
+    "get_lerobot_dataset_cls",
+    "get_merge_datasets_fn",
+    "is_lerobot_dataset",
+    "merge_lerobot_datasets",
+    "move_lerobot_dataset_to_output",
+    "pack_directory_to_tar_bytes",
+    "pack_lerobot_dataset",
+    "prepare_lerobot_output_root",
+    "unpack_tar_bytes_to_directory",
+    "unpack_lerobot_dataset",
 ]

@@ -35,7 +35,7 @@ from verl.utils.device import (
 from verl.utils.distributed import initialize_global_process_group_ray
 from verl.utils.profiler import DistProfiler, DistProfilerExtension, ProfilerConfig
 
-from verl_vla.utils.recorder import merge_lerobot_datasets
+from verl_vla.recorder import merge_lerobot_datasets
 from verl_vla.workers.env.config import EnvWorkerConfig
 
 from .env_manager import EnvManager
@@ -172,7 +172,7 @@ class EnvWorker(Worker, DistProfilerExtension):
     @DistProfiler.annotate(color="green", role="env_init")
     def init_worker(self):
         if self.simulator_type == "libero":
-            from verl_vla.envs.libero_env.libero_env import LiberoEnv
+            from verl_vla.envs.libero.libero_env import LiberoEnv
 
             modes = list(self.env_worker_cfg.modes)
             if not set(modes).issubset({"train", "eval"}):
@@ -206,7 +206,7 @@ class EnvWorker(Worker, DistProfilerExtension):
                     )
 
         elif self.simulator_type == "isaac":
-            from verl_vla.envs.isaac_env.isaac_env import IsaacEnv
+            from verl_vla.envs.isaac.isaac_env import IsaacEnv
 
             for stage_id in range(self.stage_num):
                 self.simulator_list.append(
@@ -221,7 +221,7 @@ class EnvWorker(Worker, DistProfilerExtension):
                     )
                 )
         elif self.simulator_type == "lerobot":
-            from verl_vla.envs.lerobot_env.lerobot_env import LeRobotEnv
+            from verl_vla.envs.lerobot.lerobot_env import LeRobotEnv
 
             for stage_id in range(self.stage_num):
                 self.simulator_list.append(
@@ -236,7 +236,7 @@ class EnvWorker(Worker, DistProfilerExtension):
                     )
                 )
         elif self.simulator_type == "arena":
-            from verl_vla.envs.arena_env.arena_env import IsaacLabArenaEnv
+            from verl_vla.envs.arena.arena_env import IsaacLabArenaEnv
 
             for stage_id in range(self.stage_num):
                 self.simulator_list.append(

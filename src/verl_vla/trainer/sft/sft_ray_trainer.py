@@ -26,7 +26,7 @@ from verl.utils.debug import marked_timer
 from verl.utils.fs import local_mkdir_safe
 from verl.utils.metric import reduce_metrics
 
-from verl_vla.trainer.train_cluster import TrainCluster
+from verl_vla.train_cluster import TrainCluster
 from verl_vla.utils.data import dataloader_batch_to_dataproto
 from verl_vla.utils.dataloader import LeRobotDataLoaderConfig, build_lerobot_sft_dataloader
 from verl_vla.utils.dataloader.state import load_dataloader_state

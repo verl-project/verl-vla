@@ -1,0 +1,87 @@
+# Copyright 2026 Bytedance Ltd. and/or its affiliates
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Resource placement for env + rollout clusters.
+
+# Target class for env-loop resource placement.
+_target_: verl_vla.train_cluster.config.EnvLoopTrainResourceConfig
+
+# Optional Ray resource label for the controller process.
+controller_label: null
+
+# Environment worker resource placement.
+env:
+
+  # Target class for a resource pool placement.
+  _target_: verl_vla.train_cluster.config.ResourceConfig
+
+  # Device type used by environment workers.
+  device: cuda
+
+  # Optional Ray resource label for environment worker placement.
+  resource_label: null
+
+  # Number of nodes used by environment workers.
+  nnodes: 1
+
+  # Number of GPUs reserved per environment worker node.
+  gpus_per_node: 1
+
+  # Number of environment worker processes per node.
+  workers_per_node: 1
+
+# Model rollout worker resource placement.
+model:
+
+  # Target class for a resource pool placement.
+  _target_: verl_vla.train_cluster.config.ResourceConfig
+
+  # Device type used by model rollout workers.
+  device: cuda
+
+  # Optional Ray resource label for model rollout worker placement.
+  resource_label: null
+
+  # Number of nodes used by model rollout workers.
+  nnodes: 1
+
+  # Number of GPUs reserved per model rollout worker node.
+  gpus_per_node: 1
+
+  # Number of model rollout worker processes per node.
+  workers_per_node: 1
+
+# Optional separated rollout-model resource placement.
+separate_rollout_model:
+
+  # Target class for optional resource pool placement.
+  _target_: verl_vla.train_cluster.config.OptionalResourceConfig
+
+  # Whether rollout workers use a separate model resource pool.
+  enabled: False
+
+  # Device type used by separated rollout model workers.
+  device: cuda
+
+  # Optional Ray resource label for separated rollout model placement.
+  resource_label: null
+
+  # Number of nodes used by separated rollout model workers.
+  nnodes: 1
+
+  # Number of GPUs reserved per separated rollout model node.
+  gpus_per_node: 1
+
+  # Number of separated rollout model worker processes per node.
+  workers_per_node: 1

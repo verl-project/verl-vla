@@ -45,9 +45,7 @@ fi
 
 python scripts/check_gr00t_n1d6_install.py
 
-python -m verl_vla.trainer.main_sac \
-  --config-path "$REPO_ROOT/src/verl_vla/trainer/config" \
-  --config-name main_sac \
+python -m verl_vla.entrypoints.train.sac \
   model/override@cluster.actor_rollout_ref.model.override_config=gr00t \
   hydra.run.dir="$HYDRA_RUN_DIR" \
   ray_kwargs.ray_init.runtime_env.env_vars.MUJOCO_GL="$MUJOCO_GL" \

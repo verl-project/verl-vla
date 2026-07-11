@@ -21,15 +21,15 @@ import numpy as np
 import pyarrow.parquet as pq
 from omegaconf import OmegaConf
 
-from verl_vla.utils.lerobot import (
+from verl_vla.recorder import merge_lerobot_datasets
+from verl_vla.recorder.dataset import (
     collect_lerobot_columns,
     list_lerobot_data_files,
     load_lerobot_feature_names,
     update_lerobot_feature_metadata,
     write_parquet_columns,
 )
-from verl_vla.utils.recorder import merge_lerobot_datasets
-from verl_vla.utils.recorder.lerobot import REQUIRED_LEROBOT_META_FILES
+from verl_vla.recorder.lerobot import REQUIRED_LEROBOT_META_FILES
 
 DatasetInfo = dict[str, str | Path]
 CollectedDatasets = dict[str, DatasetInfo]

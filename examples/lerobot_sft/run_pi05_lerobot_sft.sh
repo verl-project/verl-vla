@@ -5,7 +5,7 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 
 cd "$REPO_ROOT"
 
-CONFIG_DIR="${REPO_ROOT}/src/verl_vla/trainer/config"
+CONFIG_DIR="${REPO_ROOT}/src/verl_vla/workflows/config"
 CONFIG_NAME="rob_sft_trainer.yaml"
 
 OUTPUT_DIR=${OUTPUT_DIR:-"/file_system/liujincheng/output/pi05_lerobot_sft"}
@@ -31,7 +31,7 @@ EXPERIMENT_NAME=${EXPERIMENT_NAME:-"lerobot_sft_preview"}
 
 PYTHON=python
 
-$PYTHON -m verl_vla.trainer.main_sft \
+$PYTHON -m verl_vla.entrypoints.train.sft \
     --config-path $CONFIG_DIR \
     --config-name $CONFIG_NAME \
     actor_rollout_ref.model.path="$MODEL_PATH" \

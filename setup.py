@@ -58,17 +58,20 @@ setup(
     extras_require=extras_require,
     entry_points={
         "console_scripts": [
-            "vvla-dagger=verl_vla.entrypoints.main_dagger:main",
-            "vvla-record=verl_vla.entrypoints.main_record:main",
-            "vvla-teleop=verl_vla.entrypoints.main_teleop:main",
+            "vvla-dagger=verl_vla.entrypoints.dagger:main",
+            "vvla-record=verl_vla.entrypoints.record:main",
+            "vvla-teleop=verl_vla.entrypoints.teleop:main",
+            "vvla-train-ppo=verl_vla.entrypoints.train.ppo:main",
+            "vvla-train-recap=verl_vla.entrypoints.train.recap:main",
+            "vvla-train-sac=verl_vla.entrypoints.train.sac:main",
+            "vvla-train-sft=verl_vla.entrypoints.train.sft:main",
         ],
     },
     package_data={
         "verl_vla": [
-            "entrypoints/config/*.yaml",
-            "trainer/config/*.yaml",
-            "trainer/config/*/*.yaml",
-            "trainer/config/*/*/*.yaml",
+            "workflows/config/*.yaml",
+            "workflows/config/*/*.yaml",
+            "workflows/config/*/*/*.yaml",
         ],
     },
     include_package_data=True,

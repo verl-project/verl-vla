@@ -20,8 +20,8 @@ from typing import Any
 from hydra.utils import instantiate
 from verl.base_config import BaseConfig
 
-from verl_vla.envs.arena_env.config import ArenaSimulatorConfig
-from verl_vla.envs.libero_env.config import LiberoSimulatorConfig
+from verl_vla.envs.arena.config import ArenaSimulatorConfig
+from verl_vla.envs.libero.config import LiberoSimulatorConfig
 from verl_vla.recorder.config import RecorderConfig
 from verl_vla.teleop.config import TeleopConfig
 

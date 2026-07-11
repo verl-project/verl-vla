@@ -6,7 +6,7 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 cd "$REPO_ROOT"
 export PYTHONPATH="${REPO_ROOT}/src:${PYTHONPATH:-}"
 
-CONFIG_DIR="${REPO_ROOT}/src/verl_vla/trainer/config"
+CONFIG_DIR="${REPO_ROOT}/src/verl_vla/workflows/config"
 CONFIG_NAME="rob_sac_trainer.yaml"
 
 libero_train_path=${TRAIN_FILE:-"/root/data/libero_rl/libero_spatial/task_2_pick_up_the_black_bowl_from_table_center_and_place_it_on_the_plate/train.parquet"}
@@ -72,7 +72,7 @@ fi
 
 export VERL_LOGGING_LEVEL=INFO
 
-$PYTHON -m verl_vla.trainer.main_sac \
+$PYTHON -m verl_vla.entrypoints.train.sac \
     --config-path "$CONFIG_DIR" \
     --config-name "$CONFIG_NAME" \
     data.train_files="$train_files" \

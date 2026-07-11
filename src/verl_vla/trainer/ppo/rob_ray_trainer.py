@@ -184,7 +184,7 @@ class RobRayPPOTrainer(RayPPOTrainer):
         # create async rollout manager and request scheduler
         self.async_rollout_mode = False
         if self.config.actor_rollout_ref.rollout.mode == "async_envloop":
-            from verl_vla.env_loop.env_loop import EnvLoop
+            from verl_vla.train_cluster.env_loop import EnvLoop
 
             self.async_rollout_mode = True
             self.async_rollout_manager = EnvLoop(

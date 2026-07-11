@@ -135,4 +135,4 @@ overrides=(
   "recap.train_policy.trainer.logger=[console,tensorboard]"
 )
 
-python -m verl_vla.trainer.main_recap "${overrides[@]}" "$@"
+python -m verl_vla.entrypoints.train.recap "${overrides[@]}" "$@"

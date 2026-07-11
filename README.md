@@ -46,7 +46,7 @@ The current default training entry is SAC, and the repo now also includes a LeRo
 Main Python entry:
 
 ```bash
-python -m verl_vla.trainer.main_sac
+vvla-train-sac
 ```
 
 Recommended launcher script:
@@ -64,7 +64,7 @@ bash examples/libero_sac/run_pi05_libero_sac_disagg.sh
 SFT entry:
 
 ```bash
-python -m verl_vla.trainer.main_sft
+vvla-train-sft
 ```
 
 Recommended SFT launcher:

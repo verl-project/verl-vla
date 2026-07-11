@@ -28,4 +28,4 @@ overrides=(
   "ray_kwargs.ray_init.runtime_env.env_vars.VERL_LOGGING_LEVEL=INFO"
 )
 
-"$PYTHON" -m verl_vla.entrypoints.main_dagger "${overrides[@]}" "$@"
+"$PYTHON" -m verl_vla.entrypoints.dagger "${overrides[@]}" "$@"

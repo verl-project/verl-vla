@@ -24,7 +24,7 @@ from verl.utils.checkpoint.checkpoint_manager import should_save_ckpt_esi
 from verl.utils.debug import marked_timer
 from verl.utils.metric import reduce_metrics
 
-from verl_vla.trainer.train_cluster import TrainCluster
+from verl_vla.train_cluster import TrainCluster
 from verl_vla.utils.data import (
     _build_sac_transition_masks,
     add_transition_prefixes,

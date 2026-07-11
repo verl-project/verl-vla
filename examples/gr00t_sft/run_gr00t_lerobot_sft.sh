@@ -42,10 +42,10 @@ EXPERIMENT_NAME=${EXPERIMENT_NAME:-gr00t_n1d6_libero_spatial_sft}
 
 python scripts/check_gr00t_n1d6_install.py
 
-python -m verl_vla.trainer.main_sft \
+python -m verl_vla.entrypoints.train.sft \
   --config-path "$SCRIPT_DIR" \
   --config-name main_gr00t_sft \
-  "hydra.searchpath=[file://$REPO_ROOT/src/verl_vla/trainer/config]" \
+  "hydra.searchpath=[file://$REPO_ROOT/src/verl_vla/workflows/config]" \
   hydra.run.dir="$HYDRA_RUN_DIR" \
   cluster.actor_rollout_ref.model.path="$MODEL_PATH" \
   cluster.actor_rollout_ref.model.tokenizer_path=null \

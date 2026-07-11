@@ -24,8 +24,8 @@ from typing_extensions import override
 
 from verl_vla.recorder.base import BaseRecorder
 from verl_vla.recorder.config import LeRobotRecorderConfig
+from verl_vla.recorder.lerobot import get_lerobot_dataset_cls
 from verl_vla.recorder.strategies import get_lerobot_strategy
-from verl_vla.utils.recorder import get_lerobot_dataset_cls
 
 
 class LeRobotDatasetRecorder(BaseRecorder):

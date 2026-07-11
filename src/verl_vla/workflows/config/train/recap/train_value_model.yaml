@@ -1,0 +1,70 @@
+# Copyright 2026 Bytedance Ltd. and/or its affiliates
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# ReCap value-model training stage.
+
+defaults:
+
+  # Base actor-only SFT trainer config.
+  - /base/sft@_here_
+
+  # Value-model-specific model overrides.
+  - override /model/override@cluster.actor_rollout_ref.model.override_config: recap_value_model
+
+  # Apply this stage config last.
+  - _self_
+
+
+# Whether to train the RECAP value model.
+enable: true
+
+# LeRobot dataset used when this stage runs without fresh collected datasets.
+data:
+  root: /tmp/verl_vla_lerobot_records/local/verl_vla_libero_collected
+  repo_id: local/verl_vla_libero_collected
+
+
+# Value-model TrainCluster settings.
+cluster:
+  checkpoint:
+    default_local_dir: checkpoints/${recap.train_value_model.trainer.project_name}/${recap.train_value_model.trainer.experiment_name}
+
+  actor_rollout_ref:
+    model:
+      path: /file_system/liujincheng/Projects/verl-vla/assets/hf_models/recap_value_critic
+      tokenizer_path: google/gemma-3-270m
+      trust_remote_code: true
+
+    actor:
+      checkpoint:
+        save_contents: ["model", "optimizer", "extra", "hf_model"]
+        load_contents: ["model", "optimizer", "extra"]
+
+      optim:
+        lr: 1e-4
+
+      fsdp_config:
+        wrap_policy:
+          transformer_layer_cls_to_wrap: ["ReCapValueDualStreamLayer"]
+
+
+# Value-model trainer settings.
+trainer:
+  project_name: recap
+  experiment_name: value_model
+  resume_dataloader_state: false
+  early_stopping:
+    enable: true
+    window_size: 500
+    warmup_steps: 800
