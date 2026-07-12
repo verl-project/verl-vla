@@ -44,7 +44,7 @@ defaults:
 
 # RECAP loop settings.
 recap:
-  _target_: verl_vla.trainer.recap.config.MainReCapConfig
+  _target_: verl_vla.workflows.train.recap.config.MainReCapConfig
 
   # Number of full RECAP iterations to run.
   num_iterations: 1

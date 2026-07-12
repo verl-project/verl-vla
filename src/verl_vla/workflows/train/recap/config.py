@@ -25,7 +25,7 @@ __all__ = ["MainReCapConfig"]
 class MainReCapConfig(BaseConfig):
     """Top-level settings for the multi-stage ReCap loop."""
 
-    _target_: str = "verl_vla.trainer.recap.config.MainReCapConfig"
+    _target_: str = "verl_vla.workflows.train.recap.config.MainReCapConfig"
 
     num_iterations: int = 1
     resume_iteration: int = 1

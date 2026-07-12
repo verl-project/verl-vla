@@ -30,16 +30,16 @@ from tqdm import tqdm
 
 from verl_vla.models.recap_value_critic import ReCapValueCriticForPrediction
 from verl_vla.recorder.dataset import iter_lerobot_frame_records, write_lerobot_frame_columns
-from verl_vla.trainer.recap.compute_return import (
+from verl_vla.utils.data import dataloader_batch_to_dataproto
+from verl_vla.utils.dataloader import LeRobotDataLoaderConfig, resolve_multiprocessing_context
+from verl_vla.utils.dataloader.lerobot import build_lerobot_dataset
+from verl_vla.utils.dtype import precision_to_torch_dtype
+from verl_vla.workflows.train.recap.compute_return import (
     RECAP_ADVANTAGE_FIELD,
     RECAP_INDICATOR_FIELD,
     RECAP_RETURN_FIELD,
     RECAP_VALUE_FIELD,
 )
-from verl_vla.utils.data import dataloader_batch_to_dataproto
-from verl_vla.utils.dataloader import LeRobotDataLoaderConfig, resolve_multiprocessing_context
-from verl_vla.utils.dataloader.lerobot import build_lerobot_dataset
-from verl_vla.utils.dtype import precision_to_torch_dtype
 
 
 @dataclass(frozen=True)

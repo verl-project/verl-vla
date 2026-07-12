@@ -16,7 +16,7 @@ from pathlib import Path
 
 from omegaconf import OmegaConf
 
-from verl_vla.trainer.recap.compute_return import RECAP_INDICATOR_FIELD
+from verl_vla.workflows.train.recap.compute_return import RECAP_INDICATOR_FIELD
 from verl_vla.workflows.train.sft import run_sft
 
 

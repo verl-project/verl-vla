@@ -21,8 +21,8 @@ from omegaconf import OmegaConf
 
 from verl_vla.recorder.collection import collect_lerobot_rollout_dataset
 from verl_vla.train_cluster import TrainCluster
-from verl_vla.trainer.recap.compute_return import CollectedDatasets
 from verl_vla.utils.ray_utils import ensure_ray_initialized, get_controller_remote_options
+from verl_vla.workflows.train.recap.compute_return import CollectedDatasets
 
 logger = logging.getLogger(__name__)
 

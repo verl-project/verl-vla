@@ -14,13 +14,13 @@
 
 from omegaconf import OmegaConf
 
-from verl_vla.trainer.recap.compute_return import (
+from verl_vla.workflows.train.recap.collect_data import collect_recap_env_data
+from verl_vla.workflows.train.recap.compute_return import (
     CollectedDatasets,
     ensure_recap_fields,
     merge_recap_collected_dataset_into_sft_dataset,
 )
-from verl_vla.trainer.recap.config import MainReCapConfig
-from verl_vla.workflows.train.recap.collect_data import collect_recap_env_data
+from verl_vla.workflows.train.recap.config import MainReCapConfig
 from verl_vla.workflows.train.recap.policy_eval import eval_recap_policy
 from verl_vla.workflows.train.recap.train_policy import train_recap_policy
 from verl_vla.workflows.train.recap.train_value_model import train_recap_value_model
