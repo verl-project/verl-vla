@@ -12,45 +12,57 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# ReCap policy-evaluation stage.
+hydra:
+  searchpath:
+    - pkg://verl_vla.workflows.config
 
 defaults:
 
-  # Env-loop cluster used for policy evaluation.
+  # Rollout-only model and environment cluster.
   - /cluster@cluster: env_rollout_cluster
 
-  # Apply this stage config last.
+  # Ray initialization shared by operational workflows.
+  - /ray@ray_kwargs: default
+
   - _self_
 
 
-# Whether to evaluate the final RECAP policy.
-enable: false
-
-# Policy checkpoint used when this stage runs without fresh policy training.
-model_path: checkpoints/recap/policy/global_step_2150/actor/huggingface
-
-# Optional cap on evaluated episodes. Null evaluates the benchmark size reported
-# by the eval environment.
+# Null evaluates every episode reported by the environment benchmark.
 max_episodes: null
 
-# Whether the first RECAP iteration should evaluate without ACP prompt tagging.
-disable_acp_on_first_iteration: true
-
-# Directory used to save per-iteration policy-eval metric JSON files. Set null
-# to disable writing eval results.
-result_dir: outputs/recap/eval_results
+# Evaluation artifacts share one output directory.
+output_dir: outputs/eval
 
 
-# Policy evaluation initializes only eval simulators and disables dataset/video recording.
 cluster:
+  actor_rollout_ref:
+    model:
+      adapter:
+        critic:
+          enabled: false
+
+    rollout:
+      output_critic_value: false
+
   env:
     env_loop:
       max_interactions: 8
 
     env_worker:
+      auto_reset: true
       modes:
         - eval
       recorder:
         enable: true
         recorders:
           - video
+        video:
+          root: ${output_dir}/videos
+
+  resource:
+    env:
+      device: cpu
+      workers_per_node: 1
+
+    model:
+      gpus_per_node: 1

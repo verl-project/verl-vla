@@ -132,7 +132,7 @@ class EnvLoop:
             for stage_id in range(self.stage_num)
         }
 
-        progress_bar = tqdm(total=self.max_interactions, desc="Rollout Progress", leave=False)
+        progress_bar = tqdm(total=self.max_interactions, desc="Rollout Progress", leave=True)
         progress_counts = {"done_eps": 0, "succ_eps": 0}
         progress_lane_state: dict[int, dict[str, torch.Tensor]] = {}
 

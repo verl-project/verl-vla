@@ -36,6 +36,7 @@ def test_train_workflow_config_composes(config_name: str, required_keys: set[str
     ("config_name", "required_keys"),
     [
         ("dagger", {"cluster", "max_episodes", "ray_kwargs"}),
+        ("eval", {"cluster", "max_episodes", "output_dir", "ray_kwargs"}),
         ("record", {"cluster", "num_episodes", "ray_kwargs"}),
         ("teleop", {"cluster", "ray_kwargs"}),
     ],

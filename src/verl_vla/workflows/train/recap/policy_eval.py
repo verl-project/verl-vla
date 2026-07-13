@@ -12,15 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import json
 from pathlib import Path
 
-import ray
-from hydra.utils import instantiate
 from omegaconf import OmegaConf
 
-from verl_vla.train_cluster import TrainCluster
-from verl_vla.utils.ray_utils import ensure_ray_initialized, get_controller_remote_options
+from verl_vla.workflows.eval import run_eval, save_eval_metrics
 
 
 def _build_policy_eval_config(config, policy_path: str, *, disable_acp: bool = False):
@@ -30,6 +26,13 @@ def _build_policy_eval_config(config, policy_path: str, *, disable_acp: bool = F
 
     eval_config = OmegaConf.create(OmegaConf.to_container(eval_config_node, resolve=False))
     OmegaConf.set_struct(eval_config, False)
+    ray_kwargs = OmegaConf.select(config, "ray_kwargs", default={})
+    OmegaConf.update(
+        eval_config,
+        "ray_kwargs",
+        OmegaConf.to_container(ray_kwargs, resolve=False),
+        force_add=True,
+    )
     OmegaConf.update(eval_config, "cluster.actor_rollout_ref.model.path", str(policy_path))
     if disable_acp:
         OmegaConf.update(eval_config, "cluster.actor_rollout_ref.rollout.acp.enable", False)
@@ -52,12 +55,8 @@ def _save_policy_eval_metrics(eval_config, metrics: dict[str, float]) -> Path | 
         return None
 
     result_root = Path(str(result_dir))
-    result_root.mkdir(parents=True, exist_ok=True)
     result_path = _next_policy_eval_result_path(result_root)
-    with result_path.open("w") as f:
-        json.dump(metrics, f, indent=2, sort_keys=True)
-        f.write("\n")
-    return result_path
+    return save_eval_metrics(str(result_path), metrics)
 
 
 def eval_recap_policy(
@@ -67,22 +66,6 @@ def eval_recap_policy(
     disable_acp: bool = False,
 ) -> dict[str, float]:
     eval_config = _build_policy_eval_config(config, policy_path, disable_acp=disable_acp)
-    ensure_ray_initialized(config)
-    remote_options = get_controller_remote_options(eval_config)
-    metrics = ray.get(run_policy_eval.options(**remote_options).remote(eval_config))
+    metrics = run_eval(eval_config, save_result=False, print_metrics=False)
     _save_policy_eval_metrics(eval_config, metrics)
     return metrics
-
-
-@ray.remote
-def run_policy_eval(eval_config) -> dict[str, float]:
-    OmegaConf.set_struct(eval_config, False)
-    OmegaConf.resolve(eval_config)
-
-    cluster = TrainCluster(instantiate(eval_config.cluster, _recursive_=False))
-    cluster.start()
-    try:
-        max_episodes = OmegaConf.select(eval_config, "max_episodes", default=None)
-        return cluster.eval(max_episodes=None if max_episodes is None else int(max_episodes))
-    finally:
-        cluster.shutdown()

@@ -28,6 +28,7 @@ Repository = "https://github.com/verl-project/verl-vla"
 
 [project.scripts]
 vvla-dagger = "verl_vla.entrypoints.dagger:main"
+vvla-eval = "verl_vla.entrypoints.eval:main"
 vvla-record = "verl_vla.entrypoints.record:main"
 vvla-teleop = "verl_vla.entrypoints.teleop:main"
 vvla-train-ppo = "verl_vla.entrypoints.train.ppo:main"
