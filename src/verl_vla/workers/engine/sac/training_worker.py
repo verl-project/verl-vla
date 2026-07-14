@@ -57,11 +57,6 @@ class SACTrainingWorker(TrainingWorker):
     def _global_to_local_batch_size(global_batch_size: int) -> int:
         return int(global_batch_size) // torch.distributed.get_world_size()
 
-    @staticmethod
-    def _force_set_lr(opt: torch.optim.Optimizer, lr: float):
-        for pg in opt.param_groups:
-            pg["lr"] = lr
-
     def _ensure_sac_initialized(self):
         if self._sac_initialized:
             return
@@ -438,9 +433,6 @@ class SACTrainingWorker(TrainingWorker):
         critic_only_update = bool(data.meta_info.get("critic_only_update", False))
         add_to_offline_replay_only = bool(data.meta_info.get("add_to_offline_replay_only", False))
 
-        self._force_set_lr(self.engine.optimizer, 5e-6)
-        self._force_set_lr(self.critic_optimizer, 1e-4)
-
         if add_to_offline_replay_only:
             self._add_data_to_replay_pool(self.offline_replay_pool, data)
             return {
@@ -460,7 +452,7 @@ class SACTrainingWorker(TrainingWorker):
         critic_micro_batches = [
             micro_batch for batch in critic_batches for micro_batch in batch.split(self.actor_config.micro_batch_size)
         ]
-        grad_accum_steps = len(critic_micro_batches) * torch.distributed.get_world_size()
+        critic_grad_accum_steps = len(critic_micro_batches)
 
         update_actor = (
             global_steps >= self.actor_config.critic.warmup_steps
@@ -487,7 +479,7 @@ class SACTrainingWorker(TrainingWorker):
                 raw_critic_loss, q_values_0, q_values_1, critic_loss_metrics = self._forward_critic(
                     micro_batch, resample=bool(self.actor_config.critic.resample_target_action)
                 )
-                (raw_critic_loss / grad_accum_steps).backward()
+                (raw_critic_loss / critic_grad_accum_steps).backward()
                 critic_loss_list.append(float(raw_critic_loss.detach().item()))
                 for key, value in critic_loss_metrics.items():
                     critic_loss_metrics_agg[key].append(float(value.item()))
@@ -513,6 +505,7 @@ class SACTrainingWorker(TrainingWorker):
                 for batch in actor_batches
                 for micro_batch in batch.split(self.actor_config.micro_batch_size)
             ]
+            actor_grad_accum_steps = len(actor_micro_batches)
 
             self.engine.optimizer_zero_grad()
             for batch_idx, micro_batch in enumerate(actor_micro_batches):
@@ -522,7 +515,7 @@ class SACTrainingWorker(TrainingWorker):
                     micro_batch,
                     is_first_micro_batch=(batch_idx == 0),
                 )
-                (raw_actor_loss / grad_accum_steps).backward()
+                (raw_actor_loss / actor_grad_accum_steps).backward()
                 actor_loss_list.append(raw_actor_loss.detach().item())
                 if log_probs is not None:
                     actor_logprobs_list.append(log_probs.detach())
@@ -530,8 +523,9 @@ class SACTrainingWorker(TrainingWorker):
                 actor_valids_list.append(micro_batch.batch["info.valids"].detach())
                 for key, value in actor_forward_metrics_mb.items():
                     actor_forward_metrics[key].append(float(value))
+            actor_lr = float(self.engine.optimizer.param_groups[0]["lr"])
             actor_grad_norm = self.engine.optimizer_step()
-            actor_lr = self.engine.lr_scheduler_step()
+            self.engine.lr_scheduler_step()
             self._update_actor_ema()
             self._apply_actor_ema_to_actor_module()
 
@@ -540,9 +534,9 @@ class SACTrainingWorker(TrainingWorker):
                 for micro_batch, log_probs in zip(actor_micro_batches, actor_logprobs_list, strict=False):
                     micro_batch = micro_batch.to(get_device_id())
                     raw_alpha_loss = self._calculate_alpha_loss(log_probs, micro_batch.batch["info.valids"])
-                    (raw_alpha_loss / grad_accum_steps).backward()
+                    (raw_alpha_loss / actor_grad_accum_steps).backward()
                     alpha_loss_list.append(raw_alpha_loss.detach().item())
-                torch.distributed.all_reduce(self.raw_alpha.grad, op=torch.distributed.ReduceOp.SUM)
+                torch.distributed.all_reduce(self.raw_alpha.grad, op=torch.distributed.ReduceOp.AVG)
                 alpha_grad_norm = torch.nn.utils.clip_grad_norm_(self.raw_alpha, max_norm=self._actor_grad_clip)
                 self.alpha_optimizer.step()
                 self.alpha_scheduler.step()

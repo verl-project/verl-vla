@@ -35,11 +35,6 @@ class SFTTrainingWorker(TrainingWorker):
         self.actor_ema_shadow: dict[str, torch.Tensor] = {}
         self.actor_ema_initialized = False
 
-    @staticmethod
-    def _force_set_lr(opt: torch.optim.Optimizer, lr: float):
-        for pg in opt.param_groups:
-            pg["lr"] = lr
-
     def _ensure_sft_initialized(self):
         if self._sft_initialized:
             return
@@ -106,8 +101,6 @@ class SFTTrainingWorker(TrainingWorker):
         timing_raw = {}
 
         with marked_timer("sft_update_policy", timing_raw):
-            self._force_set_lr(self.engine.optimizer, self.actor_config.optim.lr)
-
             mini_batch_size = int(self.actor_config.mini_batch_size)
             micro_batch_size = self.actor_config.micro_batch_size
             if micro_batch_size is None:
@@ -117,7 +110,6 @@ class SFTTrainingWorker(TrainingWorker):
             mini_batches = data.split(mini_batch_size)
             split_micro_batches = [mini_batch.split(micro_batch_size) for mini_batch in mini_batches]
             grad_accum_steps = sum(len(micro_batches) for micro_batches in split_micro_batches)
-            grad_accum_steps *= torch.distributed.get_world_size()
 
             loss_list = []
             sft_metric_lists: dict[str, list[torch.Tensor]] = {}
@@ -153,7 +145,9 @@ class SFTTrainingWorker(TrainingWorker):
                             sft_metric_lists.setdefault(name, []).append(value.detach().float())
 
             with marked_timer("sft_optimizer_step", timing_raw):
+                learning_rate = float(self.engine.optimizer.param_groups[0]["lr"])
                 grad_norm = self.engine.optimizer_step()
+                self.engine.lr_scheduler_step()
                 self._update_actor_ema()
                 self._apply_actor_ema_to_actor_module()
 
@@ -173,7 +167,7 @@ class SFTTrainingWorker(TrainingWorker):
             "sft/grad_norm": grad_norm_before_clip,
             "sft/grad_norm_before_clip": grad_norm_before_clip,
             "sft/grad_norm_after_clip": grad_norm_after_clip,
-            "sft/lr": self.actor_config.optim.lr,
+            "sft/lr": learning_rate,
             "sft/grad_clip": grad_clip,
             "sft/num_mini_batches": len(mini_batches),
             "sft/num_micro_batches": sum(len(micro_batches) for micro_batches in split_micro_batches),
