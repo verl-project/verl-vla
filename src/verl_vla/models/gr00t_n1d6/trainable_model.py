@@ -957,7 +957,7 @@ class Gr00tN1d6TrainableModel(nn.Module, TrainableVLAModelMixin, SupportSACTrain
         self.policy.config.norm_stats_path = None
         self.policy.config.architectures = ["Gr00tN1d6"]
         try:
-            self.policy.save_pretrained(output_dir, state_dict=policy_state, safe_serialization=True)
+            self.native_policy.save_pretrained(output_dir, state_dict=policy_state, safe_serialization=True)
             if processor is not None:
                 processor.save_pretrained(output_dir)
             self.config.save_pretrained(output_dir)

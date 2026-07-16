@@ -199,6 +199,64 @@ class TrainableVLAModelMixin:
             raise TypeError("TrainableVLAModelMixin requires an nn.Module trainable model")
         self.policy = policy
 
+    @property
+    def native_policy(self) -> nn.Module:
+        """Return the upstream policy underneath an optional PEFT wrapper."""
+
+        from peft import PeftModel
+
+        if isinstance(self.policy, PeftModel):
+            return self.policy.get_base_model()
+        return self.policy
+
+    @property
+    def has_lora(self) -> bool:
+        """Whether the native policy currently carries a PEFT LoRA adapter."""
+
+        from peft import PeftModel
+
+        return isinstance(self.policy, PeftModel)
+
+    def apply_lora(
+        self,
+        *,
+        rank: int,
+        alpha: int,
+        target_modules: str | list[str] | None,
+        target_parameters: list[str] | None = None,
+        exclude_modules: str | list[str] | None = None,
+        adapter_path: str | None = None,
+    ) -> None:
+        """Attach a trainable PEFT LoRA adapter to the upstream policy only."""
+
+        from peft import LoraConfig, PeftModel, get_peft_model
+
+        if self.has_lora:
+            raise RuntimeError("The VLA policy already has a LoRA adapter")
+
+        if adapter_path is not None:
+            self.policy = PeftModel.from_pretrained(self.policy, adapter_path, is_trainable=True)
+            adapter_rank = int(self.policy.peft_config["default"].r)
+            if adapter_rank != rank:
+                raise ValueError(f"Configured LoRA rank {rank} does not match adapter rank {adapter_rank}")
+            return
+
+        if rank <= 0:
+            raise ValueError(f"LoRA rank must be positive, got {rank}")
+
+        self.policy = get_peft_model(
+            self.policy,
+            LoraConfig(
+                task_type=None,
+                r=rank,
+                lora_alpha=alpha,
+                target_modules=target_modules,
+                target_parameters=target_parameters,
+                exclude_modules=exclude_modules,
+                bias="none",
+            ),
+        )
+
     @staticmethod
     def extract_policy_state_dict(
         state_dict: Mapping[str, torch.Tensor],
@@ -217,14 +275,17 @@ class TrainableVLAModelMixin:
     ) -> None:
         """Export the upstream policy using its native ``save_pretrained`` API."""
 
-        save_pretrained = getattr(self.policy, "save_pretrained", None)
+        save_pretrained = getattr(self.native_policy, "save_pretrained", None)
         if not callable(save_pretrained):
-            raise TypeError(f"{type(self.policy).__name__} does not implement save_pretrained()")
+            raise TypeError(f"{type(self.native_policy).__name__} does not implement save_pretrained()")
 
+        policy_state_dict = None
         if state_dict is not None:
             policy_state_dict = self.extract_policy_state_dict(state_dict)
-            self.policy.load_state_dict(policy_state_dict, strict=True)
 
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
-        save_pretrained(output_dir)
+        if policy_state_dict is None:
+            save_pretrained(output_dir)
+        else:
+            save_pretrained(output_dir, state_dict=policy_state_dict)

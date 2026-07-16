@@ -43,12 +43,40 @@ class VLAModelConfig(HFModelConfig):
         "native_architecture",
         "share_embeddings_and_output_weights",
         "adapter",
+        "lora_rank",
+        "lora_alpha",
+        "target_modules",
+        "target_parameters",
+        "exclude_modules",
+        "lora_adapter_path",
     }
 
     native_architecture: str | None = None
     adapter: dict = field(default_factory=dict)
+    lora: dict = field(
+        default_factory=lambda: {
+            "rank": 0,
+            "alpha": 16,
+            "target_modules": "all-linear",
+            "target_parameters": None,
+            "exclude_modules": None,
+            "adapter_path": None,
+            "merge": True,
+        }
+    )
 
     def __post_init__(self):
+        # Adapt the canonical nested VLA config to verl's flat FSDP LoRA contract.
+        self.lora_rank = int(self.lora["rank"])
+        self.lora_alpha = int(self.lora["alpha"])
+        self.target_modules = self.lora["target_modules"]
+        self.target_parameters = self.lora["target_parameters"]
+        self.exclude_modules = self.lora["exclude_modules"]
+        self.lora_adapter_path = self.lora["adapter_path"]
+
+        if self.lora_adapter_path is not None and self.lora_rank <= 0:
+            raise ValueError("lora.rank must be positive when lora.adapter_path is set")
+
         import_external_libs(self.external_lib)
         self.local_path = resolve_model_path(self.path, use_shm=self.use_shm)
         config_path = os.path.join(self.local_path, "config.json")

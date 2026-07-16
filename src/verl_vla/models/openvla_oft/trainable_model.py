@@ -33,7 +33,7 @@ class OpenVLATrainableModel(nn.Module, TrainableVLAModelMixin):
 
     def export_policy(self, output_dir, *, state_dict=None):
         policy_state = self.extract_policy_state_dict(state_dict) if state_dict is not None else None
-        self.policy.save_pretrained(output_dir, state_dict=policy_state, safe_serialization=True)
+        self.native_policy.save_pretrained(output_dir, state_dict=policy_state, safe_serialization=True)
 
 
 __all__ = ["OpenVLATrainableModel"]

@@ -27,6 +27,28 @@ including the LIBERO assets required for OSMesa rendering.
 bash examples/pi05_sft/run_train.sh
 ```
 
+> **Optional: LoRA fine-tuning**
+>
+> To train only a LoRA adapter on the native PI0.5 policy, append the LoRA
+> overrides to the same launcher:
+>
+> ```bash
+> bash examples/pi05_sft/run_train.sh \
+>   cluster.actor_rollout_ref.model.lora.rank=32 \
+>   cluster.actor_rollout_ref.model.lora.alpha=32 \
+>   cluster.actor_rollout_ref.model.lora.target_modules=all-linear
+> ```
+>
+> The full verl checkpoint retains the adapter and optimizer state for resume.
+> The `huggingface/` export contains only the merged native PI0.5 policy and
+> remains loadable through the upstream policy implementation. A standard PEFT
+> adapter is exported alongside it under `lora_adapter/` for adapter-only
+> distribution or continued LoRA training.
+>
+> To initialize from an existing PEFT adapter directory, also set
+> `cluster.actor_rollout_ref.model.lora.adapter_path` and keep `lora.rank` equal
+> to the rank recorded by that adapter.
+
 The launcher uses `.data/pi05_sft` as the persistent data directory shared by
 the host and the container. Source code is bind-mounted from the repository,
 so Python changes are available without rebuilding the image.

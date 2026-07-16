@@ -19,9 +19,19 @@ import torch
 from packaging import version
 from torch.distributed.fsdp import FSDPModule
 from torch.distributed.fsdp._unshard_param_utils import _get_module_fsdp_state, _unshard_params_for_summon
-from verl.utils.device import get_torch_device
-from verl.utils.fsdp_utils import fsdp_version, set_reshard_after_forward
+from torch.distributed.tensor import DTensor
+from verl.utils.device import get_device_id, get_torch_device
+from verl.utils.fs import copy_to_local
+from verl.utils.fsdp_utils import (
+    fsdp_version,
+    load_fsdp_model_to_gpu,
+    merged_lora_context,
+    normalize_peft_param_name,
+    offload_fsdp_model_to_cpu,
+    set_reshard_after_forward,
+)
 from verl.utils.memory_utils import aggressive_empty_cache
+from verl.utils.py_functional import convert_to_regular_types
 from verl.workers.engine import EngineRegistry
 from verl.workers.engine.fsdp.transformer_impl import FSDPEngine
 
@@ -58,6 +68,73 @@ class VLAFSDPEngine(FSDPEngine):
         module = build_vla_model(self.model_config, torch_dtype=torch_dtype)
         module.to(torch_dtype)
         return module
+
+    def _build_lora_module(self, module):
+        """Apply PEFT to the native policy without freezing VLA auxiliary modules."""
+
+        from verl_vla.models.base import TrainableVLAModelMixin
+
+        if not isinstance(module, TrainableVLAModelMixin):
+            raise TypeError(f"LoRA requires a TrainableVLAModelMixin policy wrapper, got {type(module).__name__}")
+        if not self.model_config.lora.get("merge", False):
+            raise ValueError("VLA LoRA requires model.lora.merge=True for native rollout weight synchronization")
+
+        lora_config = self.model_config.lora
+        adapter_path = lora_config["adapter_path"]
+        if adapter_path is not None:
+            adapter_path = copy_to_local(adapter_path, use_shm=self.model_config.use_shm)
+
+        parameter_dtype = next(module.parameters()).dtype
+        module.apply_lora(
+            rank=int(lora_config["rank"]),
+            alpha=int(lora_config["alpha"]),
+            target_modules=convert_to_regular_types(lora_config["target_modules"]),
+            target_parameters=convert_to_regular_types(lora_config["target_parameters"]),
+            exclude_modules=convert_to_regular_types(lora_config["exclude_modules"]),
+            adapter_path=adapter_path,
+        )
+        # PEFT initializes or loads adapter parameters in float32 by default.
+        # FSDP2 requires the original parameters in each group to share one dtype.
+        module.to(parameter_dtype)
+        return module
+
+    def get_per_tensor_param(self, layered_summon=False, base_sync_done=False, **kwargs):
+        """Expose merged native VLA weights to colocated or disaggregated rollout workers."""
+
+        if not self._is_lora:
+            return super().get_per_tensor_param(
+                layered_summon=layered_summon,
+                base_sync_done=base_sync_done,
+                **kwargs,
+            )
+
+        load_fsdp_model_to_gpu(self.module)
+        with merged_lora_context(self.module, backup_adapters=True):
+            params = normalize_peft_param_name(self.module.state_dict())
+            params = {name: param.clone() for name, param in params.items()}
+
+        if self._is_offload_param:
+            offload_fsdp_model_to_cpu(self.module)
+
+        device = get_device_id()
+        per_tensor_param = (
+            (
+                name,
+                param.to(device, non_blocking=True).full_tensor().to(torch.bfloat16, non_blocking=True)
+                if isinstance(param, DTensor)
+                else param,
+            )
+            for name, param in params.items()
+        )
+        return per_tensor_param, None
+
+    def disable_adapter(self):
+        """Temporarily disable the policy adapter while preserving the VLA wrapper."""
+
+        model = getattr(self.module, "_fsdp_wrapped_module", self.module)
+        if not model.has_lora:
+            return contextlib.nullcontext()
+        return model.policy.disable_adapter()
 
     def initialize(self):
         super().initialize()

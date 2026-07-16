@@ -7,10 +7,48 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 import torch
 from verl.utils.checkpoint.fsdp_checkpoint_manager import FSDPCheckpointManager
-from verl.utils.fsdp_utils import fsdp_version, get_fsdp_full_state_dict
+from verl.utils.fsdp_utils import (
+    fsdp_version,
+    get_fsdp_full_state_dict,
+    merged_lora_context,
+    normalize_peft_param_name,
+)
+
+
+def _contains_peft_model(model: torch.nn.Module) -> bool:
+    from peft import PeftModel
+
+    return any(isinstance(module, PeftModel) for module in model.modules())
+
+
+def _unwrap_trainable_model(model: torch.nn.Module) -> torch.nn.Module:
+    return model._fsdp_wrapped_module if fsdp_version(model) == 1 else model
+
+
+def _save_lora_adapter(
+    model: torch.nn.Module,
+    state_dict: dict[str, torch.Tensor],
+    output_dir: str | Path,
+) -> None:
+    """Save the nested native policy adapter through PEFT's standard API."""
+
+    from peft import PeftModel
+
+    trainable_model = _unwrap_trainable_model(model)
+    policy = trainable_model.policy
+    if not isinstance(policy, PeftModel):
+        raise TypeError(f"Expected a PEFT policy, got {type(policy).__name__}")
+
+    policy_state_dict = trainable_model.extract_policy_state_dict(state_dict)
+    policy.save_pretrained(
+        output_dir,
+        state_dict=policy_state_dict,
+        safe_serialization=True,
+    )
 
 
 class NativePolicyFSDPCheckpointManager(FSDPCheckpointManager):
@@ -34,9 +72,26 @@ class NativePolicyFSDPCheckpointManager(FSDPCheckpointManager):
         if not should_export:
             return
 
-        state_dict = get_fsdp_full_state_dict(self.model, offload_to_cpu=True, rank0_only=True)
+        has_lora = _contains_peft_model(self.model)
+        if has_lora:
+            state_dict = get_fsdp_full_state_dict(self.model, offload_to_cpu=True, rank0_only=True)
+            if self.rank == 0:
+                _save_lora_adapter(
+                    self.model,
+                    state_dict,
+                    Path(local_path) / "lora_adapter",
+                )
+                del state_dict
+            torch.distributed.barrier()
+
+            with merged_lora_context(self.model, backup_adapters=True):
+                state_dict = get_fsdp_full_state_dict(self.model, offload_to_cpu=True, rank0_only=True)
+                state_dict = {name: tensor.clone() for name, tensor in state_dict.items()}
+            state_dict = normalize_peft_param_name(state_dict)
+        else:
+            state_dict = get_fsdp_full_state_dict(self.model, offload_to_cpu=True, rank0_only=True)
         if self.rank == 0:
-            adapter = self.model._fsdp_wrapped_module if fsdp_version(self.model) == 1 else self.model
+            adapter = _unwrap_trainable_model(self.model)
             export_policy = getattr(adapter, "export_policy", None)
             output_dir = os.path.join(local_path, "huggingface")
             if callable(export_policy):

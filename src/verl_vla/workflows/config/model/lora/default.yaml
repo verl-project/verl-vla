@@ -1,0 +1,26 @@
+# Copyright 2026 Bytedance Ltd. and/or its affiliates
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+
+# PEFT LoRA configuration for native VLA policies.
+
+# Set to a positive value to enable LoRA training.
+rank: 0
+
+# LoRA scaling factor.
+alpha: 16
+
+# Native policy modules selected by PEFT.
+target_modules: all-linear
+
+# Optional native policy parameters selected by PEFT.
+target_parameters: null
+
+# Optional native policy modules excluded from PEFT.
+exclude_modules: null
+
+# Optional standard PEFT adapter directory used to continue LoRA training.
+adapter_path: null
+
+# VLA rollout workers consume merged native weights.
+merge: True

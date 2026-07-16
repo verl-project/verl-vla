@@ -18,6 +18,9 @@ defaults:
   # Model-specific adapter configuration.
   - adapter@adapter: pi0
 
+  # LoRA configuration inherited by every native VLA policy.
+  - lora@lora: default
+
   # Apply this HuggingFace model config last.
   - _self_
 

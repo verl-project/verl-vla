@@ -107,7 +107,7 @@ class PI0TrainableModel(
             model_path = config.model_path
             checkpoint_stats_path = Path(model_path).expanduser() / "norm_stats.json" if model_path else None
             if checkpoint_stats_path and checkpoint_stats_path.is_file():
-                norm_stats_path = checkpoint_stats_path
+                norm_stats_path = checkpoint_stats_path.resolve()
         if norm_stats_path:
             norm_stats_path = Path(norm_stats_path).expanduser()
             if not norm_stats_path.is_absolute():
@@ -328,10 +328,10 @@ class PI0TrainableModel(
     def save_pretrained(self, save_directory, *args, state_dict=None, **kwargs):
         os.makedirs(save_directory, exist_ok=True)
 
-        policy_to_save = self.policy
+        policy_to_save = self.native_policy
         if state_dict is not None:
             policy_state_dict = self.extract_policy_state_dict(state_dict)
-            policy_to_save = PI0Policy.from_config(dict(self.policy.config))
+            policy_to_save = PI0Policy.from_config(dict(self.native_policy.config))
             policy_to_save.load_state_dict(policy_state_dict, strict=True)
         policy_to_save.save_pretrained(save_directory, *args, **kwargs)
 
