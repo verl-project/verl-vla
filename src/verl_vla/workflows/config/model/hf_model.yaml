@@ -21,6 +21,9 @@ defaults:
   # LoRA configuration inherited by every native VLA policy.
   - lora@lora: default
 
+  # Optional native-policy configuration overrides.
+  - optional override@override_config: null
+
   # Apply this HuggingFace model config last.
   - _self_
 
@@ -33,6 +36,9 @@ path: Miical/pi05-base
 
 # Tokenizer path defaults to the model path.
 tokenizer_path: ${.path}
+
+# Whether to load a standalone Hugging Face tokenizer for the policy.
+load_tokenizer: True
 
 # Whether to stage model files through shared memory.
 use_shm: False

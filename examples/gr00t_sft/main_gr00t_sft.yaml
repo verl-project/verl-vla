@@ -4,8 +4,8 @@ defaults:
   # Reuse the actor-only SFT cluster and trainer.
   - /base/sft@_global_
 
-  # Add GR00T compatibility fields to the shared native-model configuration.
-  - /model/override@cluster.actor_rollout_ref.model.override_config: gr00t
+  # Select GR00T compatibility fields declared by the native-model configuration.
+  - override /model/override@cluster.actor_rollout_ref.model.override_config: gr00t
 
   # Base GR00T adapter (Arena defaults); LIBERO SFT overrides below.
   # ``override`` is required because hf_model.yaml already selects adapter=pi0.

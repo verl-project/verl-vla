@@ -33,7 +33,6 @@ export TASK_IDS=${TASK_IDS:-'[0]'}
 export TRIALS_PER_TASK=${TRIALS_PER_TASK:-3}
 export MAX_EPISODE_STEPS=${MAX_EPISODE_STEPS:-720}
 export ACTION_CHUNK_SIZE=${ACTION_CHUNK_SIZE:-8}
-export PROJECT_NAME=${PROJECT_NAME:-gr00t-n1d6-community-validation}
 export EXPERIMENT_NAME=${EXPERIMENT_NAME:-gr00t_n1d6_community_libero_spatial}
 
 cd "$REPO_ROOT"

@@ -49,7 +49,7 @@ python -m verl_vla.entrypoints.train.sft \
   hydra.run.dir="$HYDRA_RUN_DIR" \
   cluster.actor_rollout_ref.model.path="$MODEL_PATH" \
   cluster.actor_rollout_ref.model.tokenizer_path=null \
-  +cluster.actor_rollout_ref.model.load_tokenizer=False \
+  cluster.actor_rollout_ref.model.load_tokenizer=False \
   cluster.actor_rollout_ref.model.enable_gradient_checkpointing=False \
   cluster.actor_rollout_ref.model.use_remove_padding=False \
   cluster.actor_rollout_ref.model.trust_remote_code=True \

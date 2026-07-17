@@ -318,7 +318,9 @@ $DATA_ROOT/output/gr00t_n1d6_libero_spatial_sft/global_step_10000/actor/huggingf
 The commands below reproduce the protocol used for the reported 90% success
 rate: 10 tasks with 5 trials per task, for a total of 50 rollouts. Two
 environment workers run 25 environments each. `MAX_INTERACTIONS=90` corresponds
-to 720 simulator steps with an action chunk size of 8.
+to 720 simulator steps with an action chunk size of 8. The launcher uses the
+rollout-only `vvla-eval` workflow; metrics are written to
+`$OUTPUT_DIR/metrics.json` and videos to `$OUTPUT_DIR/videos`.
 
 ### Native environment
 

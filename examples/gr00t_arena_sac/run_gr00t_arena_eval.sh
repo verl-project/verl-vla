@@ -1,12 +1,10 @@
 #!/usr/bin/env bash
 #
-# Run GR00T N1.6 policy EVALUATION on an Arena task via the RECAP policy_eval
-# stage, saving rollout videos + eval metrics to disk. No teleop / no dataset
-# recording / no SAC training.
+# Run GR00T N1.6 policy evaluation on an Arena task via the shared eval
+# workflow, saving rollout videos + metrics to disk. No teleop, dataset
+# recording, or SAC training.
 #
-# GR00T counterpart of run_pi05_arena_g1_eval.sh: same main_recap policy_eval
-# path, but with the gr00t model override and an Arena simulator. Pick the task
-# with ARENA_TASK:
+# Pick the task with ARENA_TASK:
 #
 #   ARENA_TASK=gr1     (default)  GR1 fridge (put_item_in_fridge_and_close_door),
 #                                 gr1_joint 26-DOF, embodiment_tag=gr1.
@@ -88,8 +86,8 @@ case "$ARENA_TASK" in
     fi
     EXTRA_OVERRIDES+=(
       "+ray_kwargs.ray_init.runtime_env.env_vars.LIBERO_IN_LAB_ROOT=$LIBERO_IN_LAB_ROOT"
-      "recap.policy_eval.cluster.env.env_worker.simulator.arena.libero.libero_task_suite=$TASK_SUITE"
-      "recap.policy_eval.cluster.env.env_worker.simulator.arena.libero.libero_task_id=$TASK_ID"
+      "cluster.env.env_worker.simulator.arena.libero.libero_task_suite=$TASK_SUITE"
+      "cluster.env.env_worker.simulator.arena.libero.libero_task_id=$TASK_ID"
     )
     ;;
   *)
@@ -98,7 +96,7 @@ case "$ARENA_TASK" in
     ;;
 esac
 
-mkdir -p "$OUTPUT_ROOT/videos" "$OUTPUT_ROOT/eval_metrics" 2>/dev/null || true
+mkdir -p "$OUTPUT_ROOT/videos" 2>/dev/null || true
 
 # ─────────────────────────────────────────────────────────────────────────────
 # GR00T docker runtime env.
@@ -113,9 +111,9 @@ export PYTHONPATH="/opt/groot_deps:$REPO_ROOT/src:/workspaces/isaaclab_arena:${P
 # time (Dockerfile.isaaclab_arena with INSTALL_GROOT=true) — no runtime installs.
 
 # ─────────────────────────────────────────────────────────────────────────────
-# main_recap policy_eval launch.
+# Shared evaluation-workflow launch.
 #
-# Hydra overrides (nested under recap.policy_eval.cluster):
+# Hydra overrides:
 #   * model/adapter@…=gr00t    -> GR00T Arena adapter (policy_type=arena, …)
 #   * model/override@…=gr00t   -> FSDP / processor compatibility fields
 #   * simulator.arena.environment -> gr1 (GR1 fridge) or libero (Franka)
@@ -123,41 +121,36 @@ export PYTHONPATH="/opt/groot_deps:$REPO_ROOT/src:/workspaces/isaaclab_arena:${P
 # TrainCluster.eval() calls generate_sequences(..., eval=True), which sets
 # Flow-SDE noise_scale=0 for deterministic ODE sampling.
 # ─────────────────────────────────────────────────────────────────────────────
-"$PYTHON" -m verl_vla.entrypoints.train.recap \
+"$PYTHON" -m verl_vla.entrypoints.eval \
+  "hydra.run.dir=$OUTPUT_ROOT/hydra" \
   "ray_kwargs.ray_init.runtime_env.env_vars.VERL_LOGGING_LEVEL=INFO" \
   '+ray_kwargs.ray_init.runtime_env.env_vars.TORCH_CUDNN_SDPA_ENABLED="0"' \
   "${EXTRA_OVERRIDES[@]}" \
-  "recap.policy_eval.enable=true" \
-  "recap.collect_data.enable=false" \
-  "recap.compute_return.enable=false" \
-  "recap.train_value_model.enable=false" \
-  "recap.value_infer.enable=false" \
-  "recap.train_policy.enable=false" \
-  "model/adapter@recap.policy_eval.cluster.actor_rollout_ref.model.adapter=gr00t" \
-  "+model/override@recap.policy_eval.cluster.actor_rollout_ref.model.override_config=gr00t" \
-  "recap.policy_eval.cluster.env.env_worker.simulator.arena.environment=$ARENA_ENVIRONMENT" \
-  "recap.policy_eval.model_path=$GROOT_MODEL_PATH" \
-  "recap.policy_eval.max_episodes=$MAX_EPISODES" \
-  "recap.policy_eval.result_dir=$OUTPUT_ROOT/eval_metrics" \
-  "recap.policy_eval.cluster.actor_rollout_ref.model.path=$GROOT_MODEL_PATH" \
-  "recap.policy_eval.cluster.actor_rollout_ref.model.tokenizer_path=$GROOT_MODEL_PATH" \
-  "recap.policy_eval.cluster.actor_rollout_ref.model.trust_remote_code=True" \
-  "+recap.policy_eval.cluster.actor_rollout_ref.model.load_tokenizer=False" \
-  "recap.policy_eval.cluster.actor_rollout_ref.model.adapter.embodiment_tag=$GROOT_EMBODIMENT_TAG" \
-  "recap.policy_eval.cluster.actor_rollout_ref.model.adapter.embodiment_id=$GROOT_EMBODIMENT_ID" \
-  "recap.policy_eval.cluster.actor_rollout_ref.model.adapter.action_dim=$ACTION_DIM" \
-  "recap.policy_eval.cluster.actor_rollout_ref.model.adapter.num_action_chunks=$NUM_ACTION_CHUNKS" \
-  "recap.policy_eval.cluster.actor_rollout_ref.model.adapter.critic.enabled=False" \
-  "recap.policy_eval.cluster.actor_rollout_ref.rollout.name=hf" \
-  "recap.policy_eval.cluster.actor_rollout_ref.rollout.output_critic_value=false" \
-  "recap.policy_eval.cluster.actor_rollout_ref.rollout.tensor_model_parallel_size=1" \
-  "recap.policy_eval.cluster.env.env_loop.max_interactions=$MAX_INTERACTIONS" \
-  "recap.policy_eval.cluster.env.env_worker.auto_reset=true" \
-  "recap.policy_eval.cluster.env.env_worker.simulator_start_timeout_s=600" \
-  "recap.policy_eval.cluster.env.env_worker.simulator.simulator_type=arena" \
-  "recap.policy_eval.cluster.env.env_worker.modes=[eval]" \
-  "recap.policy_eval.cluster.env.env_worker.teleop.enable=false" \
-  "recap.policy_eval.cluster.env.env_worker.recorder.enable=true" \
-  "recap.policy_eval.cluster.env.env_worker.recorder.recorders=[video]" \
-  "recap.policy_eval.cluster.env.env_worker.recorder.video.root=$OUTPUT_ROOT/videos" \
+  "model/adapter@cluster.actor_rollout_ref.model.adapter=gr00t" \
+  "model/override@cluster.actor_rollout_ref.model.override_config=gr00t" \
+  "cluster.actor_rollout_ref.model.path=$GROOT_MODEL_PATH" \
+  "cluster.actor_rollout_ref.model.tokenizer_path=$GROOT_MODEL_PATH" \
+  "cluster.actor_rollout_ref.model.trust_remote_code=True" \
+  "cluster.actor_rollout_ref.model.load_tokenizer=False" \
+  "cluster.actor_rollout_ref.model.adapter.embodiment_tag=$GROOT_EMBODIMENT_TAG" \
+  "cluster.actor_rollout_ref.model.adapter.embodiment_id=$GROOT_EMBODIMENT_ID" \
+  "cluster.actor_rollout_ref.model.adapter.action_dim=$ACTION_DIM" \
+  "cluster.actor_rollout_ref.model.adapter.num_action_chunks=$NUM_ACTION_CHUNKS" \
+  "cluster.actor_rollout_ref.model.adapter.critic.enabled=False" \
+  "cluster.actor_rollout_ref.rollout.name=hf" \
+  "cluster.actor_rollout_ref.rollout.output_critic_value=false" \
+  "cluster.actor_rollout_ref.rollout.tensor_model_parallel_size=1" \
+  "cluster.resource.env.device=cuda" \
+  "cluster.env.env_loop.max_interactions=$MAX_INTERACTIONS" \
+  "cluster.env.env_worker.auto_reset=true" \
+  "cluster.env.env_worker.simulator_start_timeout_s=600" \
+  "cluster.env.env_worker.simulator.simulator_type=arena" \
+  "cluster.env.env_worker.simulator.arena.environment=$ARENA_ENVIRONMENT" \
+  "cluster.env.env_worker.modes=[eval]" \
+  "cluster.env.env_worker.teleop.enable=false" \
+  "cluster.env.env_worker.recorder.enable=true" \
+  "cluster.env.env_worker.recorder.recorders=[video]" \
+  "cluster.env.env_worker.recorder.video.root=$OUTPUT_ROOT/videos" \
+  "max_episodes=$MAX_EPISODES" \
+  "output_dir=$OUTPUT_ROOT" \
   "$@"

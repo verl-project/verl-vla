@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Deterministic GR00T N1.6 validation on all LIBERO Spatial tasks.
+# Deterministic rollout-only GR00T N1.6 evaluation on all LIBERO Spatial tasks.
 set -euo pipefail
 set -x
 
@@ -22,10 +22,9 @@ TRIALS_PER_TASK=${TRIALS_PER_TASK:-10}
 MAX_EPISODE_STEPS=${MAX_EPISODE_STEPS:-720}
 ACTION_CHUNK_SIZE=${ACTION_CHUNK_SIZE:-8}
 MAX_INTERACTIONS=${MAX_INTERACTIONS:-$(( (MAX_EPISODE_STEPS + ACTION_CHUNK_SIZE - 1) / ACTION_CHUNK_SIZE ))}
-WRAP_CLASSES=${WRAP_CLASSES:-"[Qwen3DecoderLayer,Siglip2EncoderLayer,BasicTransformerBlock]"}
-PROJECT_NAME=${PROJECT_NAME:-gr00t-n1d6-libero-eval}
 EXPERIMENT_NAME=${EXPERIMENT_NAME:-gr00t_n1d6_libero_eval}
-HYDRA_RUN_DIR=${HYDRA_RUN_DIR:-${DATA_ROOT}/output/${EXPERIMENT_NAME}/hydra}
+OUTPUT_DIR=${OUTPUT_DIR:-${DATA_ROOT}/output/${EXPERIMENT_NAME}}
+HYDRA_RUN_DIR=${HYDRA_RUN_DIR:-${OUTPUT_DIR}/hydra}
 
 export MUJOCO_GL=${MUJOCO_GL:-egl}
 export PYOPENGL_PLATFORM=${PYOPENGL_PLATFORM:-egl}
@@ -45,15 +44,15 @@ fi
 
 python scripts/install_checks/check_gr00t_n1d6.py
 
-python -m verl_vla.entrypoints.train.sac \
+python -m verl_vla.entrypoints.eval \
   "model/adapter@cluster.actor_rollout_ref.model.adapter=gr00t" \
-  +model/override@cluster.actor_rollout_ref.model.override_config=gr00t \
+  model/override@cluster.actor_rollout_ref.model.override_config=gr00t \
   hydra.run.dir="$HYDRA_RUN_DIR" \
   ray_kwargs.ray_init.runtime_env.env_vars.MUJOCO_GL="$MUJOCO_GL" \
   +ray_kwargs.ray_init.runtime_env.env_vars.PYOPENGL_PLATFORM="$PYOPENGL_PLATFORM" \
   cluster.actor_rollout_ref.model.path="$MODEL_PATH" \
   cluster.actor_rollout_ref.model.tokenizer_path=null \
-  +cluster.actor_rollout_ref.model.load_tokenizer=False \
+  cluster.actor_rollout_ref.model.load_tokenizer=False \
   cluster.actor_rollout_ref.model.enable_gradient_checkpointing=False \
   cluster.actor_rollout_ref.model.use_remove_padding=False \
   cluster.actor_rollout_ref.model.trust_remote_code=True \
@@ -65,17 +64,12 @@ python -m verl_vla.entrypoints.train.sac \
   cluster.actor_rollout_ref.model.adapter.action_dim=7 \
   cluster.actor_rollout_ref.model.adapter.embodiment_id=2 \
   cluster.actor_rollout_ref.model.adapter.critic.enabled=False \
-  +cluster.actor_rollout_ref.model.adapter.override_modality_configs=True \
-  +cluster.actor_rollout_ref.model.adapter.use_relative_action=True \
+  cluster.actor_rollout_ref.model.adapter.override_modality_configs=True \
+  cluster.actor_rollout_ref.model.adapter.use_relative_action=True \
   cluster.actor_rollout_ref.model.adapter.freeze_vision_tower=False \
   cluster.actor_rollout_ref.model.adapter.norm_stats_path="$NORM_STATS_PATH" \
   cluster.actor_rollout_ref.model.adapter.num_action_chunks="$ACTION_CHUNK_SIZE" \
   cluster.actor_rollout_ref.model.override_config.verl_action_chunk_size="$ACTION_CHUNK_SIZE" \
-  cluster.actor_rollout_ref.actor.strategy=fsdp2 \
-  cluster.actor_rollout_ref.actor.fsdp_config.model_dtype=bfloat16 \
-  cluster.actor_rollout_ref.actor.fsdp_config.use_torch_compile=False \
-  cluster.actor_rollout_ref.actor.fsdp_config.ulysses_sequence_parallel_size=1 \
-  cluster.actor_rollout_ref.actor.fsdp_config.wrap_policy.transformer_layer_cls_to_wrap="$WRAP_CLASSES" \
   cluster.actor_rollout_ref.rollout.name=hf \
   cluster.actor_rollout_ref.rollout.mode=async_envloop \
   cluster.actor_rollout_ref.rollout.output_critic_value=False \
@@ -84,15 +78,15 @@ python -m verl_vla.entrypoints.train.sac \
   cluster.resource.env.device=cpu \
   cluster.resource.env.workers_per_node="$ENV_WORKERS" \
   cluster.env.env_worker.num_envs="$NUM_ENVS" \
+  cluster.env.env_worker.auto_reset=False \
   cluster.env.env_worker.modes="[eval]" \
+  cluster.env.env_worker.simulator.simulator_type=libero \
   cluster.env.env_worker.simulator.libero.simulator_type=libero \
   cluster.env.env_worker.simulator.libero.task_suite_name="$TASK_SUITE" \
   cluster.env.env_worker.simulator.libero.task_ids="$TASK_IDS" \
   cluster.env.env_worker.simulator.libero.num_trials_per_task="$TRIALS_PER_TASK" \
   cluster.env.env_worker.simulator.libero.max_episode_steps="$MAX_EPISODE_STEPS" \
   cluster.env.env_loop.max_interactions="$MAX_INTERACTIONS" \
-  trainer.logger="['console']" \
-  trainer.project_name="$PROJECT_NAME" \
-  trainer.experiment_name="$EXPERIMENT_NAME" \
-  trainer.val_only=True \
-  trainer.val_before_train=True
+  cluster.env.env_worker.recorder.video.root="$OUTPUT_DIR/videos" \
+  max_episodes=null \
+  output_dir="$OUTPUT_DIR"

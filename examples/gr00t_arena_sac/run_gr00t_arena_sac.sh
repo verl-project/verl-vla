@@ -2,9 +2,9 @@
 #
 # Run GR00T N1.6 SAC training on an Arena task via verl_vla.entrypoints.train.sac.
 #
-# Counterpart of run_gr00t_arena_eval.sh (same docker / Hydra group overrides),
-# but launches the SAC trainer instead of RECAP policy_eval. Pick the task with
-# ARENA_TASK:
+# Counterpart of run_gr00t_arena_eval.sh (same Docker / Hydra group overrides),
+# but launches the SAC trainer instead of the shared eval workflow. Pick the
+# task with ARENA_TASK:
 #
 #   ARENA_TASK=gr1     (default)  GR1 fridge (put_item_in_fridge_and_close_door),
 #                                 gr1_joint 26-DOF, embodiment_tag=gr1.
@@ -152,12 +152,12 @@ export PYTHONPATH="/opt/groot_deps:$REPO_ROOT/src:/workspaces/isaaclab_arena:${P
   '+ray_kwargs.ray_init.runtime_env.env_vars.TORCH_CUDNN_SDPA_ENABLED="0"' \
   "${EXTRA_RAY_ENV[@]}" \
   "model/adapter@cluster.actor_rollout_ref.model.adapter=gr00t" \
-  "+model/override@cluster.actor_rollout_ref.model.override_config=gr00t" \
+  "model/override@cluster.actor_rollout_ref.model.override_config=gr00t" \
   "cluster.env.env_worker.simulator.arena.environment=$ARENA_ENVIRONMENT" \
   "cluster.actor_rollout_ref.model.path=$GROOT_MODEL_PATH" \
   "cluster.actor_rollout_ref.model.tokenizer_path=$GROOT_MODEL_PATH" \
   "cluster.actor_rollout_ref.model.trust_remote_code=True" \
-  "+cluster.actor_rollout_ref.model.load_tokenizer=False" \
+  "cluster.actor_rollout_ref.model.load_tokenizer=False" \
   "cluster.actor_rollout_ref.model.use_remove_padding=False" \
   "cluster.actor_rollout_ref.model.adapter.embodiment_tag=$GROOT_EMBODIMENT_TAG" \
   "cluster.actor_rollout_ref.model.adapter.embodiment_id=$GROOT_EMBODIMENT_ID" \

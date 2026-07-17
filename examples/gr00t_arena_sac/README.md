@@ -38,7 +38,7 @@ run_docker.sh   →   (re)creates the GR00T container + mounts   →   runs an i
 | File | Role |
 | --- | --- |
 | `run_docker.sh` | GR00T container launcher. Mounts image/repo/Arena/models, runs the inner script named by `INNER_SCRIPT`. |
-| `run_gr00t_arena_eval.sh` | GR00T RECAP `policy_eval`. `ARENA_TASK=gr1\|libero`. |
+| `run_gr00t_arena_eval.sh` | GR00T rollout through the shared `eval` workflow. `ARENA_TASK=gr1\|libero`. |
 | `run_gr00t_arena_sac.sh` | GR00T SAC training. `ARENA_TASK=gr1\|libero`. |
 
 Inner scripts are meant to run *inside* the container, but `run_docker.sh`
@@ -226,7 +226,7 @@ e.g. inside `--shell`:
 
 ```bash
 GROOT_MODEL_PATH=/models/checkpoint-10000 \
-  bash examples/gr00t_arena_sac/run_gr00t_arena_eval.sh recap.policy_eval.max_episodes=1
+  bash examples/gr00t_arena_sac/run_gr00t_arena_eval.sh max_episodes=1
 ```
 
 ---
@@ -320,8 +320,8 @@ Outputs land under `<repo>/outputs/…` on the host (the repo is bind-mounted).
 
 | Run | Default `OUTPUT_ROOT` basename | Contents |
 | --- | --- | --- |
-| GR00T GR1 eval | `arena_gr00t_gr1_eval` | `videos/`, `eval_metrics/` |
-| GR00T LIBERO eval | `arena_gr00t_<suite>_task<id>_eval` | `videos/`, `eval_metrics/` |
+| GR00T GR1 eval | `arena_gr00t_gr1_eval` | `videos/`, `metrics.json`, `hydra/` |
+| GR00T LIBERO eval | `arena_gr00t_<suite>_task<id>_eval` | `videos/`, `metrics.json`, `hydra/` |
 | GR00T GR1 SAC | `arena_gr00t_gr1_sac` | `videos/`, `checkpoints/`, `replay_pools/` |
 | GR00T LIBERO SAC | `arena_gr00t_libero_sac` | `videos/`, `checkpoints/`, `replay_pools/` |
 

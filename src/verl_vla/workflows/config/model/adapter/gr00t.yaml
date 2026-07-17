@@ -33,6 +33,20 @@ embodiment_id: 20
 # This must not exceed the checkpoint action horizon.
 num_action_chunks: 16
 
+# Processor -------------------------------------------------------------------
+
+# Optional normalization statistics override. Null uses statistics bundled
+# with the checkpoint processor.
+norm_stats_path: null
+
+# Whether to replace checkpoint modality metadata with the official config for
+# the selected embodiment. Null auto-detects official non-GR1 embodiments.
+override_modality_configs: null
+
+# Whether the processor represents actions relative to the current state.
+# Null preserves the checkpoint processor setting.
+use_relative_action: null
+
 # Critic ----------------------------------------------------------------------
 
 # Optional critic owned by the adapter rather than the native GR00T policy.
