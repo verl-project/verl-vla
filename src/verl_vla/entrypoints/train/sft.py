@@ -15,7 +15,7 @@
 import hydra
 
 
-@hydra.main(config_path="../../workflows/config/train", config_name="sft", version_base=None)
+@hydra.main(config_path="../../workflows/config", config_name="train/sft", version_base=None)
 def main(config):
     from verl_vla.workflows.train.sft import run_sft
 

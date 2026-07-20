@@ -18,5 +18,4 @@ defaults:
   - /cluster@cluster: actor_cluster
   - /data@data: lerobot_dataloader
   - /trainer@trainer: sft_trainer
-  - /ray@ray_kwargs: default
   - _self_

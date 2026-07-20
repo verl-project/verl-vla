@@ -12,16 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Hydra runtime configuration.
-hydra:
-
-  # Additional Hydra configuration search paths.
-  searchpath:
-
-    - pkg://verl_vla.workflows.config
-
 # Hydra configuration composition order.
 defaults:
 
   - /base/sft@_global_
-  - _self_
+
+  # Attach Ray initialization config owned by the standalone SFT workflow.
+  - /ray@_global_.ray_kwargs: default

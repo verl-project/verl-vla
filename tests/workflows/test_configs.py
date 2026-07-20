@@ -17,16 +17,20 @@ from hydra import compose, initialize_config_module
 
 
 @pytest.mark.parametrize(
-    ("config_name", "required_keys"),
+    ("config_module", "config_name", "required_keys"),
     [
-        ("ppo", {"actor_rollout_ref", "env", "trainer"}),
-        ("recap", {"ray_kwargs", "recap"}),
-        ("sac", {"cluster", "ray_kwargs", "trainer"}),
-        ("sft", {"cluster", "data", "ray_kwargs", "trainer"}),
+        ("verl_vla.workflows.config.train", "ppo", {"actor_rollout_ref", "env", "trainer"}),
+        ("verl_vla.workflows.config.train", "recap", {"ray_kwargs", "recap"}),
+        ("verl_vla.workflows.config.train", "sac", {"cluster", "ray_kwargs", "trainer"}),
+        ("verl_vla.workflows.config", "train/sft", {"cluster", "data", "ray_kwargs", "trainer"}),
     ],
 )
-def test_train_workflow_config_composes(config_name: str, required_keys: set[str]) -> None:
-    with initialize_config_module(config_module="verl_vla.workflows.config.train", version_base=None):
+def test_train_workflow_config_composes(
+    config_module: str,
+    config_name: str,
+    required_keys: set[str],
+) -> None:
+    with initialize_config_module(config_module=config_module, version_base=None):
         config = compose(config_name=config_name)
 
     assert required_keys <= set(config.keys())

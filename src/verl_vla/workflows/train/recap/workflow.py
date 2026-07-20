@@ -14,6 +14,7 @@
 
 from omegaconf import OmegaConf
 
+from verl_vla.utils.ray_utils import ensure_ray_initialized
 from verl_vla.workflows.train.recap.collect_data import collect_recap_env_data
 from verl_vla.workflows.train.recap.compute_return import (
     CollectedDatasets,
@@ -44,6 +45,7 @@ def _configure_iteration_sft_stage(config, stage_name: str, iteration: int) -> N
 
 
 def run_recap(config):
+    ensure_ray_initialized(config)
     recap_config = MainReCapConfig.from_omega_conf(config.recap)
 
     policy_path_from_previous_iteration = None
