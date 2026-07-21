@@ -40,6 +40,10 @@ class ACTSinusoidalPositionEmbedding2d(nn.Module):
         self._two_pi = 2 * math.pi
         self._eps = 1e-6
         self._temperature = 10000
+        inverse_frequency = self._temperature ** (
+            2 * (torch.arange(self.dimension, dtype=torch.float32) // 2) / self.dimension
+        )
+        self.register_buffer("inverse_frequency", inverse_frequency, persistent=False)
 
     def forward(self, x: Tensor) -> Tensor:
         not_mask = torch.ones_like(x[0, :1])
@@ -49,12 +53,8 @@ class ACTSinusoidalPositionEmbedding2d(nn.Module):
         y_range = y_range / (y_range[:, -1:, :] + self._eps) * self._two_pi
         x_range = x_range / (x_range[:, :, -1:] + self._eps) * self._two_pi
 
-        inverse_frequency = self._temperature ** (
-            2 * (torch.arange(self.dimension, dtype=torch.float32, device=x.device) // 2) / self.dimension
-        )
-
-        x_range = x_range.unsqueeze(-1) / inverse_frequency
-        y_range = y_range.unsqueeze(-1) / inverse_frequency
+        x_range = x_range.unsqueeze(-1) / self.inverse_frequency
+        y_range = y_range.unsqueeze(-1) / self.inverse_frequency
 
         pos_embed_x = torch.stack((x_range[..., 0::2].sin(), x_range[..., 1::2].cos()), dim=-1).flatten(3)
         pos_embed_y = torch.stack((y_range[..., 0::2].sin(), y_range[..., 1::2].cos()), dim=-1).flatten(3)

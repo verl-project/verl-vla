@@ -33,10 +33,7 @@ def _normalize_image_range(image: torch.Tensor) -> torch.Tensor:
     if image.dtype == torch.uint8:
         return image.to(dtype=torch.float32).div_(255.0)
 
-    image = image.to(dtype=torch.float32)
-    if image.numel() > 0 and image.detach().amax() > 1.5:
-        image = image / 255.0
-    return image
+    return image.to(dtype=torch.float32)
 
 
 class LiberoActInput(ActInput):

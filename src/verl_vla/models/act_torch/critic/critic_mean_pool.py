@@ -51,6 +51,7 @@ class MeanPoolCriticGroup(nn.Module):
             ]
         )
         self.target_network_heads.load_state_dict(self.critic_heads.state_dict())
+        self.target_network_heads.requires_grad_(False)
 
     @staticmethod
     def _multi_heads_value(
@@ -81,34 +82,38 @@ class MeanPoolCriticGroup(nn.Module):
         requires_grad: bool = False,
     ) -> torch.Tensor:
         critic_head = self.target_network_heads if use_target_network else self.critic_heads
-        for p in critic_head.parameters():
-            p.requires_grad_(requires_grad)
+        parameters = tuple(critic_head.parameters())
+        previous_requires_grad = tuple(param.requires_grad for param in parameters)
+        if not requires_grad:
+            critic_head.requires_grad_(False)
 
-        prefix_embs, states = state_features
-        pooled_prefix_embs = prefix_embs.mean(dim=1)
+        try:
+            prefix_embs, states = state_features
+            pooled_prefix_embs = prefix_embs.mean(dim=1)
 
-        actions = a["action"]
-        flattened_actions = actions.reshape(actions.shape[0], -1)
-        critic_input = torch.cat([pooled_prefix_embs, states, flattened_actions], dim=-1)
-        expected_input_dim = self.critic_heads[0].network[0].in_features
-        if critic_input.shape[-1] != expected_input_dim:
-            raise ValueError(
-                f"ACT mean-pool critic input dim mismatch: got {critic_input.shape[-1]}, "
-                f"expected {expected_input_dim}. Check critic_input_dim, n_action_steps, action_dim, and state_dim."
-            )
-        return self._multi_heads_value(critic_head, critic_input, method=method)
+            actions = a["action"]
+            flattened_actions = actions.reshape(actions.shape[0], -1)
+            critic_input = torch.cat([pooled_prefix_embs, states, flattened_actions], dim=-1)
+            expected_input_dim = self.critic_heads[0].network[0].in_features
+            if critic_input.shape[-1] != expected_input_dim:
+                raise ValueError(
+                    f"ACT mean-pool critic input dim mismatch: got {critic_input.shape[-1]}, "
+                    f"expected {expected_input_dim}. Check critic_input_dim, n_action_steps, action_dim, and state_dim."
+                )
+            return self._multi_heads_value(critic_head, critic_input, method=method)
+        finally:
+            for param, previous_value in zip(parameters, previous_requires_grad, strict=True):
+                param.requires_grad_(previous_value)
 
     def get_critic_parameters(self) -> list[torch.nn.Parameter]:
         return [p for head in self.critic_heads for p in head.parameters()]
 
     @torch.no_grad()
     def update_target_network(self, tau: float) -> None:
-        for t_head, head in zip(self.target_network_heads, self.critic_heads, strict=True):
-            t_sd = t_head.state_dict()
-            h_sd = head.state_dict()
-            for k in t_sd.keys():
-                t_sd[k].mul_(1.0 - tau).add_(h_sd[k], alpha=tau)
-            t_head.load_state_dict(t_sd, strict=True)
+        for target_param, param in zip(
+            self.target_network_heads.parameters(), self.critic_heads.parameters(), strict=True
+        ):
+            target_param.lerp_(param, tau)
 
 
 class MeanPoolCriticBackend(CriticBackend):
@@ -130,7 +135,7 @@ class MeanPoolCriticBackend(CriticBackend):
             input_dim=input_dim,
             hidden_dims=hidden_dims,
         )
-        object.__setattr__(model, "critic_backend", critic_backend)
+        model.add_module("critic_backend", critic_backend)
 
     def forward(
         self,

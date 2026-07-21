@@ -432,7 +432,11 @@ class ACTForActionPrediction(PreTrainedModel, SupportSACTraining, SupportSFTTrai
 
     @override
     def sac_init(self):
-        self._ensure_sac_components()
+        if not hasattr(self, "critic_backend"):
+            raise RuntimeError(
+                "ACT SAC components must be created before distributed wrapping. "
+                "Set model.override_config.sac_enable=true when building the model."
+            )
         forward_methods = [
             "sft_loss",
             "sac_sample_actions",

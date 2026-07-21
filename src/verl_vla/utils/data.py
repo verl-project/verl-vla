@@ -27,6 +27,8 @@ def reduce_substep_dims(value: torch.Tensor, *, reduction: str) -> torch.Tensor:
     while value.ndim > 2:
         if reduction == "any":
             value = value.any(dim=-1)
+        elif reduction == "max":
+            value = value.max(dim=-1).values
         elif reduction == "sum":
             value = value.sum(dim=-1)
         else:
@@ -76,16 +78,20 @@ def update_progress_trajectory_counts(
         episode_done = episode_done.reshape(episode_done.shape[0], -1)
         success = success.reshape(success.shape[0], -1)
 
+    episode_done = episode_done.cpu()
+    success = success.cpu()
+
     lane_state = progress_lane_state.get(stage_id)
     if lane_state is None or lane_state["was_done"].shape[0] != episode_done.shape[0]:
         lane_state = {
-            "was_done": torch.zeros(episode_done.shape[0], dtype=torch.bool, device=episode_done.device),
-            "success_seen": torch.zeros(episode_done.shape[0], dtype=torch.bool, device=episode_done.device),
+            "was_done": torch.zeros(episode_done.shape[0], dtype=torch.bool),
+            "success_seen": torch.zeros(episode_done.shape[0], dtype=torch.bool),
         }
         progress_lane_state[stage_id] = lane_state
 
-    was_done = lane_state["was_done"].to(episode_done.device)
-    success_seen = lane_state["success_seen"].to(episode_done.device)
+    was_done = lane_state["was_done"]
+    success_seen = lane_state["success_seen"]
+    counted_in_chunk = torch.zeros_like(was_done)
     for step_idx in range(episode_done.shape[1]):
         done_now = episode_done[:, step_idx]
         success_now = success[:, step_idx]
@@ -97,8 +103,10 @@ def update_progress_trajectory_counts(
         success_seen |= success_now & ~was_done
 
         newly_done = done_now & ~was_done
-        progress_counts["done_eps"] += int(newly_done.sum().item())
-        progress_counts["succ_eps"] += int((newly_done & success_seen).sum().item())
+        newly_counted = newly_done & ~counted_in_chunk
+        progress_counts["done_eps"] += int(newly_counted.sum().item())
+        progress_counts["succ_eps"] += int((newly_counted & success_seen).sum().item())
+        counted_in_chunk |= newly_counted
         success_seen = torch.where(newly_done, torch.zeros_like(success_seen), success_seen)
         was_done = done_now
 
