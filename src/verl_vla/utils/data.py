@@ -66,18 +66,44 @@ def update_progress_trajectory_counts(
     progress_counts: dict[str, int],
     progress_lane_state: dict[int, dict[str, torch.Tensor]],
 ) -> None:
-    del stage_id, progress_lane_state
-
     batch = env_result.batch
     episode_done = batch["next.terminated"].bool() | batch["next.truncated"].bool()
     success = batch["next.success"].bool()
-    first_done_idx = episode_done.float().argmax(dim=1)
-    chunk_done = episode_done.any(dim=1)
-    step_idx = torch.arange(episode_done.shape[1], device=episode_done.device).unsqueeze(0)
-    success_before_done = (success & (step_idx <= first_done_idx.unsqueeze(1))).any(dim=1)
+    if episode_done.ndim == 1:
+        episode_done = episode_done.unsqueeze(1)
+        success = success.unsqueeze(1)
+    else:
+        episode_done = episode_done.reshape(episode_done.shape[0], -1)
+        success = success.reshape(success.shape[0], -1)
 
-    progress_counts["done_eps"] += int(chunk_done.sum().item())
-    progress_counts["succ_eps"] += int((chunk_done & success_before_done).sum().item())
+    lane_state = progress_lane_state.get(stage_id)
+    if lane_state is None or lane_state["was_done"].shape[0] != episode_done.shape[0]:
+        lane_state = {
+            "was_done": torch.zeros(episode_done.shape[0], dtype=torch.bool, device=episode_done.device),
+            "success_seen": torch.zeros(episode_done.shape[0], dtype=torch.bool, device=episode_done.device),
+        }
+        progress_lane_state[stage_id] = lane_state
+
+    was_done = lane_state["was_done"].to(episode_done.device)
+    success_seen = lane_state["success_seen"].to(episode_done.device)
+    for step_idx in range(episode_done.shape[1]):
+        done_now = episode_done[:, step_idx]
+        success_now = success[:, step_idx]
+
+        # A falling edge starts a new auto-reset episode. Persistent done values
+        # belong to the episode that was already counted.
+        new_episode = was_done & ~done_now
+        success_seen = torch.where(new_episode, torch.zeros_like(success_seen), success_seen)
+        success_seen |= success_now & ~was_done
+
+        newly_done = done_now & ~was_done
+        progress_counts["done_eps"] += int(newly_done.sum().item())
+        progress_counts["succ_eps"] += int((newly_done & success_seen).sum().item())
+        success_seen = torch.where(newly_done, torch.zeros_like(success_seen), success_seen)
+        was_done = done_now
+
+    lane_state["was_done"] = was_done
+    lane_state["success_seen"] = success_seen
 
 
 def dataloader_batch_to_dataproto(batch: dict) -> DataProto:

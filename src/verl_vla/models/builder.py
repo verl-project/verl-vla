@@ -33,6 +33,13 @@ def build_vla_model(model_config, *, torch_dtype: torch.dtype):
             torch_dtype=torch_dtype,
         )
 
+    if architecture == "act":
+        from .act_torch import ACTForConditionalGeneration, ACTTorchConfig
+
+        config = ACTTorchConfig.from_pretrained(path)
+        _apply_overrides(config, overrides)
+        return ACTForConditionalGeneration.from_pretrained(path, config=config)
+
     if architecture == "gr00t_n1d6":
         from gr00t.configs.model.gr00t_n1d6 import Gr00tN1d6Config
 

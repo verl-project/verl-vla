@@ -94,6 +94,8 @@ class VLAModelConfig(HFModelConfig):
             architecture = "pi0"
         elif model_type == "openvla":
             architecture = "openvla_oft"
+        elif model_type == "act":
+            architecture = "act"
         elif model_type == "recap_value_critic":
             architecture = "recap_value_critic"
         elif "gr00tn1d6" in identity or "gr00t_n1d6" in identity:
