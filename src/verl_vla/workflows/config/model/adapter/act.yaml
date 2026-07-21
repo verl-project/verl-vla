@@ -23,18 +23,27 @@ image_norm_stats: null
 
 # Critic configuration
 critic:
+  # Whether critic is enabled
   enabled: False
+  # Type of critic
   type: mean_pool
+  # Number of heads
   head_num: 2
+  # Prefix embedding dimension
   prefix_embed_dim: 512
+  # Input dimension
   input_dim: 0
+  # Hidden layer dimensions
   hidden_dims: [1024, 512, 256]
 
 # SAC action noise configuration
 sac_action_noise_scale: 0.1
 sac_action_noise_schedule_enabled: False
 sac_action_noise_schedule_initial: null
+# Final value for action noise schedule
 sac_action_noise_schedule_final: null
+
+# Schedule method for action noise
 sac_action_noise_schedule_method: cos
 
 # Freeze vision tower during training
