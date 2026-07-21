@@ -3,51 +3,63 @@
 # Licensed under the Apache License, Version 2.0 (the "License");
 
 # ACT LIBERO adapter configuration.
-# Policy type for the adapter
+
+# Select the LIBERO policy path in the model implementation.
 policy_type: libero
 
-# Number of action steps
+# Number of action steps returned to the environment by the ACT policy adapter.
 n_action_steps: 20
 
-# Temporal ensemble coefficient
+# Optional temporal-ensemble coefficient for rollout-time action smoothing.
 temporal_ensemble_coeff: null
 
-# State normalization statistics
+# Optional state normalization statistics JSON.
 state_norm_stats: null
 
-# Action normalization statistics
+# Optional action normalization statistics JSON.
 action_norm_stats: null
 
-# Image normalization statistics
+# Optional image normalization statistics JSON.
 image_norm_stats: null
 
-# Critic configuration
+# Optional critic owned by the ACT adapter.
 critic:
-  # Whether critic is enabled
+
+  # Whether this component is enabled.
   enabled: False
-  # Type of critic
+
+  # Backend or implementation type selected for this component.
   type: mean_pool
-  # Number of heads
+
+  # Number of attention heads in the critic.
   head_num: 2
-  # Prefix embedding dimension
+
+  # Embedding dimension of the critic prefix encoder.
   prefix_embed_dim: 512
-  # Input dimension
+
+  # Input feature dimension for the critic.
   input_dim: 0
-  # Hidden layer dimensions
+
+  # Hidden-layer dimensions for the critic.
   hidden_dims: [1024, 512, 256]
 
-# SAC action noise configuration
+# SAC action-noise scale.
 sac_action_noise_scale: 0.1
+
+# Whether SAC action-noise scheduling is enabled.
 sac_action_noise_schedule_enabled: False
+
+# Initial SAC scheduled action-noise value.
 sac_action_noise_schedule_initial: null
-# Final value for action noise schedule
+
+# Final SAC scheduled action-noise value.
 sac_action_noise_schedule_final: null
 
-# Schedule method for action noise
+# SAC action-noise schedule method.
 sac_action_noise_schedule_method: cos
 
-# Freeze vision tower during training
+# Whether to freeze the vision tower during training.
 freeze_vision_tower: True
 
-# Learning rate for backbone optimizer
+# Learning rate for the vision backbone optimizer group.
 optimizer_lr_backbone: 1e-5
