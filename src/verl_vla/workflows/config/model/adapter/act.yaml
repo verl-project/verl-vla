@@ -3,13 +3,25 @@
 # Licensed under the Apache License, Version 2.0 (the "License");
 
 # ACT LIBERO adapter configuration.
+# Policy type for the adapter
 policy_type: libero
+
+# Number of action steps
 n_action_steps: 20
+
+# Temporal ensemble coefficient
 temporal_ensemble_coeff: null
+
+# State normalization statistics
 state_norm_stats: null
+
+# Action normalization statistics
 action_norm_stats: null
+
+# Image normalization statistics
 image_norm_stats: null
 
+# Critic configuration
 critic:
   enabled: False
   type: mean_pool
@@ -18,10 +30,15 @@ critic:
   input_dim: 0
   hidden_dims: [1024, 512, 256]
 
+# SAC action noise configuration
 sac_action_noise_scale: 0.1
 sac_action_noise_schedule_enabled: False
 sac_action_noise_schedule_initial: null
 sac_action_noise_schedule_final: null
 sac_action_noise_schedule_method: cos
+
+# Freeze vision tower during training
 freeze_vision_tower: True
+
+# Learning rate for backbone optimizer
 optimizer_lr_backbone: 1e-5
