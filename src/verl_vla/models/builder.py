@@ -33,6 +33,18 @@ def build_vla_model(model_config, *, torch_dtype: torch.dtype):
             torch_dtype=torch_dtype,
         )
 
+    if architecture == "act":
+        from .act_torch import ACTTorchConfig, ACTTrainableModel
+
+        config = ACTTorchConfig.from_pretrained(path)
+        _apply_overrides(config, overrides)
+        return ACTTrainableModel.from_pretrained(
+            path,
+            policy_config=config,
+            adapter_config=dict(model_config.adapter),
+            torch_dtype=torch_dtype,
+        )
+
     if architecture == "gr00t_n1d6":
         from gr00t.configs.model.gr00t_n1d6 import Gr00tN1d6Config
 
