@@ -38,7 +38,7 @@ EXPERIMENT_NAME="libero_sft_current_state_stats"
 PYTHON=python
 
 $PYTHON -m verl_vla.entrypoints.train.sft \
-    +model/override@cluster.actor_rollout_ref.model.override_config=act \
+    model/override@cluster.actor_rollout_ref.model.override_config=act \
     model/adapter@cluster.actor_rollout_ref.model.adapter=act \
     cluster.actor_rollout_ref.model.path="$MODEL_PATH" \
     cluster.actor_rollout_ref.model.tokenizer_path="$TOKENIZER_PATH" \
@@ -49,7 +49,7 @@ $PYTHON -m verl_vla.entrypoints.train.sft \
     cluster.actor_rollout_ref.model.enable_gradient_checkpointing=False \
     cluster.actor_rollout_ref.model.use_remove_padding=False \
     cluster.actor_rollout_ref.model.trust_remote_code=True \
-    +cluster.actor_rollout_ref.model.load_tokenizer=False \
+    cluster.actor_rollout_ref.model.load_tokenizer=False \
     cluster.actor_rollout_ref.model.override_config.attn_implementation=eager \
     cluster.actor_rollout_ref.model.adapter.policy_type=libero \
     cluster.actor_rollout_ref.model.override_config.chunk_size=$ACT_ACTION_STEPS \

@@ -126,7 +126,7 @@ class MeanPoolCriticBackend(CriticBackend):
             input_dim = (
                 int(getattr(model.config, "critic_prefix_embed_dim", 512))
                 + int(getattr(model.config, "state_dim", 0))
-                + int(getattr(model.config, "n_action_steps", 1)) * int(getattr(model.config, "action_dim", 0))
+                + int(getattr(model.config, "chunk_size", 1)) * int(getattr(model.config, "action_dim", 0))
             )
             model.config.critic_input_dim = input_dim
         hidden_dims = [int(dim) for dim in getattr(model.config, "critic_hidden_dims", [1024, 512, 256])]

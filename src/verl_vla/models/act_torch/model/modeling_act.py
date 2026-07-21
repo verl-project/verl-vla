@@ -168,7 +168,7 @@ class ACT(nn.Module):
             latent_sample = torch.zeros([batch_size, self.config.latent_dim], dtype=torch.float32, device=state.device)
 
         encoder_in_tokens = [self.encoder_latent_input_proj(latent_sample)]
-        encoder_in_pos_embed = list(self.encoder_1d_feature_pos_embed.weight.unsqueeze(1))
+        encoder_in_pos_embed = list(self.encoder_1d_feature_pos_embed.weight.unsqueeze(1).expand(-1, batch_size, -1))
 
         if self.config.state_dim > 0:
             encoder_in_tokens.append(self.encoder_robot_state_input_proj(state))

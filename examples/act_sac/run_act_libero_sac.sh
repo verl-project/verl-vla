@@ -63,12 +63,12 @@ fi
 export VERL_LOGGING_LEVEL=INFO
 
 "$PYTHON" -m verl_vla.entrypoints.train.sac \
-    +model/override@cluster.actor_rollout_ref.model.override_config=act \
+    model/override@cluster.actor_rollout_ref.model.override_config=act \
     model/adapter@cluster.actor_rollout_ref.model.adapter=act \
     cluster.actor_rollout_ref.model.path="$MODEL_PATH" \
     cluster.actor_rollout_ref.model.tokenizer_path="$TOKENIZER_PATH" \
     cluster.actor_rollout_ref.model.trust_remote_code=True \
-    +cluster.actor_rollout_ref.model.load_tokenizer=False \
+    cluster.actor_rollout_ref.model.load_tokenizer=False \
     cluster.actor_rollout_ref.model.enable_gradient_checkpointing=False \
     cluster.actor_rollout_ref.model.use_remove_padding=False \
     cluster.actor_rollout_ref.model.override_config.attn_implementation=eager \

@@ -124,11 +124,7 @@ class ACTTrainableModel(nn.Module, TrainableVLAModelMixin, SupportSACTraining, S
         return get_act_policy_classes(self.config.policy_type)
 
     def _to(self, device: torch.device | str):
-        if hasattr(self.state_normalize_transform, "to"):
-            self.state_normalize_transform.to(device)
-            self.state_unnormalize_transform.to(device)
-            self.action_normalize_transform.to(device)
-            self.action_unnormalize_transform.to(device)
+        self.to(device)
         return self
 
     def forward(
@@ -149,7 +145,9 @@ class ACTTrainableModel(nn.Module, TrainableVLAModelMixin, SupportSACTraining, S
         latent_sample = torch.zeros([batch_size, self.config.latent_dim], dtype=torch.float32, device=state.device)
 
         encoder_in_tokens = [self.policy.encoder_latent_input_proj(latent_sample)]
-        encoder_in_pos_embed = list(self.policy.encoder_1d_feature_pos_embed.weight.unsqueeze(1))
+        encoder_in_pos_embed = list(
+            self.policy.encoder_1d_feature_pos_embed.weight.unsqueeze(1).expand(-1, batch_size, -1)
+        )
 
         if self.config.state_dim > 0:
             encoder_in_tokens.append(self.policy.encoder_robot_state_input_proj(state))
@@ -172,8 +170,6 @@ class ACTTrainableModel(nn.Module, TrainableVLAModelMixin, SupportSACTraining, S
 
         encoder_in_tokens = torch.stack(encoder_in_tokens, axis=0)
         encoder_in_pos_embed = torch.stack(encoder_in_pos_embed, axis=0)
-        if encoder_in_pos_embed.shape[1] == 1 and encoder_in_tokens.shape[1] != 1:
-            encoder_in_pos_embed = encoder_in_pos_embed.expand(-1, encoder_in_tokens.shape[1], -1)
 
         encoder_out = self.policy.encoder(encoder_in_tokens, pos_embed=encoder_in_pos_embed)
 
@@ -244,7 +240,7 @@ class ACTTrainableModel(nn.Module, TrainableVLAModelMixin, SupportSACTraining, S
 
     def export_policy(self, output_dir, *, state_dict=None, **kwargs):
         policy_state = None if state_dict is None else self.extract_policy_state_dict(state_dict)
-        self.native_policy.save_pretrained(output_dir, state_dict=policy_state, **kwargs)
+        self.policy.save_pretrained(output_dir, state_dict=policy_state, **kwargs)
 
     def freeze_vision_tower(self) -> None:
         if hasattr(self.policy, "backbone") and self.policy.backbone is not None:
@@ -255,7 +251,9 @@ class ACTTrainableModel(nn.Module, TrainableVLAModelMixin, SupportSACTraining, S
     def get_optim_params(self) -> list[dict]:
         backbone_params = [p for n, p in self.named_parameters() if n.startswith("policy.backbone") and p.requires_grad]
         other_params = [
-            p for n, p in self.named_parameters() if not n.startswith("policy.backbone") and p.requires_grad
+            p
+            for n, p in self.named_parameters()
+            if not n.startswith("policy.backbone") and not n.startswith("critic_backend") and p.requires_grad
         ]
         param_groups = [{"params": other_params}]
         if backbone_params:
