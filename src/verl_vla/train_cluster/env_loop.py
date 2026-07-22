@@ -51,20 +51,6 @@ class EnvLoop:
         self.max_interactions = config.max_interactions
         self.switch_actor_rollout_mode = switch_actor_rollout_mode
 
-    @staticmethod
-    def _get_or_create_event_loop() -> asyncio.AbstractEventLoop:
-        try:
-            loop = asyncio.get_event_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-
-        if loop.is_closed():
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-
-        return loop
-
     def _strip_meta_info(self, data: DataProto) -> DataProto:
         return DataProto(
             batch=data.batch,
@@ -85,7 +71,11 @@ class EnvLoop:
         rollout_meta_info = {"eval": True} if eval else {}
         env_mode = "eval" if eval else "train"
 
-        loop = self._get_or_create_event_loop()
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
 
         if self.switch_actor_rollout_mode:
             self.rollout_wg.switch_to_rollout()
