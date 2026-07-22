@@ -48,6 +48,10 @@ sac:
   # Target entropy used when auto_entropy is enabled
   target_entropy: -64.0
 
+  # Include the -alpha*log_pi entropy term in the critic TD target. DSRL
+  # disables it (the summed noise log-prob would dominate the bootstrap).
+  backup_entropy: true
+
 # Optional TD3+BC actor loss.
 td3:
 
