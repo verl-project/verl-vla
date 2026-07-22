@@ -20,9 +20,13 @@ from packaging import version
 from torch.distributed.fsdp import FSDPModule
 from torch.distributed.fsdp._unshard_param_utils import _get_module_fsdp_state, _unshard_params_for_summon
 from torch.distributed.tensor import DTensor
+from verl.utils.activation_offload import enable_activation_offloading
 from verl.utils.device import get_device_id, get_torch_device
 from verl.utils.fs import copy_to_local
 from verl.utils.fsdp_utils import (
+    CPUOffloadPolicy,
+    MixedPrecisionPolicy,
+    fsdp2_load_full_state_dict,
     fsdp_version,
     load_fsdp_model_to_gpu,
     merged_lora_context,
@@ -34,6 +38,8 @@ from verl.utils.memory_utils import aggressive_empty_cache
 from verl.utils.py_functional import convert_to_regular_types
 from verl.workers.engine import EngineRegistry
 from verl.workers.engine.fsdp.transformer_impl import FSDPEngine
+
+from .fsdp_utils import apply_fsdp2
 
 logger = logging.getLogger(__name__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
@@ -67,6 +73,47 @@ class VLAFSDPEngine(FSDPEngine):
         torch_dtype = PrecisionType.to_dtype(torch_dtype)
         module = build_vla_model(self.model_config, torch_dtype=torch_dtype)
         module.to(torch_dtype)
+        return module
+
+    def _build_fsdp_module(self, module):
+        if self.engine_config.strategy != "fsdp2":
+            raise ValueError(f"VLAFSDPEngine only supports fsdp2, got {self.engine_config.strategy!r}")
+
+        from verl.utils.torch_dtypes import PrecisionType
+
+        mixed_precision_config = self.engine_config.mixed_precision
+        if mixed_precision_config is not None:
+            param_dtype = PrecisionType.to_dtype(mixed_precision_config.get("param_dtype", "bf16"))
+            reduce_dtype = PrecisionType.to_dtype(mixed_precision_config.get("reduce_dtype", "fp32"))
+        else:
+            param_dtype = torch.bfloat16
+            reduce_dtype = torch.float32
+
+        assert CPUOffloadPolicy is not None, "PyTorch version >= 2.4 is required for using fully_shard API (FSDP2)"
+        mp_policy = MixedPrecisionPolicy(
+            param_dtype=param_dtype,
+            reduce_dtype=reduce_dtype,
+            cast_forward_inputs=True,
+        )
+        offload_policy = None
+        if self.engine_config.offload_policy or self.engine_config.forward_only:
+            self._is_offload_param = False
+            self._is_offload_optimizer = False
+            offload_policy = CPUOffloadPolicy(pin_memory=True)
+
+        fsdp_kwargs = {
+            "mesh": self.device_mesh,
+            "mp_policy": mp_policy,
+            "offload_policy": offload_policy,
+            "reshard_after_forward": self.engine_config.reshard_after_forward,
+        }
+        full_state = module.state_dict()
+        apply_fsdp2(module, fsdp_kwargs, self.engine_config)
+        fsdp2_load_full_state_dict(module, full_state, self.device_mesh, offload_policy)
+
+        if self.model_config.enable_activation_offload:
+            enable_gradient_checkpointing = self.model_config.enable_gradient_checkpointing
+            enable_activation_offloading(module, self.engine_config.strategy, enable_gradient_checkpointing)
         return module
 
     def _build_lora_module(self, module):
