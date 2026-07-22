@@ -214,6 +214,11 @@ CONTAINER_NAME=isaaclab_arena-cuda_gr00t_gn16_sac \
   examples/gr00t_arena_sac/run_docker.sh
 ```
 
+> SAC reconstructs complete episodes per environment lane before adding them to
+> replay. A LIBERO episode runs up to 512 env steps but a rollout window covers
+> only `10 × 16 = 160`, so incomplete suffixes remain buffered across windows.
+> One-slot terminal segments are discarded as non-auto-reset padding.
+
 ### Start a container / shell only
 
 ```bash

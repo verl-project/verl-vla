@@ -37,38 +37,34 @@ from verl_vla.utils.rlpd import (
 )
 
 from .config import SACTrainerConfig
+from .episode_buffer import EpisodeBuffer
 
 
 def prepare_sac_actor_input(
-    rollout_output: DataProto,
+    episode: DataProto,
     *,
-    config,
     trainer_config: SACTrainerConfig,
     global_steps: int,
 ) -> DataProto:
-    """Prepare env-loop output for SAC updates."""
-
-    terminated_steps = reduce_substep_dims(rollout_output.batch["next.terminated"].bool(), reduction="any")
-    truncated_steps = reduce_substep_dims(rollout_output.batch["next.truncated"].bool(), reduction="any")
+    """Convert a complete raw episode into SAC transitions."""
+    terminated_steps = reduce_substep_dims(episode.batch["next.terminated"].bool(), reduction="any")
+    truncated_steps = reduce_substep_dims(episode.batch["next.truncated"].bool(), reduction="any")
     done_steps = terminated_steps | truncated_steps
-    success_steps = reduce_substep_dims(rollout_output.batch["next.success"].bool(), reduction="any")
-    reward_steps = reduce_substep_dims(rollout_output.batch["next.reward"].float(), reduction="sum")
-    del rollout_output.batch["next.terminated"]
-    del rollout_output.batch["next.truncated"]
-    del rollout_output.batch["next.success"]
-    del rollout_output.batch["next.reward"]
+    success_steps = reduce_substep_dims(episode.batch["next.success"].bool(), reduction="any")
+    reward_steps = reduce_substep_dims(episode.batch["next.reward"].float(), reduction="sum")
+    del episode.batch["next.terminated"]
+    del episode.batch["next.truncated"]
+    del episode.batch["next.success"]
+    del episode.batch["next.reward"]
 
     valid_mask, success_mask = _build_sac_transition_masks(done_steps, success_steps)
-    step_penalty = float(trainer_config.step_penalty)
+    episode.batch["info.terminateds"] = terminated_steps.float()
+    episode.batch["info.valids"] = valid_mask.float()
+    episode.batch["info.rewards"] = (reward_steps - float(trainer_config.step_penalty)) * valid_mask.float()
+    episode.batch["info.success_mask"] = success_mask.float()
+    episode.meta_info["global_steps"] = global_steps
 
-    rollout_output.batch["info.terminateds"] = terminated_steps.float()
-    rollout_output.batch["info.valids"] = valid_mask.float()
-    rollout_output.batch["info.rewards"] = (reward_steps - step_penalty) * valid_mask.float()
-    rollout_output.batch["info.success_mask"] = success_mask.float()
-    rollout_output.meta_info["global_steps"] = global_steps
-
-    rollout_output = add_transition_prefixes(rollout_output, transition_boundary_mask=done_steps)
-    return flatten_trajectories(rollout_output)
+    return flatten_trajectories(add_transition_prefixes(episode, transition_boundary_mask=done_steps))
 
 
 class RobRaySACTrainer:
@@ -82,6 +78,33 @@ class RobRaySACTrainer:
         self.tracking_config = tracking_config
         self.trainer_config: SACTrainerConfig = instantiate(trainer_config)
         self.config = OmegaConf.create(tracking_config)
+
+        auto_reset = bool(OmegaConf.select(self.config, "cluster.env.env_worker.auto_reset", default=False))
+        self._episode_buffer = EpisodeBuffer(auto_reset=auto_reset)
+
+    def _prepare_actor_input(self, rollout_output: DataProto) -> DataProto | None:
+        """Collect complete episodes and turn them into SAC transitions."""
+        episodes = self._episode_buffer.ingest(rollout_output)
+        if not episodes:
+            return None
+
+        parts = [
+            prepare_sac_actor_input(
+                episode,
+                trainer_config=self.trainer_config,
+                global_steps=self.global_steps,
+            )
+            for episode in episodes
+        ]
+        actor_input = parts[0] if len(parts) == 1 else DataProto.concat(parts)
+        actor_input.meta_info.update(rollout_output.meta_info)
+        actor_input.meta_info["global_steps"] = self.global_steps
+        actor_input.meta_info.setdefault("global_token_num", [0])
+        return pad_dataproto_to_divisor_with_valid_mask(
+            actor_input,
+            int(self.cluster.actor_worker_group.world_size),
+            valid_key="info.valids",
+        )
 
     def _prefill_replay_pool_from_rlpd(self) -> None:
         rlpd_config = self.trainer_config.rlpd
@@ -187,13 +210,7 @@ class RobRaySACTrainer:
 
                             # compute rewards and other metrics, and prepare for actor update
                             metrics.update(rollout_metrics)
-                            actor_input = prepare_sac_actor_input(
-                                rollout_output,
-                                config=self.config,
-                                trainer_config=self.trainer_config,
-                                global_steps=self.global_steps,
-                            )
-
+                            actor_input = self._prepare_actor_input(rollout_output)
                     # === update policy ===
                     critic_only_update = training_step < rollout_times + critic_only_steps_after_rollout
                     with marked_timer("update_actor", timing_raw, color="red"):
@@ -226,6 +243,7 @@ class RobRaySACTrainer:
                         if is_last_step:
                             last_val_metrics = val_metrics
                     metrics.update(val_metrics)
+                    self._episode_buffer.clear()
 
                 # === save checkpoint ===
                 # Check if the ESI (Elastic Server Instance)/training plan is close to expiration.
