@@ -38,6 +38,10 @@ class SACTrainerConfig(BaseConfig):
     step_penalty: float = 0.0
     save_freq: int = -1
     test_freq: int = -1
+    # Number of trajectories to aggregate per eval. <=0 falls back to the env's
+    # eval benchmark size (1 for envs without a fixed benchmark, e.g. Arena,
+    # which makes val/trajectory_success_rate a single 0/1 sample).
+    eval_episodes: int = -1
     val_before_train: bool = True
     val_only: bool = False
     esi_redundant_time: int = 0

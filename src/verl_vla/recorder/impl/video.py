@@ -48,9 +48,15 @@ class VideoRecorder(BaseRecorder):
         self.stage_id = stage_id
         self.num_envs = num_envs
         self.root = Path(cfg.root)
+        self.mode = "train"
         self.strategy = get_lerobot_strategy(env_type, **(strategy_kwargs or {}))
         self._frames: list[list[np.ndarray]] = [[] for _ in range(num_envs)]
-        self._video_counts = np.zeros(num_envs, dtype=np.int64)
+        self._video_counts: dict[str, np.ndarray] = {self.mode: np.zeros(num_envs, dtype=np.int64)}
+
+    @override
+    def set_mode(self, mode: str) -> None:
+        self.mode = mode
+        self._video_counts.setdefault(mode, np.zeros(self.num_envs, dtype=np.int64))
 
     @override
     def record_once(
@@ -101,10 +107,10 @@ class VideoRecorder(BaseRecorder):
         frames = self._frames[env_id]
         if not frames:
             return
-        output_dir = self.root / f"rank_{self.rank}" / f"stage_{self.stage_id}" / f"env_{env_id}"
-        video_name = f"{self._video_counts[env_id]}"
+        output_dir = self.root / self.mode / f"rank_{self.rank}" / f"stage_{self.stage_id}" / f"env_{env_id}"
+        video_name = f"{self._video_counts[self.mode][env_id]}"
         save_rollout_video(frames, output_dir=str(output_dir), video_name=video_name, fps=self.cfg.fps)
-        self._video_counts[env_id] += 1
+        self._video_counts[self.mode][env_id] += 1
         frames.clear()
 
     @override

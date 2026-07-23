@@ -122,6 +122,11 @@ class MultiRecorder(BaseRecorder):
             recorder.clear_episode(env_id)
 
     @override
+    def set_mode(self, mode: str) -> None:
+        for recorder in self.recorders:
+            recorder.set_mode(mode)
+
+    @override
     def pop_completed(self) -> Path | None:
         for recorder in self.recorders:
             completed = recorder.pop_completed()
