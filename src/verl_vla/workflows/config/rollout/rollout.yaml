@@ -62,7 +62,7 @@ load_format: dummy
 layered_summon: false
 
 # Whether HF rollout emits critic_value for visualization
-output_critic_value: true
+output_critic_value: false
 
 # Advantage-conditioned prompt tagging during rollout
 acp:

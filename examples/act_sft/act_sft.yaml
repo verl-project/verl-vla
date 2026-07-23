@@ -1,4 +1,13 @@
 # ACT SFT composition for this example.
+# Hydra runtime configuration.
+hydra:
+
+  # Load reusable workflow configs from the installed verl-vla package.
+  searchpath:
+
+    - pkg://verl_vla.workflows.config
+
+# Hydra configuration composition order.
 defaults:
 
   # Reuse the complete standalone SFT workflow.
@@ -11,6 +20,10 @@ defaults:
   - _self_
 
 cluster:
+  checkpoint:
+    # Keep resumable checkpoints under the run's training output directory.
+    default_local_dir: ./outputs/train/act-sft/libero-spatial/checkpoints
+
   actor_rollout_ref:
     model:
       load_tokenizer: false
@@ -32,3 +45,21 @@ cluster:
 data:
   # Match the chunk_size in assets/hf_models/act_libero/config.json.
   action_delta_steps: 10
+
+trainer:
+
+  # Tracking project shared by ACT SFT runs.
+  project_name: act-sft
+
+  # Tracking run name for the LIBERO Spatial dataset.
+  experiment_name: libero-spatial
+
+  # Save a resumable checkpoint every 500 optimizer steps.
+  save_freq: 500
+
+ray_kwargs:
+  ray_init:
+    runtime_env:
+      env_vars:
+        # verl's TensorBoard logger reads this path inside the Ray controller.
+        TENSORBOARD_DIR: ./outputs/train/act-sft/libero-spatial/tensorboard

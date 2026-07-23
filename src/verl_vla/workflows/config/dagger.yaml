@@ -43,21 +43,6 @@ resume: False
 # Distributed cluster configuration.
 cluster:
 
-  # Cluster resource allocation.
-  resource:
-
-    # Environment execution configuration.
-    env:
-
-      # Number of nodes allocated to this role.
-      nnodes: 1
-
-      # Number of GPUs allocated on each node.
-      gpus_per_node: 1
-
-      # Number of workers launched on each node.
-      workers_per_node: 1
-
   # Environment execution configuration.
   env:
 
@@ -79,8 +64,8 @@ cluster:
       # Whether recording waits for operator confirmation.
       confirm_before_record: True
 
-      # Number of simulator environments hosted by each worker.
-      num_envs: 1
+      # Target policy/environment interaction frequency in Hz.
+      target_step_hz: 30
 
       # Teleoperation configuration.
       teleop:
@@ -98,11 +83,6 @@ cluster:
         # Whether this component is enabled.
         enable: True
 
-        # Recorder backends enabled for each episode.
-        recorders:
-
-          - lerobot
-          - video
         # LeRobot dataset recorder overrides.
         lerobot:
 

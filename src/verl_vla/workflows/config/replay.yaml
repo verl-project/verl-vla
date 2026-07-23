@@ -49,38 +49,20 @@ loop: False
 # Distributed environment cluster configuration.
 cluster:
 
-  # Cluster resource allocation.
-  resource:
-
-    # Environment worker resource allocation.
-    env:
-
-      # Number of nodes allocated to replay.
-      nnodes: 1
-
-      # Number of GPUs allocated on each node. Unused by the default CPU worker.
-      gpus_per_node: 1
-
-      # Number of CPU environment workers launched on each node.
-      workers_per_node: 1
-
   # Environment execution configuration.
   env:
+
+    # Environment interaction loop configuration.
+    env_loop:
+
+      # Replay runs one simulator synchronously.
+      pipeline_stage_num: 1
 
     # Environment worker configuration.
     env_worker:
 
-      # Replay manages termination itself rather than resetting automatically.
-      auto_reset: False
-
       # Wait for the operator to press Enter before replay begins.
       confirm_before_record: True
-
-      # Replay currently runs one simulator environment.
-      num_envs: 1
-
-      # Replay pacing is owned by the dataset FPS and playback speed.
-      target_step_hz: null
 
       # Read-only browser observation viewer configuration.
       teleop:
@@ -92,9 +74,3 @@ cluster:
         devices:
 
           - keyboard
-
-      # Recorder configuration.
-      recorder:
-
-        # Do not write a second dataset while replaying.
-        enable: False

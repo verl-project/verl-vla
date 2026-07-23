@@ -138,7 +138,6 @@ export PYTHONPATH="/opt/groot_deps:$REPO_ROOT/src:/workspaces/isaaclab_arena:${P
   "cluster.actor_rollout_ref.model.adapter.num_action_chunks=$NUM_ACTION_CHUNKS" \
   "cluster.actor_rollout_ref.model.adapter.critic.enabled=False" \
   "cluster.actor_rollout_ref.rollout.name=hf" \
-  "cluster.actor_rollout_ref.rollout.output_critic_value=false" \
   "cluster.actor_rollout_ref.rollout.tensor_model_parallel_size=1" \
   "cluster.resource.env.device=cuda" \
   "cluster.env.env_loop.max_interactions=$MAX_INTERACTIONS" \

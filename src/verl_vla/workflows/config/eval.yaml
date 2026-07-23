@@ -57,20 +57,8 @@ cluster:
           # Whether this component is enabled.
           enabled: false
 
-    # Policy rollout configuration.
-    rollout:
-
-      # Whether model forward returns critic values.
-      output_critic_value: false
-
   # Environment execution configuration.
   env:
-
-    # Environment interaction loop configuration.
-    env_loop:
-
-      # Maximum policy/environment interactions in one rollout.
-      max_interactions: 8
 
     # Environment worker configuration.
     env_worker:
@@ -97,21 +85,3 @@ cluster:
 
           # Root directory used by this component.
           root: ${output_dir}/videos
-
-  # Cluster resource allocation.
-  resource:
-
-    # Environment execution configuration.
-    env:
-
-      # Device used for this operation.
-      device: cpu
-
-      # Number of workers launched on each node.
-      workers_per_node: 1
-
-    # Policy model configuration.
-    model:
-
-      # Number of GPUs allocated on each node.
-      gpus_per_node: 1

@@ -47,8 +47,8 @@ __all__ = [
 class EnvLoopConfig(BaseConfig):
     """Configuration for async env-loop rollout scheduling."""
 
-    pipeline_stage_num: int = 1
-    max_interactions: int = 1
+    pipeline_stage_num: int = 2
+    max_interactions: int = 8
 
     def __post_init__(self):
         if self.pipeline_stage_num <= 0:
@@ -140,17 +140,6 @@ class EnvTrainConfig(BaseConfig):
         if not isinstance(self.env_worker, EnvWorkerConfig):
             object.__setattr__(self, "env_worker", instantiate(self.env_worker, _recursive_=False))
 
-    def validate_worker_layout(self, env_resource: ResourceConfig) -> None:
-        stage_num = self.env_loop.pipeline_stage_num
-        num_envs_per_worker = self.env_worker.num_envs
-        processes_per_node = (
-            env_resource.workers_per_node if env_resource.device == "cpu" else env_resource.gpus_per_node
-        )
-        env_worker_world_size = env_resource.nnodes * processes_per_node
-        total_envs = env_worker_world_size * num_envs_per_worker
-        if total_envs % stage_num != 0:
-            raise ValueError(f"Total envs ({total_envs}) must be divisible by stage_num ({stage_num})")
-
 
 @dataclass
 class ActorRolloutRefConfig(BaseConfig):
@@ -218,7 +207,6 @@ class EnvTrainClusterConfig(BaseConfig):
             object.__setattr__(self, "env", instantiate(self.env, _recursive_=False))
         if self.checkpoint is not None and not isinstance(self.checkpoint, TrainClusterCheckpointConfig):
             object.__setattr__(self, "checkpoint", instantiate(self.checkpoint))
-        self.env.validate_worker_layout(self.resource.env)
 
 
 @dataclass
@@ -245,4 +233,3 @@ class EnvLoopTrainClusterConfig(BaseConfig):
             object.__setattr__(self, "checkpoint", instantiate(self.checkpoint))
         if self.env.env_worker.device is None:
             object.__setattr__(self.env.env_worker, "device", self.resource.env.device)
-        self.env.validate_worker_layout(self.resource.env)

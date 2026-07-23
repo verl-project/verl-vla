@@ -86,7 +86,6 @@ export VERL_LOGGING_LEVEL=INFO
     'cluster.actor_rollout_ref.actor.checkpoint.save_contents=["model", "optimizer", "extra", "hf_model"]' \
     'cluster.actor_rollout_ref.actor.checkpoint.load_contents=["model", "optimizer", "extra"]' \
     cluster.actor_rollout_ref.rollout.mode=async_envloop \
-    cluster.actor_rollout_ref.rollout.output_critic_value=False \
     cluster.resource.model.nnodes=$NUM_NODES \
     cluster.resource.model.gpus_per_node=$NUM_GPUS \
     cluster.resource.separate_rollout_model.enabled=$SEPARATE_ROLLOUT_MODEL \

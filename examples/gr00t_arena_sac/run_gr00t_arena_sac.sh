@@ -179,7 +179,6 @@ export PYTHONPATH="/opt/groot_deps:$REPO_ROOT/src:/workspaces/isaaclab_arena:${P
   "cluster.actor_rollout_ref.actor.replay.save_dir=$REPLAY_POOL_DIR" \
   "cluster.actor_rollout_ref.actor.replay.online_single_size=2000" \
   "cluster.actor_rollout_ref.rollout.name=hf" \
-  "cluster.actor_rollout_ref.rollout.output_critic_value=false" \
   "cluster.actor_rollout_ref.rollout.tensor_model_parallel_size=1" \
   "cluster.env.env_loop.pipeline_stage_num=$NUM_STAGE" \
   "cluster.env.env_loop.max_interactions=$MAX_INTERACTIONS" \

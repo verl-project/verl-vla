@@ -24,7 +24,6 @@ overrides=(
   "cluster.env.env_worker.recorder.lerobot.repo_id=local/verl_vla_libero_dagger"
   "cluster.env.env_worker.recorder.video.root=$PROJECT_ROOT/outputs/dagger/videos"
 
-  "ray_kwargs.ray_init.runtime_env.env_vars.MUJOCO_GL=osmesa"
   "ray_kwargs.ray_init.runtime_env.env_vars.VERL_LOGGING_LEVEL=INFO"
 )
 

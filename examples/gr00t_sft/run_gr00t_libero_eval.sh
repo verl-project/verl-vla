@@ -68,7 +68,6 @@ python -m verl_vla.entrypoints.eval \
   cluster.actor_rollout_ref.model.adapter.num_action_chunks="$ACTION_CHUNK_SIZE" \
   cluster.actor_rollout_ref.rollout.name=hf \
   cluster.actor_rollout_ref.rollout.mode=async_envloop \
-  cluster.actor_rollout_ref.rollout.output_critic_value=False \
   cluster.resource.model.gpus_per_node="$MODEL_GPUS" \
   cluster.resource.model.device=cuda \
   cluster.resource.env.device=cpu \

@@ -31,7 +31,7 @@ ray_init:
 
       # MuJoCo renderer backend for headless LIBERO simulation.
       # Use egl for GPU rendering, or osmesa for CPU rendering.
-      MUJOCO_GL: osmesa
+      MUJOCO_GL: egl
 
       # Default logging level for verl-vla worker loggers.
       VERL_LOGGING_LEVEL: INFO

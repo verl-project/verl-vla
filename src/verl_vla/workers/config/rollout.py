@@ -56,7 +56,7 @@ class RolloutConfig(BaseConfig):
     log_prob_max_token_len_per_gpu: int = 16384
     load_format: str = "dummy"
     layered_summon: bool = False
-    output_critic_value: bool = True
+    output_critic_value: bool = False
     acp: RolloutACPConfig = field(default_factory=RolloutACPConfig)
     val_kwargs: SamplingConfig = field(default_factory=SamplingConfig)
     multi_turn: MultiTurnConfig = field(default_factory=MultiTurnConfig)

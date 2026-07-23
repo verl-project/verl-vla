@@ -122,7 +122,6 @@ $PYTHON -m verl_vla.entrypoints.train.sac \
     actor_rollout_ref.rollout.gpu_memory_utilization=0.9 \
     actor_rollout_ref.rollout.free_cache_engine=False \
     actor_rollout_ref.rollout.checkpoint_engine.update_weights_bucket_megabytes=1536 \
-    actor_rollout_ref.rollout.output_critic_value=False \
     trainer.logger=['console'] \
     trainer.project_name=$PROJECT_NAME \
     trainer.experiment_name=$EXPERIMENT_NAME \
