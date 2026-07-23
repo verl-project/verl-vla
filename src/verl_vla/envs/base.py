@@ -61,6 +61,7 @@ class BaseEnv(gym.Env):
     """
 
     env_type: str
+    _recorder_mode: str = "train"
 
     def __init__(self, cfg, rank: int, world_size: int, stage_id: int = 0) -> None:
         self.cfg = cfg
@@ -155,6 +156,7 @@ class BaseEnv(gym.Env):
     @override
     def reset(self, *, seed: int | None = None, options: dict[str, Any] | None = None) -> Any:
         del seed
+        self.set_recorder_mode(str((options or {}).get("mode", "train")))
         reset_kwargs = self._reset_kwargs_from_options(options)
         reset_eval = bool(reset_kwargs.pop("reset_eval", False))
         if self.auto_reset_enabled and self._latest_obs is not None and not reset_eval:
@@ -742,6 +744,20 @@ class BaseEnv(gym.Env):
         for env_id in np.asarray(env_ids, dtype=np.int64).reshape(-1):
             self._recorder_episode_done[int(env_id)] = False
             self.recorder.clear_episode(int(env_id))
+
+    def set_recorder_mode(self, mode: str) -> None:
+        """Route recorder artifacts by mode (train/eval).
+
+        Episodes buffered across a mode switch would straddle two rollout
+        regimes, so they are dropped rather than attributed to either mode.
+        """
+        if mode == self._recorder_mode:
+            return
+        self._recorder_mode = mode
+        if self.recorder is None:
+            return
+        self.reset_recorder_envs(np.arange(self.num_envs))
+        self.recorder.set_mode(mode)
 
     def record_step_result(
         self,

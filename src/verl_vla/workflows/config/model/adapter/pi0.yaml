@@ -53,6 +53,39 @@ critic:
   # Mapping from task identifiers to critic checkpoints.
   task_to_critic: null
 
+# DSRL latent-noise steering (arXiv:2506.15799): freeze the WHOLE VLA and
+# train a small SAC noise actor over the flow-matching initial noise x0. The
+# steering noise (not the model action) becomes the SAC action stored in
+# replay under full_action; set critic.input_dim to
+# prefix_embed_dim + state_dim + n_action_steps_or_1 * max_action_dim
+# accordingly. Mutually exclusive with flow_sde_enable.
+dsrl:
+
+  # Master switch for DSRL noise steering.
+  enabled: false
+
+  # MLP trunk widths of the noise actor.
+  hidden_dims: [256, 256, 256]
+
+  # Projection width of the frozen pooled prefix features (2048 -> this).
+  feature_latent_dim: 128
+
+  # Projection width of the normalized robot state.
+  state_latent_dim: 64
+
+  # Optional explicit prefix-feature width; null derives it from the model.
+  feature_dim: null
+
+  # Optional explicit robot-state width; null derives it from the model.
+  state_dim: null
+
+  # false (RLinf parity): one shared noise vector broadcast over the chunk.
+  # true: an independent noise vector per horizon step (larger action space).
+  noise_per_step: false
+
+  # tanh bound of the steering noise; x0 lives in [-noise_bound, noise_bound].
+  noise_bound: 1.0
+
 # Whether Flow-SDE is enabled.
 flow_sde_enable: False
 

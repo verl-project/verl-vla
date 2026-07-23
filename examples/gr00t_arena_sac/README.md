@@ -14,8 +14,7 @@ Two tasks are supported, selected with `ARENA_TASK`:
 
 ## Hardware requirements
 
-- **NVIDIA GPU with recent driver** (CUDA 12.8 runtime). No `cuda128-compat` mount
-  is needed — a modern host driver already satisfies the image.
+- **NVIDIA GPU with recent driver** (CUDA >=12.8 runtime).
 - **≥ 2 GPUs for eval and SAC.** The env-loop cluster runs the Isaac Sim **env
   worker** and the GR00T **model/rollout worker** as separate Ray workers, each
   reserving its own GPU. A single-GPU host fails at Ray resource allocation

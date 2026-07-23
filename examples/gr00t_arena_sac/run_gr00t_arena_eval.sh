@@ -80,12 +80,21 @@ case "$ARENA_TASK" in
     OUTPUT_ROOT="${OUTPUT_ROOT:-$REPO_ROOT/outputs/arena_gr00t_${TASK_SUITE}_task${TASK_ID}_eval}"
     # 10 interactions × 16 action chunks = 160 env steps (matches legacy MAX_EPISODE_STEPS).
     MAX_INTERACTIONS="${MAX_INTERACTIONS:-10}"
+    # LIBERO data resolution is split: the task-suite JSON configs come from Arena's
+    # colocated copy (external_environments/libero/data/config, kept in sync with the env
+    # code), while the heavy USD assets + assembled HDF5 demos come from the
+    # LIBERO_IN_LAB_ROOT mount. We pre-set LIBERO_CONFIG_DIR so Arena's
+    # _configure_libero_env_vars() setdefault does not override it with
+    # $LIBERO_IN_LAB_ROOT/.../config (USD/hdf5 still resolve under LIBERO_IN_LAB_ROOT).
     export LIBERO_IN_LAB_ROOT="${LIBERO_IN_LAB_ROOT:-/libero_in_lab}"
     if [[ ! -d "$LIBERO_IN_LAB_ROOT" ]]; then
-      echo "[warn] LIBERO_IN_LAB_ROOT='$LIBERO_IN_LAB_ROOT' missing — Arena LIBERO may fail to resolve USD/configs"
+      echo "[warn] LIBERO_IN_LAB_ROOT='$LIBERO_IN_LAB_ROOT' missing — Arena LIBERO may fail to resolve USD/hdf5"
     fi
+    ARENA_LIBERO_DATA_DIR="${ARENA_LIBERO_DATA_DIR:-/workspaces/isaaclab_arena/isaaclab_arena_examples/external_environments/libero/data}"
+    export LIBERO_CONFIG_DIR="${LIBERO_CONFIG_DIR:-$ARENA_LIBERO_DATA_DIR/config}"
     EXTRA_OVERRIDES+=(
       "+ray_kwargs.ray_init.runtime_env.env_vars.LIBERO_IN_LAB_ROOT=$LIBERO_IN_LAB_ROOT"
+      "+ray_kwargs.ray_init.runtime_env.env_vars.LIBERO_CONFIG_DIR=$LIBERO_CONFIG_DIR"
       "cluster.env.env_worker.simulator.arena.libero.libero_task_suite=$TASK_SUITE"
       "cluster.env.env_worker.simulator.arena.libero.libero_task_id=$TASK_ID"
     )

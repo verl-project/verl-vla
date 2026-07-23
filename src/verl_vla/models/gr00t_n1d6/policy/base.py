@@ -89,6 +89,9 @@ class Gr00tOutput(ModelOutput):
                      is the differentiable action space the SAC actor/critic operate in
                      (decoding is non-differentiable), stored in replay under
                      ``full_action`` so the critic sees the same space it is trained on.
+                     In DSRL runs (``adapter.dsrl.enabled``) this instead holds the
+                     steering noise ``x0`` — the latent SAC action that seeds the frozen
+                     flow head — with the same shape.
         log_prob:    optional per-sample Flow-SDE log-prob, (B,).
     """
 

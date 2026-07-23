@@ -15,6 +15,8 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from ..dsrl.config import DSRLSteeringConfig
+
 
 class Gr00tCriticConfig:
     DEFAULTS = {
@@ -105,13 +107,16 @@ class Gr00tAdapterConfig:
         for old_name, new_name in self._LEGACY_CRITIC_FIELDS.items():
             if old_name in overrides:
                 critic_values[new_name] = overrides.pop(old_name)
+        dsrl_values = dict(overrides.pop("dsrl", {}) or {})
 
         values = {**self.DEFAULTS, **dict(policy_config or {}), **overrides}
+        dsrl_values = {**dict(values.pop("dsrl", {}) or {}), **dsrl_values}
         if "embodiment" in values and "policy_type" not in overrides:
             # Accept pi0-style wording without writing it back.
             values["policy_type"] = values.pop("embodiment")
         self.model_path = str(model_path) if model_path is not None else None
         self.critic = Gr00tCriticConfig(**critic_values)
+        self.dsrl = DSRLSteeringConfig(**dsrl_values)
         for name, value in values.items():
             setattr(self, name, value)
 
@@ -125,9 +130,10 @@ class Gr00tAdapterConfig:
         config = {
             name: value
             for name, value in vars(self).items()
-            if name not in private_runtime_fields and not name.startswith("_") and name != "critic"
+            if name not in private_runtime_fields and not name.startswith("_") and name not in ("critic", "dsrl")
         }
         config["critic"] = self.critic.to_dict()
+        config["dsrl"] = self.dsrl.to_dict()
         return config
 
 

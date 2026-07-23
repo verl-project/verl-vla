@@ -29,6 +29,7 @@ from transformers.modeling_utils import no_init_weights
 from verl import DataProto
 
 from verl_vla.models.base import ModelOutput, SupportSACTraining, SupportSFTTraining, TrainableVLAModelMixin
+from verl_vla.models.dsrl import DSRLSteeringMixin
 
 from .adapter_config import Gr00tAdapterConfig
 from .compat import apply_gr00t_compat_patches
@@ -82,7 +83,9 @@ def _cfg_get(obj: Any, name: str, default=None):
     return default if val is None else val
 
 
-class Gr00tN1d6TrainableModel(nn.Module, TrainableVLAModelMixin, SupportSACTraining, SupportSFTTraining):
+class Gr00tN1d6TrainableModel(
+    DSRLSteeringMixin, nn.Module, TrainableVLAModelMixin, SupportSACTraining, SupportSFTTraining
+):
     def __init__(self, policy: Gr00tN1d6, adapter_config: Gr00tAdapterConfig | None = None):
         super().__init__()
         if adapter_config is None:
@@ -126,11 +129,24 @@ class Gr00tN1d6TrainableModel(nn.Module, TrainableVLAModelMixin, SupportSACTrain
         self.action_dim = int(getattr(adapter_config, "action_dim", GR1.action_dim))
         self.embodiment_id = int(getattr(adapter_config, "embodiment_id", GR1.embodiment_id))
 
+        dsrl_cfg = getattr(adapter_config, "dsrl", None)
+        self.dsrl_enable = bool(getattr(dsrl_cfg, "enabled", False))
+
         critic_cfg = adapter_config.critic
         self.critic_type = str(critic_cfg.type).lower()
-        self.critic_action_dim = int(critic_cfg.action_dim if critic_cfg.action_dim is not None else self.action_dim)
+        if self.dsrl_enable:
+            # DSRL: the critic scores the steering noise x0 (full padded width).
+            # One shared noise vector per chunk unless noise_per_step is set.
+            default_critic_action_dim = self.max_action_dim
+            default_critic_action_horizon = self.action_horizon if bool(dsrl_cfg.noise_per_step) else 1
+        else:
+            default_critic_action_dim = self.action_dim
+            default_critic_action_horizon = self.num_action_chunks
+        self.critic_action_dim = int(
+            critic_cfg.action_dim if critic_cfg.action_dim is not None else default_critic_action_dim
+        )
         self.critic_action_horizon = int(
-            critic_cfg.action_horizon if critic_cfg.action_horizon is not None else self.num_action_chunks
+            critic_cfg.action_horizon if critic_cfg.action_horizon is not None else default_critic_action_horizon
         )
         self._state_feature_dim = int(getattr(policy.action_head, "input_embedding_dim", self.max_state_dim))
 
@@ -208,6 +224,16 @@ class Gr00tN1d6TrainableModel(nn.Module, TrainableVLAModelMixin, SupportSACTrain
                 self.critic_input_dim,
                 critic_cfg.pooling,
             )
+
+        # DSRL latent-noise steering (arXiv:2506.15799): freeze the whole VLA and
+        # train a small SAC noise actor over the flow-matching initial noise x0.
+        self.init_dsrl(
+            dsrl_cfg,
+            feature_dim=self.backbone_feature_dim,
+            state_dim=self.state_horizon * self.max_state_dim,
+            noise_dim=self.max_action_dim,
+            noise_horizon=self.action_horizon,
+        )
 
         self.freeze_vision_tower_enabled = bool(getattr(adapter_config, "freeze_vision_tower", True))
         if self.freeze_vision_tower_enabled and self.adapter_config.critic.enabled:
@@ -336,6 +362,9 @@ class Gr00tN1d6TrainableModel(nn.Module, TrainableVLAModelMixin, SupportSACTrain
             " + mlp1 connector" if mlp1 is not None else "",
         )
 
+    def _dsrl_actor_inputs(self, state_features: dict[str, torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
+        return state_features["pooled"], state_features["state"]
+
     def freeze_action_io(self) -> None:
         ah = self.action_head
         if ah is None:
@@ -365,6 +394,8 @@ class Gr00tN1d6TrainableModel(nn.Module, TrainableVLAModelMixin, SupportSACTrain
     def sac_init(self):
         if self.adapter_config.critic.enabled and self.critic is None and self.critic_api is not None:
             self.critic_api.init(self)
+        if self.dsrl_enable:
+            self.freeze_policy_for_dsrl()
         if self.freeze_vision_tower_enabled:
             self.freeze_vision_tower()
         for method in (
@@ -420,24 +451,37 @@ class Gr00tN1d6TrainableModel(nn.Module, TrainableVLAModelMixin, SupportSACTrain
         s, raw_state_groups = self._prepare_inputs(obs, tokenizer, training=False)
         state_features = self._state_features_impl(s)
 
-        override = obs.meta_info.get("rollout_noise_scale", None) if obs.meta_info else None
-        if eval:
-            noise_scale = 0.0
-        elif override is not None:
-            noise_scale = float(override)
+        if self.dsrl_enable:
+            # DSRL: sample steering noise from the small SAC actor and let the
+            # frozen flow head integrate it deterministically into an action.
+            steering_noise, log_probs, _ = self.dsrl_forward_actor(state_features, deterministic=eval)
+            full_action, _ = self._denoise(
+                state_features, noise_scale=0.0, requires_grad=False, return_log_prob=False, x0=steering_noise
+            )
+            # The SAC action space is the steering noise, so that is what the
+            # replay/critic see under ``full_action``.
+            replay_action = steering_noise.detach().float()
         else:
-            noise_scale = self.flow_sde_rollout_noise_scale if self.flow_sde_enable else 0.0
-        return_log_prob = self.flow_sde_enable and noise_scale > 0.0
+            override = obs.meta_info.get("rollout_noise_scale", None) if obs.meta_info else None
+            if eval:
+                noise_scale = 0.0
+            elif override is not None:
+                noise_scale = float(override)
+            else:
+                noise_scale = self.flow_sde_rollout_noise_scale if self.flow_sde_enable else 0.0
+            return_log_prob = self.flow_sde_enable and noise_scale > 0.0
 
-        full_action, log_probs = self._denoise(
-            state_features, noise_scale=noise_scale, requires_grad=False, return_log_prob=return_log_prob
-        )
+            full_action, log_probs = self._denoise(
+                state_features, noise_scale=noise_scale, requires_grad=False, return_log_prob=return_log_prob
+            )
+            replay_action = full_action.detach().float()
+
         full_action_norm = full_action.detach().float()
         decoded_flat = self._get_adapter().decode_actions_flat(full_action_norm.cpu().numpy(), raw_state_groups)
         decoded = torch.as_tensor(decoded_flat, dtype=torch.float32, device=full_action_norm.device)
         return output_cls.from_model_output(
             {
-                "full_action": full_action_norm,
+                "full_action": replay_action,
                 "decoded_action": decoded,
                 "log_probs": log_probs,
                 "num_action_chunks": self.num_action_chunks,
@@ -569,12 +613,17 @@ class Gr00tN1d6TrainableModel(nn.Module, TrainableVLAModelMixin, SupportSACTrain
         noise_scale: float,
         requires_grad: bool,
         return_log_prob: bool,
+        x0: Optional[torch.Tensor] = None,
     ) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
         vl_embeds = sf["backbone_features"]
         batch_size = vl_embeds.shape[0]
         device = vl_embeds.device
         dtype = vl_embeds.dtype
-        x0 = torch.randn((batch_size, self.action_horizon, self.max_action_dim), dtype=dtype, device=device)
+        if x0 is None:
+            x0 = torch.randn((batch_size, self.action_horizon, self.max_action_dim), dtype=dtype, device=device)
+        else:
+            # DSRL steering noise replaces the Gaussian prior as the flow start.
+            x0 = x0.to(dtype=dtype, device=device)
 
         if self.sac_action_train_all:
             return self._run_flow(
@@ -683,6 +732,10 @@ class Gr00tN1d6TrainableModel(nn.Module, TrainableVLAModelMixin, SupportSACTrain
         noise_scale: Optional[float] = None,
     ) -> tuple[torch.Tensor, Optional[torch.Tensor], dict[str, float]]:
         del task_ids
+        if self.dsrl_enable:
+            del is_first_micro_batch, noise_scale
+            return self.dsrl_forward_actor(state_features)
+
         resolved_noise_scale = (
             (self.flow_sde_train_noise_scale if self.flow_sde_enable else 0.0)
             if noise_scale is None
@@ -737,6 +790,8 @@ class Gr00tN1d6TrainableModel(nn.Module, TrainableVLAModelMixin, SupportSACTrain
         return self.critic_api.get_critic_parameters(self)
 
     def sac_get_named_actor_parameters(self) -> list[tuple[str, torch.nn.Parameter]]:
+        if self.dsrl_enable:
+            return self.dsrl_named_actor_parameters()
         actor_params = []
         for name, p in self.action_head.named_parameters():
             if p.requires_grad:
@@ -937,6 +992,8 @@ class Gr00tN1d6TrainableModel(nn.Module, TrainableVLAModelMixin, SupportSACTrain
 
     def export_policy(self, output_dir, *, state_dict=None):
         self.save_pretrained(output_dir, state_dict=state_dict)
+
+        self.dsrl_export_sidecar(output_dir, state_dict=state_dict)
 
 
 __all__ = ["Gr00tN1d6TrainableModel", "load_gr00t_n1d6_policy", "beta_schedule"]

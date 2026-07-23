@@ -345,6 +345,7 @@ class EnvWorker(Worker, DistProfilerExtension):
         for stage_id in range(self.stage_num):
             options = {
                 "env_idx": list(range(self.env_worker_cfg.num_envs)),
+                "mode": mode,
             }
             if reset_eval:
                 options["reset_eval"] = True

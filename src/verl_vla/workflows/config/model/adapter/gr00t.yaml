@@ -74,6 +74,34 @@ critic:
   # Whether to apply layer normalization in the critic head.
   layernorm: false
 
+# DSRL latent-noise steering ---------------------------------------------------
+
+# DSRL (arXiv:2506.15799): freeze the WHOLE VLA and train a small SAC noise
+# actor over the flow-matching initial noise x0. The steering noise (not the
+# model action) becomes the SAC action stored in replay under full_action, and
+# the critic defaults switch to action_dim=max_action_dim, action_horizon=1.
+# Mutually exclusive with flow_sde_enable.
+dsrl:
+
+  # Master switch for DSRL noise steering.
+  enabled: false
+
+  # MLP trunk widths of the noise actor.
+  hidden_dims: [256, 256, 256]
+
+  # Projection width of the frozen pooled backbone features (2048 -> this).
+  feature_latent_dim: 128
+
+  # Projection width of the raw processor state.
+  state_latent_dim: 64
+
+  # false (RLinf parity): one shared noise vector broadcast over the chunk.
+  # true: an independent noise vector per horizon step (larger action space).
+  noise_per_step: false
+
+  # tanh bound of the steering noise; x0 lives in [-noise_bound, noise_bound].
+  noise_bound: 1.0
+
 # Trainable policy components -------------------------------------------------
 
 # Freeze the Eagle vision tower during online RL.

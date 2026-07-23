@@ -45,6 +45,10 @@ class SACConfig(BaseConfig):
     alpha_type: str = "exp"
     alpha_lr: float = 3e-4
     target_entropy: float = -64.0
+    # Include the -alpha*log_pi entropy term in the critic TD target. RLinf's
+    # DSRL recipe disables it (the summed noise log-prob would dominate the
+    # bootstrap before alpha anneals).
+    backup_entropy: bool = True
 
     def __post_init__(self):
         valid_alpha_types = ["exp", "softplus"]

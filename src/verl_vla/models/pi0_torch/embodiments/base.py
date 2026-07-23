@@ -47,6 +47,10 @@ class Pi0Output:
     def __init__(self):
         self.action: torch.Tensor = None
         self.log_prob: torch.Tensor = None
+        # Optional latent SAC action. DSRL runs store the steering noise x0
+        # here so the replay/critic operate on the noise space while ``action``
+        # stays the env-facing decoded chunk.
+        self.full_action: torch.Tensor = None
 
     @classmethod
     @abstractmethod
@@ -56,6 +60,8 @@ class Pi0Output:
         tensor_batch = {"action": self.action}
         if self.log_prob is not None:
             tensor_batch["log_prob"] = self.log_prob
+        if self.full_action is not None:
+            tensor_batch["full_action"] = self.full_action
         return DataProto.from_dict(tensors=tensor_batch)
 
 
