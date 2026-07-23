@@ -61,6 +61,11 @@ save_freq: -1
 # Evaluation interval in global steps. Negative disables interval evaluation.
 test_freq: -1
 
+# Number of trajectories aggregated per eval into val/trajectory_success_rate.
+# Non-positive falls back to the env's eval benchmark size (1 for envs without
+# a fixed benchmark, e.g. Arena, which makes the eval SR a single 0/1 sample).
+eval_episodes: -1
+
 # Whether to run evaluation before training begins.
 val_before_train: True
 

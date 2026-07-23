@@ -54,6 +54,15 @@ class BaseRecorder(ABC):
         """Return a completed artifact root if this recorder owns one."""
         return None
 
+    def set_mode(self, mode: str) -> bool:  # noqa: B027
+        """Switch the recording mode (e.g. ``train`` vs ``eval``).
+
+        Recorders that separate artifacts by mode override this; the default
+        implementation ignores the mode.
+        """
+        del mode
+        return False
+
     @abstractmethod
     def finalize(self) -> None:
         """Release recorder resources and clear temporary state."""

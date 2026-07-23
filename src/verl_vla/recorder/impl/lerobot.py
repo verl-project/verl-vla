@@ -74,6 +74,7 @@ class LeRobotDatasetRecorder(BaseRecorder):
         }
         self._pending_frames: list[list[dict[str, Any]]] = [[] for _ in range(num_envs)]
         self._has_completed_episode = False
+        self.mode = "train"
 
         self.dataset = self._create_dataset()
 
@@ -126,6 +127,15 @@ class LeRobotDatasetRecorder(BaseRecorder):
     def clear_episode(self, env_id: int = 0) -> None:
         """Discard pending frames for one environment."""
         self._pending_frames[env_id].clear()
+
+    @override
+    def set_mode(self, mode: str) -> bool:
+        if mode == self.mode:
+            return False
+        self.mode = mode
+        for pending_frames in self._pending_frames:
+            pending_frames.clear()
+        return True
 
     @override
     def pop_completed(self) -> Path | None:

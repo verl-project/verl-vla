@@ -146,8 +146,10 @@ class RobRaySACTrainer:
 
         # perform evaluation before training
         # currently, we only support evaluation using the reward_function.
+        eval_max_episodes = int(self.trainer_config.eval_episodes)
+        eval_max_episodes = eval_max_episodes if eval_max_episodes > 0 else None
         if self.trainer_config.val_before_train:
-            val_metrics = self.cluster.eval()
+            val_metrics = self.cluster.eval(max_episodes=eval_max_episodes)
             assert val_metrics, f"{val_metrics=}"
             pprint(f"Initial evaluation metrics: {val_metrics}")
             logger.log(data=val_metrics, step=self.global_steps)
@@ -239,7 +241,7 @@ class RobRaySACTrainer:
                     and self.global_steps >= actor_config.critic.warmup_steps
                 ):
                     with marked_timer("testing", timing_raw, color="green"):
-                        val_metrics: dict = self.cluster.eval()
+                        val_metrics: dict = self.cluster.eval(max_episodes=eval_max_episodes)
                         if is_last_step:
                             last_val_metrics = val_metrics
                     metrics.update(val_metrics)

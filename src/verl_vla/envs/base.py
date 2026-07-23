@@ -155,6 +155,9 @@ class BaseEnv(gym.Env):
     @override
     def reset(self, *, seed: int | None = None, options: dict[str, Any] | None = None) -> Any:
         del seed
+        mode = str((options or {}).get("mode", "train"))
+        if self.recorder is not None and self.recorder.set_mode(mode):
+            self._recorder_episode_done.fill(False)
         reset_kwargs = self._reset_kwargs_from_options(options)
         reset_eval = bool(reset_kwargs.pop("reset_eval", False))
         if self.auto_reset_enabled and self._latest_obs is not None and not reset_eval:

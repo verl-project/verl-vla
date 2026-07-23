@@ -169,6 +169,7 @@ if [[ "$MODE" == "run" && "$DIRECT_RUN" == "1" ]]; then
     -e "ARENA_TASK=${ARENA_TASK:-}" \
     -e "TASK_SUITE=${TASK_SUITE:-}" \
     -e "TASK_ID=${TASK_ID:-}" \
+    -e "EVAL_EPISODES=${EVAL_EPISODES:-}" \
     -w "$WORKDIR" \
     --entrypoint bash \
     "$IMAGE" \
@@ -308,6 +309,7 @@ case "$MODE" in
       -e ARENA_TASK="${ARENA_TASK:-}" \
       -e TASK_SUITE="${TASK_SUITE:-}" \
       -e TASK_ID="${TASK_ID:-}" \
+      -e EVAL_EPISODES="${EVAL_EPISODES:-}" \
       "$CONTAINER_NAME" \
       bash "$INNER_SCRIPT"
     HOST_OUTPUT="${OUTPUT_ROOT/#$WORKDIR/$HOST_REPO}"
