@@ -38,8 +38,15 @@ drop_last: True
 # Random seed used by the dataloader sampler when shuffle is enabled.
 seed: 42
 
+# Optional number of randomly sampled items in one logical epoch. A long epoch
+# keeps worker prefetch queues alive for fixed-step training on small datasets.
+samples_per_epoch: null
+
 # LeRobot video decoding backend.
 video_backend: pyav
+
+# Decode video features once into shared host memory instead of seeking MP4 files per sample.
+cache_videos: False
 
 # Number of future action timestamps requested from LeRobot.
 action_delta_steps: 0

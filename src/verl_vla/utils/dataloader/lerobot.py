@@ -16,12 +16,63 @@ import logging
 
 import torch
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
+from lerobot.datasets.video_utils import decode_video_frames
 from torch.utils.data import Dataset, RandomSampler, SequentialSampler
 from torchdata.stateful_dataloader import StatefulDataLoader
 
 from .config import LeRobotDataLoaderConfig
 
 logger = logging.getLogger(__name__)
+
+
+class _MemoryCachedLeRobotDataset(LeRobotDataset):
+    """Decode video features once and share the frames with dataloader workers."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._cached_item_index: int | None = None
+        self._video_cache = self._build_video_cache()
+
+    def _build_video_cache(self) -> dict[str, torch.Tensor]:
+        cache = {}
+        for key in self.meta.video_keys:
+            height, width, channels = self.features[key]["shape"]
+            cache[key] = torch.empty((len(self), channels, height, width), dtype=torch.uint8)
+
+        for episode_index, episode in enumerate(self.meta.episodes):
+            start = int(episode["dataset_from_index"])
+            end = int(episode["dataset_to_index"])
+            timestamps = torch.stack(self.hf_dataset[start:end]["timestamp"]).tolist()
+            for key, frames in cache.items():
+                from_timestamp = float(episode[f"videos/{key}/from_timestamp"])
+                video_path = self.root / self.meta.get_video_file_path(episode_index, key)
+                decoded = decode_video_frames(
+                    video_path,
+                    [from_timestamp + timestamp for timestamp in timestamps],
+                    self.tolerance_s,
+                    self.video_backend,
+                )
+                frames[start:end].copy_((decoded * 255).round().to(torch.uint8))
+
+        for frames in cache.values():
+            frames.share_memory_()
+        cache_gib = sum(frames.numel() for frames in cache.values()) / 1024**3
+        logger.info("Cached %s video streams in shared memory (%.2f GiB)", len(cache), cache_gib)
+        return cache
+
+    def __getitem__(self, index: int) -> dict:
+        self._cached_item_index = int(index)
+        try:
+            return super().__getitem__(index)
+        finally:
+            self._cached_item_index = None
+
+    def _query_videos(self, query_timestamps: dict[str, list[float]], ep_idx: int) -> dict[str, torch.Tensor]:
+        if self._cached_item_index is None:
+            raise RuntimeError("Video cache was queried outside dataset item loading")
+        return {
+            key: self._video_cache[key][self._cached_item_index].to(torch.float32).div_(255) for key in query_timestamps
+        }
 
 
 def resolve_multiprocessing_context(data_config: LeRobotDataLoaderConfig, num_workers: int) -> str | None:
@@ -50,8 +101,11 @@ def build_lerobot_dataset(
     repo_id: str | None = None,
     root: str | None = None,
     delta_timestamps: dict[str, list[float]] | None = None,
+    cache_videos: bool | None = None,
 ):
-    return LeRobotDataset(
+    use_video_cache = data_config.cache_videos if cache_videos is None else cache_videos
+    dataset_cls = _MemoryCachedLeRobotDataset if use_video_cache else LeRobotDataset
+    return dataset_cls(
         repo_id=repo_id or data_config.repo_id,
         root=root if root is not None else data_config.root,
         revision=data_config.revision,
@@ -64,7 +118,7 @@ def build_lerobot_sft_dataset(data_config: LeRobotDataLoaderConfig):
     action_delta_steps = int(data_config.action_delta_steps)
     delta_timestamps = None
     if action_delta_steps > 0:
-        probe_dataset = build_lerobot_dataset(data_config)
+        probe_dataset = build_lerobot_dataset(data_config, cache_videos=False)
         delta_timestamps = {data_config.action_key: [t / probe_dataset.fps for t in range(action_delta_steps)]}
     return build_lerobot_dataset(data_config, delta_timestamps=delta_timestamps)
 
@@ -91,10 +145,11 @@ def build_lerobot_sft_dataloader(
         drop_last = True
 
     dataset_size = len(dataset)
-    if drop_last and dataset_size < batch_size:
+    sample_count = dataset_size if data_config.samples_per_epoch is None else int(data_config.samples_per_epoch)
+    if drop_last and sample_count < batch_size:
         raise ValueError(
             "SFT dataset is smaller than one batch with drop_last=True; no batches can be produced. "
-            f"dataset_size={dataset_size}, batch_size={batch_size}, repo_id={data_config.repo_id}, "
+            f"sample_count={sample_count}, batch_size={batch_size}, repo_id={data_config.repo_id}, "
             f"root={data_config.root}. Reduce data.batch_size or set drop_last=False for single-GPU runs."
         )
     logger.info(
@@ -102,7 +157,7 @@ def build_lerobot_sft_dataloader(
         dataset_size,
         batch_size,
         drop_last,
-        dataset_size // batch_size if drop_last else (dataset_size + batch_size - 1) // batch_size,
+        sample_count // batch_size if drop_last else (sample_count + batch_size - 1) // batch_size,
         data_config.repo_id,
         data_config.root,
     )
@@ -111,7 +166,12 @@ def build_lerobot_sft_dataloader(
         generator = torch.Generator()
         if data_config.seed is not None:
             generator.manual_seed(int(data_config.seed))
-        sampler = RandomSampler(data_source=dataset, generator=generator)
+        sampler = RandomSampler(
+            data_source=dataset,
+            replacement=data_config.samples_per_epoch is not None,
+            num_samples=data_config.samples_per_epoch,
+            generator=generator,
+        )
     else:
         sampler = SequentialSampler(data_source=dataset)
 

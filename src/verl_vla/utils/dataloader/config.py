@@ -37,7 +37,9 @@ class LeRobotDataLoaderConfig(BaseConfig):
     shuffle: bool = True
     drop_last: bool = True
     seed: int | None = 42
+    samples_per_epoch: int | None = None
     video_backend: str | None = "pyav"
+    cache_videos: bool = False
     action_delta_steps: int = 64
     action_key: str = "action"
 
@@ -48,6 +50,11 @@ class LeRobotDataLoaderConfig(BaseConfig):
             raise ValueError(f"num_workers must be non-negative, got {self.num_workers}")
         if self.prefetch_factor <= 0:
             raise ValueError(f"prefetch_factor must be positive, got {self.prefetch_factor}")
+        if self.samples_per_epoch is not None:
+            if self.samples_per_epoch <= 0:
+                raise ValueError(f"samples_per_epoch must be positive when set, got {self.samples_per_epoch}")
+            if not self.shuffle:
+                raise ValueError("samples_per_epoch requires shuffle=True")
         if self.multiprocessing_context not in {None, "fork", "spawn", "forkserver"}:
             raise ValueError(
                 "multiprocessing_context must be one of None, 'fork', 'spawn', or 'forkserver', "
