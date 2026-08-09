@@ -1,9 +1,11 @@
-# Ray over SSH
+# Ray over autossh
 
 Use this setup when the cloud machine exposes only SSH and a local robot
 machine must join its Ray cluster. It does not require a TAP device, a VPC
 route, EasyTier, or `CAP_NET_ADMIN`. Ray traffic remains inside one encrypted
-SSH connection, and no Ray port is exposed on a public interface.
+SSH connection managed by `autossh`, and no Ray port is exposed on a public
+interface. `autossh` is used so the tunnel is automatically re-established
+after a transient SSH or network interruption.
 
 This guide uses a local Piper robot as the concrete example. The SSH and Ray
 connection is not Piper-specific: `piper` is only the custom resource label
@@ -14,7 +16,7 @@ or environment worker.
 Cloud: Ray head and GPU workers (resource: cloud)
 127.77.0.1
         |
-        | one SSH connection with many -L and -R channels
+        | one autossh-managed connection with many -L and -R channels
         |
 127.0.0.2
 Local: robot environment worker (resource: piper)
@@ -28,10 +30,10 @@ cross-node Ray listener a fixed port:
 
 | Node | Ray ports |
 | --- | --- |
-| Cloud | GCS `26379`, services `28076-28082`, workers `28100-28131` |
+| Cloud | GCS `26379`, services `28076-28082`, workers and drivers `28100-28163` |
 | Local | services `29076-29081`, workers `29100-29115` |
 
-SSH then multiplexes all of these forwards over one connection:
+`autossh` then multiplexes all of these forwards over one SSH connection:
 
 - `-L` forwards the cloud listeners to the local machine, allowing the local
   worker to connect to the Ray head.
@@ -46,8 +48,10 @@ addresses are in `127.0.0.0/8`, no virtual network interface is required.
 Only listening ports require forwarding. TCP client source ports are temporary
 and travel through the established connections, while node-local Ray ports do
 not cross the tunnel. The fixed worker ranges bound the maximum concurrent Ray
-workers; enlarge the ranges in both the Ray arguments and SSH forwards if more
-worker ports are required.
+workers. Ray drivers also take a port from the head node's worker port pool, so
+the tunnel must forward the complete configured range, not only the ports
+currently occupied by workers. Enlarge the ranges in both the Ray arguments
+and autossh forwards if more ports are required.
 
 Ray resource labels control placement. The cloud node advertises `cloud`, and
 the local robot node advertises `piper`. A workflow can therefore keep model
@@ -57,6 +61,8 @@ local machine.
 ## Requirements
 
 - SSH key authentication from the local machine to the cloud machine works.
+- `autossh` is installed on the local machine. On Debian or Ubuntu, run
+  `sudo apt-get install autossh`.
 - The cloud SSH server enables `GatewayPorts clientspecified`, so reverse
   forwards can bind `127.0.0.2` without listening on the public interface.
 - Python and Ray have exactly the same versions on both machines. No other
@@ -77,7 +83,7 @@ each terminal. Replace the SSH destination where indicated.
 First, start the head in a cloud terminal:
 
 ```bash
-CLOUD_WORKER_PORTS=$(seq -s, 28100 28131)
+CLOUD_WORKER_PORTS=$(seq -s, 28100 28163)
 ray start --head \
   --node-ip-address=127.77.0.1 --port=26379 \
   --object-manager-port=28076 --node-manager-port=28077 \
@@ -88,24 +94,28 @@ ray start --head \
   --resources='{"cloud":1}'
 ```
 
-Then, in a local terminal, create the bidirectional SSH forwards and join the
-robot worker:
+Then, in a local terminal, create the persistent bidirectional forwards and
+join the robot worker:
 
 ```bash
 CLOUD_SSH_HOST=root@cloud.example.com
 CLOUD_SSH_PORT=22
-SSH_CONTROL=/tmp/vvla-ray-ssh.sock
+AUTOSSH_PIDFILE=/tmp/vvla-ray-autossh.pid
+AUTOSSH_LOGFILE=/tmp/vvla-ray-autossh.log
+export AUTOSSH_PIDFILE AUTOSSH_LOGFILE
 
 SSH_FORWARDS=()
-for port in 26379 {28076..28082} {28100..28131}; do
+for port in 26379 {28076..28082} {28100..28163}; do
   SSH_FORWARDS+=( -L "127.77.0.1:$port:127.77.0.1:$port" )
 done
 for port in {29076..29081} {29100..29115}; do
   SSH_FORWARDS+=( -R "127.0.0.2:$port:127.0.0.2:$port" )
 done
 
-ssh -p "$CLOUD_SSH_PORT" -M -S "$SSH_CONTROL" -fN \
-  -o ExitOnForwardFailure=yes "${SSH_FORWARDS[@]}" "$CLOUD_SSH_HOST"
+autossh -M 0 -fN -p "$CLOUD_SSH_PORT" \
+  -o BatchMode=yes -o ExitOnForwardFailure=yes \
+  -o ServerAliveInterval=10 -o ServerAliveCountMax=3 \
+  -o TCPKeepAlive=yes "${SSH_FORWARDS[@]}" "$CLOUD_SSH_HOST"
 
 LOCAL_WORKER_PORTS=$(seq -s, 29100 29115)
 ray start --address=127.77.0.1:26379 \
@@ -126,12 +136,13 @@ ray status --address=127.77.0.1:26379
 The output should contain two active nodes and the custom resources `cloud`
 and `piper`.
 
-To disconnect, stop Ray locally, close the SSH connection, and run `ray stop
---force` once in the cloud terminal:
+To disconnect, stop Ray locally, stop `autossh`, and run `ray stop --force`
+once in the cloud terminal:
 
 ```bash
 ray stop --force
-ssh -p "$CLOUD_SSH_PORT" -S "$SSH_CONTROL" -O exit "$CLOUD_SSH_HOST"
+kill "$(cat "$AUTOSSH_PIDFILE")"
+rm "$AUTOSSH_PIDFILE"
 ```
 
 ## Submit work from the cloud
@@ -167,5 +178,10 @@ local node. Env-only workflows such as replay do not need the model override.
   `+ray_kwargs.ray_init._node_ip_address=127.77.0.1`.
 - A worker fails to start or deserialize a task: compare Python and Ray versions
   on both machines and make them identical.
-- The local node disappears: check the SSH control connection and ensure an
-  HTTP proxy is not intercepting SSH.
+- A driver connects but a remote worker hangs on its first call: verify that
+  every port in the head's `--worker-port-list` is present in `SSH_FORWARDS`.
+- The local node disappears: inspect `$AUTOSSH_LOGFILE`, verify the autossh PID
+  is still running, and ensure an HTTP proxy is not intercepting SSH.
+- The autossh process is alive but Ray does not recover after a tunnel restart:
+  run `ray stop --force` locally and join the head again. Autossh restores the
+  transport, but it does not restart a Ray node that has already exited.
