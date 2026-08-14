@@ -16,21 +16,6 @@ arms:
   - name: left
 
     # SocketCAN interface connected to this arm.
-    can_channel: can_right
-
-    # AgileX driver and URDF model: piper, piper_h, piper_l, or piper_x.
-    model: piper_x
-
-    # pyAgxArm Piper firmware adapter.
-    firmware_version: v188
-
-    # Reset pose in joint radians; null captures startup feedback instead.
-    initial_joint_angles: [0.00001745, -0.00797615, 0.01717404, 0.58512163, 0.04897394, -0.02546435]
-
-  # Second logical teleoperation hand.
-  - name: right
-
-    # SocketCAN interface connected to this arm.
     can_channel: can_left
 
     # AgileX driver and URDF model: piper, piper_h, piper_l, or piper_x.
@@ -39,8 +24,25 @@ arms:
     # pyAgxArm Piper firmware adapter.
     firmware_version: v188
 
-    # Reset pose in joint radians; null captures startup feedback instead.
-    initial_joint_angles: [0.03780383, 0.01403245, 0.01569051, 0.81677918, 0.01125737, 0.29810224]
+    # Reset action: six joint radians followed by gripper width in meters.
+    # Null captures the complete seven-dimensional startup action instead.
+    initial_action: [0.00010472, -0.00069813, 0.01808161, 0.59861303, 0.05106833, -0.02483604, 0.0]
+
+  # Second logical teleoperation hand.
+  - name: right
+
+    # SocketCAN interface connected to this arm.
+    can_channel: can_right
+
+    # AgileX driver and URDF model: piper, piper_h, piper_l, or piper_x.
+    model: piper_x
+
+    # pyAgxArm Piper firmware adapter.
+    firmware_version: v188
+
+    # Reset action: six joint radians followed by gripper width in meters.
+    # Null captures the complete seven-dimensional startup action instead.
+    initial_action: [0.03506366, -0.00089012, 0.01935570, 0.38083084, 0.01144936, 0.29564132, 0.0]
 
 # V4L2 camera observations. Any number may be listed; [] disables cameras.
 cameras:
@@ -160,6 +162,9 @@ reset_timeout_s: 15.0
 
 # Per-joint reset completion tolerance in radians.
 reset_joint_tolerance: 0.03
+
+# Gripper reset completion tolerance in meters.
+reset_gripper_tolerance: 0.002
 
 # Maximum gripper opening width in meters.
 gripper_open_width: 0.1

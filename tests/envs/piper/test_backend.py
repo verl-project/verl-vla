@@ -49,10 +49,17 @@ class _LossyIK(_IK):
 class _Driver:
     def __init__(self):
         self.commands = []
+        self.current = np.zeros(6)
 
     def move_js(self, joints):
         self.command = np.asarray(joints)
         self.commands.append(self.command)
+        self.current = self.command.copy()
+
+    def move_j(self, joints):
+        self.command = np.asarray(joints)
+        self.commands.append(self.command)
+        self.current = self.command.copy()
 
     def get_tcp_pose(self):
         return SimpleNamespace(msg=[0.0] * 6)
@@ -61,10 +68,12 @@ class _Driver:
 class _Gripper:
     def __init__(self):
         self.commands = []
+        self.current = 0.04
 
     def move_gripper_m(self, *, value, force):
         self.command = (value, force)
         self.commands.append(self.command)
+        self.current = value
 
 
 def _backend() -> PiperBackend:
@@ -73,6 +82,11 @@ def _backend() -> PiperBackend:
         gripper_close_width=0.0,
         gripper_open_width=0.1,
         gripper_force=1.0,
+        control_hz=1000.0,
+        reset_duration_s=0.001,
+        reset_timeout_s=0.1,
+        reset_joint_tolerance=0.03,
+        reset_gripper_tolerance=0.002,
     )
     backend._lock = threading.RLock()
     backend._arm_names = ("left",)
@@ -84,9 +98,12 @@ def _backend() -> PiperBackend:
             target_joints=np.zeros(6),
             target_pose=np.eye(4),
             target_gripper=0.04,
+            reset_action=np.asarray([0.2, -0.1, 0.3, 0.0, 0.1, -0.2, 0.08]),
         )
     }
-    backend._read_joint_actions = lambda: np.asarray([[0.0] * 6 + [0.04]])
+    backend._read_joint_actions = lambda: np.asarray(
+        [[*backend._arms["left"].driver.current, backend._arms["left"].gripper.current]]
+    )
     return backend
 
 
@@ -144,3 +161,15 @@ def test_unchanged_joint_action_is_not_repeated() -> None:
 
     assert backend._arms["left"].driver.commands == []
     assert backend._arms["left"].gripper.commands == []
+
+
+def test_reset_restores_the_complete_seven_dimensional_action() -> None:
+    backend = _backend()
+
+    backend.reset()
+
+    expected = backend._arms["left"].reset_action
+    np.testing.assert_allclose(backend._arms["left"].driver.command, expected[:6])
+    assert backend._arms["left"].gripper.command == (expected[6], 1.0)
+    np.testing.assert_allclose(backend._arms["left"].target_joints, expected[:6])
+    assert backend._arms["left"].target_gripper == expected[6]

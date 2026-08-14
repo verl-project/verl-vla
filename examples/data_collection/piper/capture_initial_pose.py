@@ -13,67 +13,73 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Print the current dual-Piper joint pose as a Hydra YAML value."""
+"""Print configured Piper joint and gripper feedback as Hydra initial actions."""
 
 from __future__ import annotations
 
 import argparse
 import time
+from pathlib import Path
 
-import rclpy
-from rclpy.node import Node
-from sensor_msgs.msg import JointState
-
-
-class InitialPoseCapture(Node):
-    def __init__(self, arm_names: list[str]) -> None:
-        super().__init__("piper_initial_pose_capture")
-        self.joint_angles: dict[str, list[float]] = {}
-        for hand in arm_names:
-            self.create_subscription(
-                JointState,
-                f"/{hand}_arm/feedback/joint_states",
-                lambda message, hand=hand: self._joint_callback(hand, message),
-                1,
-            )
-
-    def _joint_callback(self, hand: str, message: JointState) -> None:
-        positions = dict(zip(message.name, message.position, strict=False))
-        joint_angles = [positions.get(f"joint{index}") for index in range(1, 7)]
-        if any(angle is None for angle in joint_angles):
-            return
-        self.joint_angles[hand] = [float(angle) for angle in joint_angles]
+import yaml
+from pyAgxArm import AgxArmFactory, create_agx_arm_config
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--arms", nargs="+", choices=("left", "right"), default=["left", "right"])
-    parser.add_argument("--timeout", type=float, default=5.0, help="Seconds to wait for configured arms")
+    parser.add_argument("--timeout", type=float, default=5.0, help="Seconds to wait for action feedback")
+    parser.add_argument(
+        "--config",
+        type=Path,
+        default=Path(__file__).parents[3] / "src/verl_vla/workflows/config/env/simulator/piper.yaml",
+    )
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
-    if args.timeout <= 0:
-        raise ValueError(f"timeout must be positive, got {args.timeout}")
+    config = yaml.safe_load(args.config.read_text(encoding="utf-8"))
+    arms = {arm["name"]: arm for arm in config["arms"]}
+    missing = set(args.arms) - set(arms)
+    if missing:
+        raise ValueError(f"Hands are not configured in {args.config}: {sorted(missing)}")
 
-    rclpy.init()
-    node = InitialPoseCapture(args.arms)
+    drivers = []
     try:
+        for hand in args.arms:
+            arm = arms[hand]
+            driver_config = create_agx_arm_config(
+                robot=arm["model"],
+                comm="can",
+                channel=arm["can_channel"],
+                firmeware_version=arm["firmware_version"],
+            )
+            driver = AgxArmFactory.create_arm(driver_config)
+            driver.connect()
+            gripper = driver.init_effector(driver.OPTIONS.EFFECTOR.AGX_GRIPPER)
+            drivers.append((hand, driver, gripper))
+
         deadline = time.monotonic() + args.timeout
-        while len(node.joint_angles) != len(args.arms) and time.monotonic() < deadline:
-            rclpy.spin_once(node, timeout_sec=0.1)
-        missing_hands = [hand for hand in args.arms if hand not in node.joint_angles]
-        if missing_hands:
-            raise TimeoutError(f"Timed out waiting for joint feedback from: {', '.join(missing_hands)}")
+        feedback = {}
+        while len(feedback) != len(drivers) and time.monotonic() < deadline:
+            for hand, driver, gripper in drivers:
+                joints = driver.get_joint_angles()
+                gripper_status = gripper.get_gripper_status()
+                if joints is not None and joints.hz > 0 and gripper_status is not None and gripper_status.hz > 0:
+                    feedback[hand] = [*joints.msg, gripper_status.msg.value]
+            time.sleep(0.01)
+        if len(feedback) != len(drivers):
+            missing_feedback = sorted(set(args.arms) - set(feedback))
+            raise TimeoutError(f"Timed out waiting for action feedback from {missing_feedback}")
 
         for hand in args.arms:
-            values = ", ".join(f"{angle:.8f}" for angle in node.joint_angles[hand])
+            values = ", ".join(f"{angle:.8f}" for angle in feedback[hand])
             print(f"{hand}: [{values}]")
         return 0
     finally:
-        node.destroy_node()
-        rclpy.shutdown()
+        for _, driver, _ in reversed(drivers):
+            driver.disconnect()
 
 
 if __name__ == "__main__":

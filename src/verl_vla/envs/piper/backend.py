@@ -42,7 +42,7 @@ class _ArmRuntime:
     target_joints: np.ndarray | None = None
     target_pose: np.ndarray | None = None
     target_gripper: float | None = None
-    reset_joints: np.ndarray | None = None
+    reset_action: np.ndarray | None = None
 
 
 class PiperBackend:
@@ -189,27 +189,44 @@ class PiperBackend:
     def reset(self) -> None:
         with self._lock:
             feedback = self._read_joint_actions()
-            targets = np.stack([self._arms[hand].reset_joints for hand in self._arm_names])
+            targets = np.stack([self._arms[hand].reset_action for hand in self._arm_names])
             start = time.monotonic()
             duration = float(self.cfg.reset_duration_s)
             while True:
                 progress = min((time.monotonic() - start) / duration, 1.0)
                 smooth = progress * progress * (3.0 - 2.0 * progress)
-                positions = feedback[:, :6] + smooth * (targets - feedback[:, :6])
-                for hand, joints in zip(self._arm_names, positions, strict=True):
-                    self._arms[hand].driver.move_j(joints.tolist())
+                actions = feedback + smooth * (targets - feedback)
+                for hand, action in zip(self._arm_names, actions, strict=True):
+                    runtime = self._arms[hand]
+                    runtime.driver.move_j(action[:6].tolist())
+                    runtime.gripper.move_gripper_m(
+                        value=float(action[6]),
+                        force=float(self.cfg.gripper_force),
+                    )
                 if progress >= 1.0:
                     break
                 time.sleep(1.0 / float(self.cfg.control_hz))
 
             deadline = time.monotonic() + float(self.cfg.reset_timeout_s) - duration
             while time.monotonic() < deadline:
-                current = self._read_joint_actions()[:, :6]
-                if np.allclose(current, targets, rtol=0.0, atol=float(self.cfg.reset_joint_tolerance)):
+                current = self._read_joint_actions()
+                joints_ready = np.allclose(
+                    current[:, :6],
+                    targets[:, :6],
+                    rtol=0.0,
+                    atol=float(self.cfg.reset_joint_tolerance),
+                )
+                grippers_ready = np.allclose(
+                    current[:, 6],
+                    targets[:, 6],
+                    rtol=0.0,
+                    atol=float(self.cfg.reset_gripper_tolerance),
+                )
+                if joints_ready and grippers_ready:
                     self._sync_targets(capture_reset=False)
                     return
                 time.sleep(0.02)
-            raise TimeoutError("Piper arms did not reach their configured reset joint targets")
+            raise TimeoutError("Piper arms did not reach their configured reset actions")
 
     def _start_arm(self, arm_cfg: Any) -> _ArmRuntime:
         driver_config = create_agx_arm_config(
@@ -287,9 +304,9 @@ class PiperBackend:
             runtime = self._arms[hand]
             self._sync_runtime_target(runtime, feedback[index], self._read_tcp_pose(runtime))
             if capture_reset:
-                configured = self.cfg.arms[index].initial_joint_angles
-                runtime.reset_joints = (
-                    feedback[index, :6].copy() if configured is None else np.asarray(configured, dtype=float)
+                configured = self.cfg.arms[index].initial_action
+                runtime.reset_action = (
+                    feedback[index].copy() if configured is None else np.asarray(configured, dtype=float)
                 )
 
     @staticmethod

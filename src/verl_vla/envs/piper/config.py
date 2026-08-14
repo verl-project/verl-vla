@@ -33,7 +33,7 @@ class PiperArmConfig:
     can_channel: str
     model: str = "piper_x"
     firmware_version: str = "v188"
-    initial_joint_angles: list[float] | None = None
+    initial_action: list[float] | None = None
 
     def __post_init__(self) -> None:
         if self.name not in _ARM_NAMES:
@@ -44,10 +44,10 @@ class PiperArmConfig:
             raise ValueError("Piper can_channel must not be empty")
         if self.firmware_version not in {"default", "v183", "v188", "v189"}:
             raise ValueError(f"Unsupported Piper firmware version {self.firmware_version!r}")
-        if self.initial_joint_angles is not None:
-            angles = np.asarray(self.initial_joint_angles, dtype=float)
-            if angles.shape != (6,) or not np.all(np.isfinite(angles)):
-                raise ValueError(f"{self.name} initial_joint_angles must contain six finite values")
+        if self.initial_action is not None:
+            action = np.asarray(self.initial_action, dtype=float)
+            if action.shape != (7,) or not np.all(np.isfinite(action)):
+                raise ValueError(f"{self.name} initial_action must contain seven finite values")
 
 
 @dataclass
@@ -109,6 +109,7 @@ class PiperConfig(BaseConfig):
     reset_duration_s: float = 3.0
     reset_timeout_s: float = 15.0
     reset_joint_tolerance: float = 0.03
+    reset_gripper_tolerance: float = 0.002
     gripper_open_width: float = 0.1
     gripper_close_width: float = 0.0
     gripper_width_step: float = 0.005
@@ -148,9 +149,17 @@ class PiperConfig(BaseConfig):
             raise ValueError("Piper camera_stale_timeout_s must be positive")
         if self.reset_duration_s <= 0 or self.reset_timeout_s <= self.reset_duration_s:
             raise ValueError("reset_timeout_s must be greater than the positive reset_duration_s")
-        if self.reset_joint_tolerance <= 0:
-            raise ValueError("reset_joint_tolerance must be positive")
+        if self.reset_joint_tolerance <= 0 or self.reset_gripper_tolerance <= 0:
+            raise ValueError("Piper reset tolerances must be positive")
         if self.gripper_close_width > self.gripper_open_width:
             raise ValueError("gripper_close_width must not exceed gripper_open_width")
+        for arm in arms:
+            if arm.initial_action is not None and not (
+                self.gripper_close_width <= arm.initial_action[6] <= self.gripper_open_width
+            ):
+                raise ValueError(
+                    f"{arm.name} initial_action gripper width must be between "
+                    f"{self.gripper_close_width} and {self.gripper_open_width} meters"
+                )
         if self.gripper_width_step <= 0 or not 0.5 <= self.gripper_force <= 3.0:
             raise ValueError("gripper_width_step must be positive and gripper_force must be between 0.5 and 3.0 N")
