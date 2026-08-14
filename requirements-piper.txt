@@ -1,0 +1,15 @@
+# Direct Piper runtime. Python 3.11.15 and Ray 2.56.1 are pinned by
+# examples/data_collection/piper/setup.sh.
+# lerobot==0.4.4 is installed with --no-deps by setup.sh after the verified
+# NumPy-1.26-compatible dependency set below.
+-r requirements-lerobot.txt
+ray==2.56.1
+python-can>3.3.4
+cmake==4.1.2
+einops==0.8.1
+setuptools==80.9.0
+termcolor==3.2.0
+wandb==0.24.0
+# Piper hosts use an older Linux input header set; keep this workaround local
+# instead of changing the shared LeRobot dependency baseline.
+evdev==1.7.1

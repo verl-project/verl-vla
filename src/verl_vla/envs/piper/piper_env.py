@@ -21,11 +21,11 @@ import numpy as np
 from typing_extensions import override
 
 from verl_vla.envs.base import BaseEnv
-from verl_vla.envs.piper.ros_backend import PiperRosBackend
+from verl_vla.envs.piper.backend import PiperBackend
 
 
 class PiperEnv(BaseEnv):
-    """Configured Piper arms controlled exclusively through QuestArm ROS."""
+    """Configured Piper arms controlled directly in absolute joint space."""
 
     env_type = "piper"
 
@@ -43,13 +43,13 @@ class PiperEnv(BaseEnv):
         if int(cfg.num_envs) != 1:
             raise ValueError(f"PiperEnv only supports num_envs=1, got {cfg.num_envs}")
         if int(world_size) != 1:
-            raise ValueError(f"PiperEnv requires one EnvWorker to own the ROS/CAN lifecycle, got {world_size}")
+            raise ValueError(f"PiperEnv requires one EnvWorker to own the CAN lifecycle, got {world_size}")
 
         self.action_dim = int(self.piper_cfg.action_dim)
         self.state_dim = int(self.piper_cfg.state_dim)
         self.task_description = str(self.piper_cfg.task_description)
         self.task_descriptions = [self.task_description]
-        self._backend = PiperRosBackend(self.piper_cfg)
+        self._backend = PiperBackend(self.piper_cfg)
         self._step_id = 0
         self.action_space = gym.spaces.Box(low=-np.inf, high=np.inf, shape=(self.action_dim,), dtype=np.float32)
         self.observation_space = gym.spaces.Dict(
@@ -87,7 +87,7 @@ class PiperEnv(BaseEnv):
         action = np.asarray(action, dtype=np.float32)
         if action.shape != (1, self.action_dim):
             raise ValueError(f"Piper action must have shape [1, {self.action_dim}], got {action.shape}")
-        self._backend.apply_action(action[0])
+        action[0] = self._backend.apply_action(action[0])
         self._step_id += 1
         return self._step_result(
             reward=np.zeros(1, dtype=np.float32),
@@ -102,7 +102,13 @@ class PiperEnv(BaseEnv):
 
     @override
     def get_teleop_strategy_kwargs(self, device_type: str) -> dict[str, Any]:
-        return {"arm_rotation_reader": self._backend.read_arm_rotations} if device_type == "xr_controller" else {}
+        kwargs = {
+            "task_delta_to_action": self._backend.task_delta_to_action,
+            "task_target_sync": self._backend.sync_task_target,
+        }
+        if device_type == "xr_controller":
+            kwargs["arm_rotation_reader"] = self._backend.read_arm_rotations
+        return kwargs
 
     @override
     def get_recorder_strategy_kwargs(self) -> dict[str, Any]:

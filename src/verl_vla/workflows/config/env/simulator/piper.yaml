@@ -21,6 +21,9 @@ arms:
     # AgileX driver and URDF model: piper, piper_h, piper_l, or piper_x.
     model: piper_x
 
+    # pyAgxArm Piper firmware adapter.
+    firmware_version: v188
+
     # Reset pose in joint radians; null captures startup feedback instead.
     initial_joint_angles: [0.00001745, -0.00797615, 0.01717404, 0.58512163, 0.04897394, -0.02546435]
 
@@ -32,6 +35,9 @@ arms:
 
     # AgileX driver and URDF model: piper, piper_h, piper_l, or piper_x.
     model: piper_x
+
+    # pyAgxArm Piper firmware adapter.
+    firmware_version: v188
 
     # Reset pose in joint radians; null captures startup feedback instead.
     initial_joint_angles: [0.03780383, 0.01403245, 0.01569051, 0.81677918, 0.01125737, 0.29810224]
@@ -45,14 +51,20 @@ cameras:
     # V4L2 device path.
     device: /dev/v4l/by-id/usb-Sonix_Technology_Co.__Ltd._Dabai_DC1_CC1N16202MR-video-index0
 
+    # Capture rate in frames per second.
+    fps: 30
+
     # Captured image width in pixels.
     width: 320
 
     # Captured image height in pixels.
     height: 240
 
-    # V4L2 input pixel format converted to RGB8 by ROS.
-    pixel_format: YUYV
+    # OpenCV/V4L2 capture format. Keep the verified native camera mode.
+    fourcc: YUYV
+
+    # Seconds of background capture before startup completes.
+    warmup_s: 3
 
   # Stable observation and LeRobot feature name.
   - name: right_wrist
@@ -60,14 +72,20 @@ cameras:
     # V4L2 device path.
     device: /dev/v4l/by-id/usb-Sonix_Technology_Co.__Ltd._Dabai_DC1_CC1N16200MD-video-index0
 
+    # Capture rate in frames per second.
+    fps: 30
+
     # Captured image width in pixels.
     width: 320
 
     # Captured image height in pixels.
     height: 240
 
-    # V4L2 input pixel format converted to RGB8 by ROS.
-    pixel_format: YUYV
+    # OpenCV/V4L2 capture format. Keep the verified native camera mode.
+    fourcc: YUYV
+
+    # Seconds of background capture before startup completes.
+    warmup_s: 3
 
   # Stable observation and LeRobot feature name.
   - name: left_wrist
@@ -75,23 +93,64 @@ cameras:
     # V4L2 device path.
     device: /dev/v4l/by-id/usb-Sonix_Technology_Co.__Ltd._Dabai_DC1_CC1N162035J-video-index0
 
+    # Capture rate in frames per second.
+    fps: 30
+
     # Captured image width in pixels.
     width: 320
 
     # Captured image height in pixels.
     height: 240
 
-    # V4L2 input pixel format converted to RGB8 by ROS.
-    pixel_format: YUYV
+    # OpenCV/V4L2 capture format. Keep the verified native camera mode.
+    fourcc: YUYV
+
+    # Seconds of background capture before startup completes.
+    warmup_s: 3
 
 # Task string published in observations and recordings.
 task_description: Put the white object into the box.
 
-# QuestArm IK position objective weight.
-ik_position_weight: 5.0
+# Upstream AgileX URDF checkout used by Pinocchio FK/IK.
+urdf_root: ${oc.env:XDG_DATA_HOME,${oc.env:HOME}/.local/share}/verl-vla/agx_arm_description/agx_arm_urdf
 
-# QuestArm IK smoothing objective weight.
-ik_smooth_weight: 0.5
+# Hardware startup feedback timeout.
+startup_timeout_s: 10.0
+
+# Direct joint control and reset rate.
+control_hz: 30.0
+
+# Optional Piper controller speed override. Null preserves QuestArm's previous
+# behavior and pyAgxArm's effective 50% default.
+speed_percent: null
+
+# Joint-6 to TCP offset used by the hardware feedback path. This matches the
+# upstream QuestArm driver used by the previous ROS backend.
+driver_tcp_length: 0.13
+
+# Joint-6 to TCP translation used by the QuestArm IK model, in meters.
+tool_length: 0.1325
+
+# Pinocchio/CasADi IK position objective weight.
+ik_position_weight: 2.0
+
+# IK orientation objective weight.
+ik_orientation_weight: 2.0
+
+# IK neutral-configuration regularization weight.
+ik_regularization_weight: 0.01
+
+# IK smoothing objective weight.
+ik_smooth_weight: 0.1
+
+# IPOPT maximum solve iterations.
+ik_max_iterations: 50
+
+# IPOPT convergence tolerance.
+ik_tolerance: 1.0e-4
+
+# Reject camera frames older than this many seconds.
+camera_stale_timeout_s: 0.5
 
 # Duration in seconds of the smooth joint reset trajectory.
 reset_duration_s: 3.0
@@ -111,5 +170,5 @@ gripper_close_width: 0.0
 # Relative gripper width change per keyboard step in meters.
 gripper_width_step: 0.005
 
-# Gripper force passed to agx_arm_ctrl.
+# Gripper force passed directly to pyAgxArm, in newtons.
 gripper_force: 1.0

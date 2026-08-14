@@ -73,6 +73,8 @@ class PiperPicoXRStrategy(InterventionStrategyBase):
         *,
         simulator_cfg: Any,
         arm_rotation_reader: Callable[[], dict[str, np.ndarray]],
+        task_delta_to_action: Callable[[np.ndarray], np.ndarray],
+        task_target_sync: Callable[[str], None],
     ):
         super().__init__(cfg or XRControllerTeleopConfig())
         self._action_dim = int(simulator_cfg.action_dim)
@@ -81,14 +83,16 @@ class PiperPicoXRStrategy(InterventionStrategyBase):
         self._rotation_scale = float(self.cfg.rot_sensitivity)
         self._gripper_open_width = float(simulator_cfg.gripper_open_width)
         self._arm_rotation_reader = arm_rotation_reader
+        self._task_delta_to_action = task_delta_to_action
+        self._task_target_sync = task_target_sync
         self._intervention_button = str(self.cfg.intervention_button)
         self._button_threshold = float(self.cfg.button_threshold)
-        self._webxr_to_questarm = np.array(
+        self._webxr_to_robot = np.array(
             [[0.0, 0.0, -1.0, 0.0], [-1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]],
             dtype=float,
         )
         self._controller_alignment = _rotation_matrix(-math.pi, 0.0, -math.pi / 2.0)
-        self._questarm_alignment = _rotation_matrix(-1.5708, 0.0, -1.5708)
+        self._robot_alignment = _rotation_matrix(-1.5708, 0.0, -1.5708)
         self.reset()
 
     @override
@@ -122,7 +126,7 @@ class PiperPicoXRStrategy(InterventionStrategyBase):
             "strategy": "piper:xr_controller",
             "active": any(active_hands.values()),
             "active_hands": active_hands,
-            "backend": "QuestArm ROS",
+            "backend": "Piper direct joint control",
             "key_bindings": self.key_bindings(),
         }
 
@@ -137,14 +141,14 @@ class PiperPicoXRStrategy(InterventionStrategyBase):
     def _action_from_frame(self, frame: dict[str, Any]) -> np.ndarray:
         command = np.zeros(self._action_dim, dtype=np.float32)
         if not frame:
-            return command
+            return self._task_delta_to_action(command)
         timestamp = float(frame.get("timestamp", 0.0))
         if timestamp == self._timestamp:
-            return command
+            return self._task_delta_to_action(command)
         self._timestamp = timestamp
         controllers = frame.get("controllers")
         if not isinstance(controllers, dict):
-            return command
+            return self._task_delta_to_action(command)
         arm_rotations = self._arm_rotation_reader()
 
         for arm_index, hand in enumerate(self._arm_names):
@@ -152,14 +156,12 @@ class PiperPicoXRStrategy(InterventionStrategyBase):
             controller = controllers.get(hand)
             if not isinstance(controller, dict):
                 continue
-            self._update_hand_buttons(state, controller, arm_rotations[hand])
+            self._update_hand_buttons(hand, state, controller, arm_rotations[hand])
             pose = controller.get("grip_pose") or controller.get("target_ray_pose")
             pose_matrix = _webxr_pose_matrix(pose) if isinstance(pose, dict) else None
             if pose_matrix is None:
                 continue
-            controller_pose = (
-                self._webxr_to_questarm @ pose_matrix @ self._controller_alignment @ self._questarm_alignment
-            )
+            controller_pose = self._webxr_to_robot @ pose_matrix @ self._controller_alignment @ self._robot_alignment
             offset = arm_index * 7
             if state.active:
                 if state.start_pose is None:
@@ -185,7 +187,7 @@ class PiperPicoXRStrategy(InterventionStrategyBase):
             if state.previous_trigger is not None:
                 command[offset + 6] = (trigger - state.previous_trigger) * self._gripper_open_width
             state.previous_trigger = trigger
-        return command
+        return self._task_delta_to_action(command)
 
     def _update_buttons(self, frame: dict[str, Any]) -> None:
         controllers = frame.get("controllers", {}) if frame else {}
@@ -195,10 +197,11 @@ class PiperPicoXRStrategy(InterventionStrategyBase):
         for hand, state in self._hands.items():
             controller = controllers.get(hand)
             if isinstance(controller, dict):
-                self._update_hand_buttons(state, controller, arm_rotations[hand])
+                self._update_hand_buttons(hand, state, controller, arm_rotations[hand])
 
     def _update_hand_buttons(
         self,
+        hand: str,
         state: _HandState,
         controller: dict[str, Any],
         robot_rotation: np.ndarray,
@@ -208,6 +211,8 @@ class PiperPicoXRStrategy(InterventionStrategyBase):
             state.active = not state.active
             state.start_pose = None
             state.previous_relative_pose = None
+            if state.active:
+                self._task_target_sync(hand)
             state.robot_zero_rotation = robot_rotation.copy() if state.active else None
         state.intervention_down = intervention_down
 
