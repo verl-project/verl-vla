@@ -9,6 +9,7 @@ from __future__ import annotations
 from copy import deepcopy
 from pathlib import Path
 
+import numpy as np
 from lerobot.configs.types import NormalizationMode
 from lerobot.datasets.factory import IMAGENET_STATS
 from lerobot.datasets.utils import load_stats
@@ -24,6 +25,14 @@ def _validate_normalization_stats(config, stats: dict) -> None:
         NormalizationMode.QUANTILE10: ("q10", "q90"),
     }
     for name, feature in {**config.input_features, **config.output_features}.items():
+        if name not in config.image_features and name in stats and "mean" in stats[name]:
+            actual_dim = int(np.asarray(stats[name]["mean"]).size)
+            expected_dim = int(np.prod(feature.shape))
+            if actual_dim != expected_dim:
+                raise ValueError(
+                    f"ACT normalization stats for {name!r} have dimension {actual_dim}, "
+                    f"but the checkpoint expects {expected_dim}"
+                )
         mode = config.normalization_mapping.get(feature.type, NormalizationMode.IDENTITY)
         if mode == NormalizationMode.IDENTITY:
             continue
@@ -32,7 +41,12 @@ def _validate_normalization_stats(config, stats: dict) -> None:
             raise ValueError(f"ACT normalization stats for {name!r} are missing {missing}")
 
 
-def load_act_processors(config, model_path: str | Path, *, dataset_root: str | Path | None):
+def load_act_processors(
+    config,
+    model_path: str | Path,
+    *,
+    dataset_root: str | Path | None,
+):
     """Load checkpoint processors or initialize native processors from dataset statistics.
 
     LeRobot stores normalization outside the policy config. A trained checkpoint must

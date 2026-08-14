@@ -31,6 +31,7 @@ class ACTCriticConfig:
 class ACTAdapterConfig:
     DEFAULTS = {
         "policy_type": "libero",
+        "action_chunk_size": None,
         "sac_rollout_noise_scale": 0.1,
         "sac_train_noise_scale": 0.0,
         "freeze_vision_tower": True,

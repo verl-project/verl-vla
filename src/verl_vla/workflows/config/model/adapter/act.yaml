@@ -7,6 +7,10 @@
 # Select the LIBERO policy path in the model implementation.
 policy_type: libero
 
+# Number of predicted actions executed before the policy replans. Null uses the
+# checkpoint's native n_action_steps.
+action_chunk_size: null
+
 # Dataset root used to initialize LeRobot's native processors when the model
 # artifact contains only an ACT config and no saved processor artifacts yet.
 processor_dataset_root: null

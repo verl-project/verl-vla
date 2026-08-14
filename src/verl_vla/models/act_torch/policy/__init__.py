@@ -14,18 +14,22 @@
 
 from .base import ActInput, ActOutput
 from .libero_policy import LiberoActInput, LiberoActOutput
+from .piper_policy import PiperActInput, PiperActOutput
 
 __all__ = [
     "ActInput",
     "ActOutput",
     "LiberoActInput",
     "LiberoActOutput",
+    "PiperActInput",
+    "PiperActOutput",
     "get_act_policy_classes",
 ]
 
 
 _ACT_POLICY_REGISTRY = {
     "libero": (LiberoActInput, LiberoActOutput),
+    "piper": (PiperActInput, PiperActOutput),
 }
 
 

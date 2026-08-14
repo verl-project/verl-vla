@@ -1,0 +1,79 @@
+{
+  "type": "act",
+  "n_obs_steps": 1,
+  "input_features": {
+    "observation.images.height": {
+      "type": "VISUAL",
+      "shape": [
+        3,
+        240,
+        320
+      ]
+    },
+    "observation.images.right_wrist": {
+      "type": "VISUAL",
+      "shape": [
+        3,
+        240,
+        320
+      ]
+    },
+    "observation.images.left_wrist": {
+      "type": "VISUAL",
+      "shape": [
+        3,
+        240,
+        320
+      ]
+    },
+    "observation.state": {
+      "type": "STATE",
+      "shape": [
+        14
+      ]
+    }
+  },
+  "output_features": {
+    "action": {
+      "type": "ACTION",
+      "shape": [
+        14
+      ]
+    }
+  },
+  "device": "cuda",
+  "use_amp": false,
+  "use_peft": false,
+  "push_to_hub": true,
+  "repo_id": null,
+  "private": null,
+  "tags": null,
+  "license": null,
+  "pretrained_path": null,
+  "chunk_size": 50,
+  "n_action_steps": 50,
+  "normalization_mapping": {
+    "VISUAL": "MEAN_STD",
+    "STATE": "MEAN_STD",
+    "ACTION": "MEAN_STD"
+  },
+  "vision_backbone": "resnet18",
+  "pretrained_backbone_weights": "ResNet18_Weights.IMAGENET1K_V1",
+  "replace_final_stride_with_dilation": false,
+  "pre_norm": false,
+  "dim_model": 512,
+  "n_heads": 8,
+  "dim_feedforward": 3200,
+  "feedforward_activation": "relu",
+  "n_encoder_layers": 4,
+  "n_decoder_layers": 1,
+  "use_vae": true,
+  "latent_dim": 32,
+  "n_vae_encoder_layers": 4,
+  "temporal_ensemble_coeff": null,
+  "dropout": 0.1,
+  "kl_weight": 10.0,
+  "optimizer_lr": 0.00001,
+  "optimizer_weight_decay": 0.0001,
+  "optimizer_lr_backbone": 0.00001
+}

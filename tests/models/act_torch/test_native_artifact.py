@@ -127,3 +127,31 @@ def test_build_native_act_from_config_without_policy_weights(tmp_path) -> None:
     assert isinstance(built.policy, ACTPolicy)
     assert built.policy.config.chunk_size == 2
     assert not (config_dir / "model.safetensors").exists()
+
+
+def test_build_native_act_rejects_dataset_state_from_an_old_schema(tmp_path) -> None:
+    config_dir = tmp_path / "config_only"
+    _tiny_policy().config.save_pretrained(config_dir)
+    (config_dir / "initialization.json").write_text('{"type": "act_config"}', encoding="utf-8")
+    dataset_root = tmp_path / "dataset"
+    (dataset_root / "meta").mkdir(parents=True)
+    (dataset_root / "meta" / "stats.json").write_text(
+        json.dumps(
+            {
+                "observation.state": {"mean": [0.0] * 6, "std": [1.0] * 6},
+                "action": {"mean": [0.0] * 2, "std": [1.0] * 2},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="dimension 6, but the checkpoint expects 3"):
+        build_vla_model(
+            SimpleNamespace(
+                native_architecture="act",
+                local_path=str(config_dir),
+                override_config={},
+                adapter={"processor_dataset_root": str(dataset_root)},
+            ),
+            torch_dtype=torch.float32,
+        )

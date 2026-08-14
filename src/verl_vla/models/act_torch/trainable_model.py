@@ -69,6 +69,20 @@ class ACTTrainableModel(TrainableVLAModelBase, SupportSACTraining, SupportSFTTra
     def reset(self):
         self.policy.reset()
 
+    def _rollout_action_chunk_size(self) -> int:
+        native_chunk_size = (
+            1 if self.policy.config.temporal_ensemble_coeff is not None else int(self.policy.config.n_action_steps)
+        )
+        configured_chunk_size = self.config.action_chunk_size
+        if configured_chunk_size is None:
+            return native_chunk_size
+        chunk_size = int(configured_chunk_size)
+        if not 1 <= chunk_size <= native_chunk_size:
+            raise ValueError(
+                f"ACT rollout action_chunk_size must be between 1 and {native_chunk_size}, got {chunk_size}"
+            )
+        return chunk_size
+
     def _get_act_policy_classes(self):
         return get_act_policy_classes(self.config.policy_type)
 
@@ -181,20 +195,19 @@ class ACTTrainableModel(TrainableVLAModelBase, SupportSACTraining, SupportSFTTra
         act_input_cls, act_output_cls = self._get_act_policy_classes()
         act_input = act_input_cls.from_env_obs(env_obs)
         policy_batch = self._build_policy_batch(act_input)
+        action_chunk_size = self._rollout_action_chunk_size()
 
         if self.policy.config.temporal_ensemble_coeff is not None:
             action = self.policy.select_action(policy_batch).unsqueeze(1)
         else:
-            action = self.policy.predict_action_chunk(policy_batch)[:, : self.policy.config.n_action_steps]
+            action = self.policy.predict_action_chunk(policy_batch)[:, :action_chunk_size]
         action = self.postprocessor(action).float()
 
         act_output = act_output_cls.from_model_output(
             {
                 "full_action": action,
                 "log_probs": torch.zeros(action.shape[0], device=action.device, dtype=torch.float32),
-                "action_chunk_size": (
-                    1 if self.policy.config.temporal_ensemble_coeff is not None else self.policy.config.n_action_steps
-                ),
+                "action_chunk_size": action_chunk_size,
             }
         )
 
@@ -368,7 +381,7 @@ class ACTTrainableModel(TrainableVLAModelBase, SupportSACTraining, SupportSFTTra
             {
                 "full_action": actions,
                 "log_probs": None,
-                "action_chunk_size": self.policy.config.n_action_steps,
+                "action_chunk_size": self._rollout_action_chunk_size(),
             }
         )
 

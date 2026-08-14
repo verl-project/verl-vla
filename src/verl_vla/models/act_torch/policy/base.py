@@ -18,6 +18,19 @@ import torch
 from verl import DataProto
 
 
+def prepare_act_image(image: torch.Tensor) -> torch.Tensor:
+    """Convert live or recorded images to ACT's float32 BCHW contract."""
+    if image.ndim == 5:
+        image = image[:, -1]
+    if image.ndim != 4:
+        raise ValueError(f"ACT image must have four dimensions after time selection, got {tuple(image.shape)}")
+    if image.shape[-1] == 3 and image.shape[1] != 3:
+        image = image.permute(0, 3, 1, 2)
+    if image.dtype == torch.uint8:
+        return image.to(dtype=torch.float32).div_(255.0)
+    return image.to(dtype=torch.float32)
+
+
 class ActInput(ABC):
     def __init__(self):
         self.images: dict[str, torch.Tensor] = {}

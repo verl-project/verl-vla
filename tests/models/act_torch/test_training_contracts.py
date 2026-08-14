@@ -151,6 +151,15 @@ def test_act_rollout_initializes_without_critic() -> None:
     assert not hasattr(model, "critic_backend")
 
 
+def test_act_rollout_action_chunk_size_replans_before_native_chunk_end() -> None:
+    model = _model(adapter_config={"action_chunk_size": 1})
+
+    output, _, actions = model.sample_actions(_observations())
+
+    assert output.action.shape == (2, 1, 7)
+    assert actions["full_action"].shape == (2, 1, 7)
+
+
 def test_act_sac_freezes_the_configured_vision_tower() -> None:
     model = _model(adapter_config={"freeze_vision_tower": True})
 

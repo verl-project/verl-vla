@@ -16,23 +16,9 @@ import torch
 from typing_extensions import override
 from verl.protocol import DataProto
 
-from .base import ActInput, ActOutput
+from .base import ActInput, ActOutput, prepare_act_image
 
 LIBERO_ACTION_DIM = 7
-
-
-def _normalize_image_range(image: torch.Tensor) -> torch.Tensor:
-    """Convert LIBERO images to the [0, 1] range used by LeRobot datasets.
-
-    Offline LeRobot video decoding returns float tensors in [0, 1], while
-    live LIBERO observations arrive as uint8 tensors in [0, 255]. Keeping
-    both paths on the same scale is required before ACT's mean/std image
-    normalization is applied.
-    """
-    if image.dtype == torch.uint8:
-        return image.to(dtype=torch.float32).div_(255.0)
-
-    return image.to(dtype=torch.float32)
 
 
 class LiberoActInput(ActInput):
@@ -45,18 +31,8 @@ class LiberoActInput(ActInput):
         wrist_images = env_obs.batch["observation.images.wrist_image"]
         device = images.device
 
-        if images.ndim == 5:
-            images = images[:, -1, :, :, :]
-            wrist_images = wrist_images[:, -1, :, :, :]
-
-        # Ensure images are in (B, C, H, W) format - convert from (B, H, W, C) if needed
-        if images.shape[-1] == 3 and images.shape[-3] != 3:
-            images = images.permute(0, 3, 1, 2)
-        if wrist_images.shape[-1] == 3 and wrist_images.shape[-3] != 3:
-            wrist_images = wrist_images.permute(0, 3, 1, 2)
-
-        images = _normalize_image_range(images)
-        wrist_images = _normalize_image_range(wrist_images)
+        images = prepare_act_image(images)
+        wrist_images = prepare_act_image(wrist_images)
 
         batch_size = images.shape[0]
         input.images = {
