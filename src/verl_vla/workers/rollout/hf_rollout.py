@@ -17,6 +17,7 @@ from typing import Any
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 from torch.distributed.device_mesh import DeviceMesh
 from verl import DataProto
 from verl.utils.device import get_device_name
@@ -104,6 +105,21 @@ class HFRollout(BaseRollout):
         prompts.non_tensor_batch[data_keys.task] = np.asarray(tagged_values, dtype=object)
         return prompts
 
+    def _interpolate_action_chunk(self, actions: torch.Tensor) -> torch.Tensor:
+        interpolation = self.config.action_interpolation
+        if not interpolation.enable:
+            return actions
+        if actions.ndim != 3:
+            raise ValueError(f"rollout action chunk must have shape [batch, time, action_dim], got {actions.shape}")
+
+        output_steps = int(actions.shape[1]) * int(interpolation.factor)
+        return F.interpolate(
+            actions.transpose(1, 2),
+            size=output_steps,
+            mode="linear",
+            align_corners=True,
+        ).transpose(1, 2)
+
     def generate_sequences(self, prompts: DataProto) -> DataProto:
         prompts = self._apply_acp_prompt_tag(prompts)
         with torch.autocast(device_type=get_device_name(), dtype=torch.bfloat16):
@@ -115,6 +131,7 @@ class HFRollout(BaseRollout):
             )
 
         ret = output.to_data_proto()
+        ret.batch["action"] = self._interpolate_action_chunk(ret.batch["action"])
         if self.output_critic_value:
             with torch.autocast(device_type=get_device_name(), dtype=torch.bfloat16):
                 critic_value = self.module.sac_get_critic_value(prompts, output, self.tokenizer)

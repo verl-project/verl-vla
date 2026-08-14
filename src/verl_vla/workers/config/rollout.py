@@ -18,7 +18,7 @@ from typing import Optional
 from verl.base_config import BaseConfig
 from verl.workers.config import CheckpointEngineConfig, MultiTurnConfig, SamplingConfig
 
-__all__ = ["RolloutACPConfig", "RolloutConfig"]
+__all__ = ["RolloutACPConfig", "RolloutActionInterpolationConfig", "RolloutConfig"]
 
 
 @dataclass
@@ -27,6 +27,18 @@ class RolloutACPConfig(BaseConfig):
 
     enable: bool = False
     positive_tag: str = "Advantage: positive"
+
+
+@dataclass
+class RolloutActionInterpolationConfig(BaseConfig):
+    """Temporal upsampling applied to rollout action chunks before execution."""
+
+    enable: bool = False
+    factor: int = 2
+
+    def __post_init__(self):
+        if self.factor < 2:
+            raise ValueError(f"action interpolation factor must be at least 2, got {self.factor}")
 
 
 @dataclass
@@ -58,6 +70,7 @@ class RolloutConfig(BaseConfig):
     layered_summon: bool = False
     output_critic_value: bool = False
     acp: RolloutACPConfig = field(default_factory=RolloutACPConfig)
+    action_interpolation: RolloutActionInterpolationConfig = field(default_factory=RolloutActionInterpolationConfig)
     val_kwargs: SamplingConfig = field(default_factory=SamplingConfig)
     multi_turn: MultiTurnConfig = field(default_factory=MultiTurnConfig)
     checkpoint_engine: CheckpointEngineConfig = field(default_factory=CheckpointEngineConfig)
