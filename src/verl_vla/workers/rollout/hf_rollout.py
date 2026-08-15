@@ -17,7 +17,6 @@ from typing import Any
 
 import numpy as np
 import torch
-import torch.nn.functional as F
 from torch.distributed.device_mesh import DeviceMesh
 from verl import DataProto
 from verl.utils.device import get_device_name
@@ -25,6 +24,8 @@ from verl.workers.config import HFModelConfig
 from verl.workers.rollout.base import BaseRollout
 
 from verl_vla.workers.config import RolloutConfig
+
+from .action_chunk_processor import CompositeActionChunkProcessor
 
 logger = logging.getLogger(__name__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
@@ -54,6 +55,7 @@ class HFRollout(BaseRollout):
         self.data_keys = data_keys
         self.tokenizer = tokenizer if tokenizer is not None else getattr(model_config, "tokenizer", None)
         self.output_critic_value = bool(config.output_critic_value)
+        self.action_chunk_processor = CompositeActionChunkProcessor.from_config(config)
 
         if self.module is None:
             logger.info("No shared actor engine provided, loading model from path...")
@@ -105,22 +107,9 @@ class HFRollout(BaseRollout):
         prompts.non_tensor_batch[data_keys.task] = np.asarray(tagged_values, dtype=object)
         return prompts
 
-    def _interpolate_action_chunk(self, actions: torch.Tensor) -> torch.Tensor:
-        interpolation = self.config.action_interpolation
-        if not interpolation.enable:
-            return actions
-        if actions.ndim != 3:
-            raise ValueError(f"rollout action chunk must have shape [batch, time, action_dim], got {actions.shape}")
-
-        output_steps = int(actions.shape[1]) * int(interpolation.factor)
-        return F.interpolate(
-            actions.transpose(1, 2),
-            size=output_steps,
-            mode="linear",
-            align_corners=True,
-        ).transpose(1, 2)
-
     def generate_sequences(self, prompts: DataProto) -> DataProto:
+        episode_start = prompts.non_tensor_batch.pop("episode_start", None)
+        stage_id = int(prompts.meta_info.get("stage_id", 0))
         prompts = self._apply_acp_prompt_tag(prompts)
         with torch.autocast(device_type=get_device_name(), dtype=torch.bfloat16):
             eval = bool(prompts.meta_info.get("eval", False))
@@ -131,7 +120,11 @@ class HFRollout(BaseRollout):
             )
 
         ret = output.to_data_proto()
-        ret.batch["action"] = self._interpolate_action_chunk(ret.batch["action"])
+        ret.batch["action"] = self.action_chunk_processor.process(
+            ret.batch["action"],
+            stage_id=stage_id,
+            episode_start=episode_start,
+        )
         if self.output_critic_value:
             with torch.autocast(device_type=get_device_name(), dtype=torch.bfloat16):
                 critic_value = self.module.sac_get_critic_value(prompts, output, self.tokenizer)

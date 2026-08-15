@@ -131,7 +131,7 @@ class BaseEnv(gym.Env):
         success_steps = torch.stack([torch.as_tensor(chunk) for chunk in success_chunks], dim=1)
 
         done_mask = (terminated_steps.bool() | truncated_steps.bool()).any(dim=1).numpy()
-        merged_step_result = self._reset_done_envs(
+        merged_step_result, episode_start = self._auto_reset_done_envs(
             merged_step_result,
             np.arange(self.num_envs),
             done_mask=done_mask | restart_episode,
@@ -140,6 +140,7 @@ class BaseEnv(gym.Env):
             "observation": merged_step_result["observation"],
             "task": merged_step_result["task"],
             "task_id": merged_step_result["task_id"],
+            "episode_start": episode_start,
         }
         if "eval_episode_id" in merged_step_result:
             obs["eval_episode_id"] = merged_step_result["eval_episode_id"]
@@ -164,7 +165,7 @@ class BaseEnv(gym.Env):
         if self.auto_reset_enabled and self._latest_obs is not None and not reset_eval:
             return self._latest_obs, {}
 
-        obs = self.env_reset(reset_eval=reset_eval, **reset_kwargs)
+        obs = self._reset_observation(reset_eval=reset_eval, **reset_kwargs)
         env_ids = reset_kwargs["env_ids"]
         self._latest_obs = obs
         self.reset_teleops()
@@ -548,17 +549,37 @@ class BaseEnv(gym.Env):
 
         return merged_step_result
 
-    def _reset_done_envs(self, step_result, env_ids, done_mask):
+    def _reset_observation(self, **reset_kwargs):
+        """Reset environments and mark the returned observations as episode starts.
+
+        Call chains::
+
+            reset -> _reset_observation --------------------------┐
+                                                                  ├-> env_reset
+            step  -> _auto_reset_done_envs -> _reset_observation -┘
+
+        ``episode_start`` describes the observations returned by this call, so
+        every selected environment is marked ``True`` here. Observations from a
+        normal step are marked ``False`` by ``step`` without entering this path.
+        """
+        obs = self.env_reset(**reset_kwargs)
+        env_ids = reset_kwargs["env_ids"]
+        obs["episode_start"] = np.ones(len(env_ids), dtype=bool)
+        return obs
+
+    def _auto_reset_done_envs(self, step_result, env_ids, done_mask):
+        episode_start = np.zeros(self.num_envs, dtype=bool)
         if not self.auto_reset_enabled:
-            return step_result
+            return step_result, episode_start
 
         reset_local_ids = np.flatnonzero(done_mask)
         if len(reset_local_ids) == 0:
-            return step_result
+            return step_result, episode_start
 
-        reset_obs = self.env_reset(
+        reset_obs = self._reset_observation(
             env_ids=env_ids[reset_local_ids],
         )
+        episode_start[env_ids[reset_local_ids]] = reset_obs["episode_start"]
         for key in ("observation", "task", "task_id", "eval_episode_id"):
             if key not in step_result or key not in reset_obs:
                 continue
@@ -568,7 +589,7 @@ class BaseEnv(gym.Env):
         self.publish_reset_obs_to_teleop(reset_obs, env_ids=env_ids[reset_local_ids])
         self._confirm_before_record(env_ids[reset_local_ids])
         reset_call_rate(self, "mask_step")
-        return step_result
+        return step_result, episode_start
 
     def _slice_latest_obs(self, env_ids):
         env_ids = np.asarray(env_ids, dtype=np.int64).reshape(-1)

@@ -18,7 +18,12 @@ from typing import Optional
 from verl.base_config import BaseConfig
 from verl.workers.config import CheckpointEngineConfig, MultiTurnConfig, SamplingConfig
 
-__all__ = ["RolloutACPConfig", "RolloutActionInterpolationConfig", "RolloutConfig"]
+__all__ = [
+    "RolloutACPConfig",
+    "RolloutActionChunkStitchingConfig",
+    "RolloutActionInterpolationConfig",
+    "RolloutConfig",
+]
 
 
 @dataclass
@@ -39,6 +44,21 @@ class RolloutActionInterpolationConfig(BaseConfig):
     def __post_init__(self):
         if self.factor < 2:
             raise ValueError(f"action interpolation factor must be at least 2, got {self.factor}")
+
+
+@dataclass
+class RolloutActionChunkStitchingConfig(BaseConfig):
+    """Overlap and execution horizons for consecutive rollout action plans."""
+
+    enable: bool = False
+    execution_steps: int = 80
+    blend_steps: int = 20
+
+    def __post_init__(self):
+        if self.execution_steps <= 0:
+            raise ValueError(f"action chunk execution_steps must be positive, got {self.execution_steps}")
+        if self.blend_steps < 2:
+            raise ValueError(f"action chunk blend_steps must be at least 2, got {self.blend_steps}")
 
 
 @dataclass
@@ -71,6 +91,7 @@ class RolloutConfig(BaseConfig):
     output_critic_value: bool = False
     acp: RolloutACPConfig = field(default_factory=RolloutACPConfig)
     action_interpolation: RolloutActionInterpolationConfig = field(default_factory=RolloutActionInterpolationConfig)
+    action_chunk_stitching: RolloutActionChunkStitchingConfig = field(default_factory=RolloutActionChunkStitchingConfig)
     val_kwargs: SamplingConfig = field(default_factory=SamplingConfig)
     multi_turn: MultiTurnConfig = field(default_factory=MultiTurnConfig)
     checkpoint_engine: CheckpointEngineConfig = field(default_factory=CheckpointEngineConfig)

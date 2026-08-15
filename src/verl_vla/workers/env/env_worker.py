@@ -104,6 +104,7 @@ def create_env_batch_dataproto(obs, rewards, terminations, truncations, successe
     }
     non_tensor_batch = {"obs.task": step_result["task"]}
     non_tensor_batch["obs.task_id"] = np.asarray(step_result["task_id"], dtype=np.int64)
+    non_tensor_batch["obs.episode_start"] = np.asarray(obs["episode_start"], dtype=bool)
     if step_result["eval_episode_id"] is not None:
         non_tensor_batch["obs.eval_episode_id"] = np.asarray(step_result["eval_episode_id"], dtype=np.int64)
     output = DataProto.from_dict(tensors=tensor_batch, non_tensors=non_tensor_batch)
@@ -366,6 +367,9 @@ class EnvWorker(Worker, DistProfilerExtension):
         ]
         if eval_episode_ids:
             output_non_tensor_dict["eval_episode_id"] = np.asarray(eval_episode_ids, dtype=np.int64)
+        output_non_tensor_dict["episode_start"] = np.concatenate(
+            [np.asarray(obs["episode_start"], dtype=bool) for obs, _info in result_list]
+        )
 
         output = DataProto.from_dict(tensors=output_tensor_dict, non_tensors=output_non_tensor_dict)
         return output
