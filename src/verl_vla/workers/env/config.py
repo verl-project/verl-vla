@@ -20,6 +20,7 @@ from typing import Any
 from hydra.utils import instantiate
 from verl.base_config import BaseConfig
 
+from verl_vla.envs.action_executor import ActionExecutionConfig
 from verl_vla.envs.arena.config import ArenaSimulatorConfig
 from verl_vla.envs.libero.config import LiberoSimulatorConfig
 from verl_vla.envs.piper.config import PiperConfig
@@ -57,6 +58,7 @@ class EnvWorkerConfig(BaseConfig):
     confirm_before_record: bool = False
     log_step_latency: bool = False
     target_step_hz: float | None = None
+    action_execution: ActionExecutionConfig = field(default_factory=ActionExecutionConfig)
     modes: list[str] = field(default_factory=lambda: ["train"])
     num_envs: int = 1
     simulator: SimulatorConfig = field(default_factory=SimulatorConfig)
@@ -67,6 +69,14 @@ class EnvWorkerConfig(BaseConfig):
     simulator_start_timeout_s: int = 180
 
     def __post_init__(self):
+        if not isinstance(self.action_execution, ActionExecutionConfig):
+            action_execution = instantiate(self.action_execution)
+            if not isinstance(action_execution, ActionExecutionConfig):
+                raise TypeError(
+                    "action execution config must instantiate to ActionExecutionConfig, "
+                    f"got {type(action_execution).__name__}"
+                )
+            object.__setattr__(self, "action_execution", action_execution)
         if not isinstance(self.simulator, SimulatorConfig):
             simulator = instantiate(self.simulator)
             if not isinstance(simulator, SimulatorConfig):

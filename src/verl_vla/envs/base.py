@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import copy
 import time
 from typing import Any
 
@@ -24,6 +25,12 @@ import numpy as np
 import torch
 from typing_extensions import override
 
+from verl_vla.envs.action_executor import (
+    ActionExecutor,
+    AsyncActionExecutor,
+    ExecutedStep,
+    SerialActionExecutor,
+)
 from verl_vla.recorder import MultiRecorder
 from verl_vla.teleop import TeleopController
 from verl_vla.utils.envs.rate_limiter import pace_calls, reset_call_rate
@@ -80,6 +87,11 @@ class BaseEnv(gym.Env):
         self.recorder = self.create_recorder()
         self._recorder_episode_done = np.zeros(self.num_envs, dtype=bool)
         self._confirm_before_record_enabled = bool(cfg.confirm_before_record)
+        self._execution_chunk_intervened = np.zeros(self.num_envs, dtype=bool)
+        self._execution_merged_step_result = None
+        self._execution_restart_episode = np.zeros(self.num_envs, dtype=bool)
+        self._execution_done = np.zeros(self.num_envs, dtype=bool)
+        self.action_executor = self._create_action_executor()
 
     ### Gym Environment API ###
     @override
@@ -94,69 +106,20 @@ class BaseEnv(gym.Env):
         action = self._to_numpy(action, copy=True)
         chunk_values = self._to_numpy(kwargs.pop("chunk_values", None))
         if chunk_values is None:
-            chunk_values = np.zeros(action.shape[0], dtype=np.float32)
-        num_chunk_steps = action.shape[1]
-        if num_chunk_steps <= 0:
-            raise ValueError(f"action chunk must contain at least one step, got shape {action.shape}")
+            chunk_values = np.zeros(action.shape[:2], dtype=np.float32)
+        elif chunk_values.ndim <= 1:
+            chunk_values = np.broadcast_to(chunk_values[:, None], action.shape[:2]).copy()
 
-        reward_chunks = []
-        terminated_chunks = []
-        truncated_chunks = []
-        success_chunks = []
-        restart_episode = np.zeros(self.num_envs, dtype=bool)
-        chunk_intervened = np.zeros(self.num_envs, dtype=bool)
-        merged_step_result = None
-        for step_idx in range(num_chunk_steps):
-            step_actions = action[:, step_idx]
-            step_values = chunk_values if chunk_values.ndim <= 1 else chunk_values[:, step_idx]
-
-            merged_step_result, step_restart_episode, chunk_intervened = self.step_with_teleop_and_recording(
-                step_actions,
-                critic_value=step_values,
-                chunk_intervened=chunk_intervened,
-                merged_step_result=merged_step_result,
-            )
-            restart_episode |= step_restart_episode
-
-            # Snapshot per-substep feedback before later partial env updates
-            # mutate the reused merged_step_result buffers in place.
-            reward_chunks.append(np.asarray(merged_step_result["next.reward"]).copy())
-            terminated_chunks.append(np.asarray(merged_step_result["next.terminated"]).copy())
-            truncated_chunks.append(np.asarray(merged_step_result["next.truncated"]).copy())
-            success_chunks.append(np.asarray(merged_step_result["next.success"]).copy())
-
-        reward_steps = torch.stack([torch.as_tensor(chunk) for chunk in reward_chunks], dim=1)
-        terminated_steps = torch.stack([torch.as_tensor(chunk) for chunk in terminated_chunks], dim=1)
-        truncated_steps = torch.stack([torch.as_tensor(chunk) for chunk in truncated_chunks], dim=1)
-        success_steps = torch.stack([torch.as_tensor(chunk) for chunk in success_chunks], dim=1)
-
-        done_mask = (terminated_steps.bool() | truncated_steps.bool()).any(dim=1).numpy()
-        merged_step_result, episode_start = self._auto_reset_done_envs(
-            merged_step_result,
-            np.arange(self.num_envs),
-            done_mask=done_mask | restart_episode,
-        )
-        obs = {
-            "observation": merged_step_result["observation"],
-            "task": merged_step_result["task"],
-            "task_id": merged_step_result["task_id"],
-            "episode_start": episode_start,
-        }
-        if "eval_episode_id" in merged_step_result:
-            obs["eval_episode_id"] = merged_step_result["eval_episode_id"]
-
-        self._latest_obs = obs
-        return (
-            obs,
-            reward_steps,
-            terminated_steps,
-            truncated_steps,
-            success_steps,
-        )
+        execution = self.action_executor.exchange(action, chunk_values)
+        return execution.result
 
     @override
     def reset(self, *, seed: int | None = None, options: dict[str, Any] | None = None) -> Any:
         del seed
+        self.action_executor.reset()
+        self._execution_merged_step_result = None
+        self._execution_restart_episode.fill(False)
+        self._execution_done.fill(False)
         mode = str((options or {}).get("mode", "train"))
         if self.recorder is not None and self.recorder.set_mode(mode):
             self._recorder_episode_done.fill(False)
@@ -177,6 +140,7 @@ class BaseEnv(gym.Env):
 
     @override
     def close(self) -> None:
+        self.action_executor.close()
         self.close_recorder()
         self.close_teleops()
         self.env_close()
@@ -269,6 +233,101 @@ class BaseEnv(gym.Env):
         }
 
     ### Step Control ###
+
+    def _create_action_executor(self) -> ActionExecutor:
+        execution_cfg = self.cfg.action_execution
+        if execution_cfg.mode == "serial":
+            return SerialActionExecutor(self._execute_action_step, self._finish_execution_slice)
+        return AsyncActionExecutor(
+            self._execute_action_step,
+            self._async_execution_result,
+            replan_after_steps=execution_cfg.replan_after_steps,
+            smooth_overlapping_actions=execution_cfg.smooth_overlapping_actions,
+        )
+
+    def _execute_action_step(
+        self,
+        action: np.ndarray,
+        critic_value: np.ndarray,
+        chunk_started: bool,
+    ) -> ExecutedStep:
+        if chunk_started:
+            self._execution_chunk_intervened.fill(False)
+
+        self._execution_merged_step_result, restart_episode, self._execution_chunk_intervened = (
+            self.step_with_teleop_and_recording(
+                action,
+                critic_value=critic_value,
+                chunk_intervened=self._execution_chunk_intervened,
+                merged_step_result=self._execution_merged_step_result,
+            )
+        )
+        self._execution_restart_episode |= restart_episode
+        self._execution_done |= np.asarray(self._execution_merged_step_result["next.terminated"], dtype=bool)
+        self._execution_done |= np.asarray(self._execution_merged_step_result["next.truncated"], dtype=bool)
+        feedback = {
+            "next.reward": np.asarray(self._execution_merged_step_result["next.reward"]).copy(),
+            "next.terminated": np.asarray(self._execution_merged_step_result["next.terminated"]).copy(),
+            "next.truncated": np.asarray(self._execution_merged_step_result["next.truncated"]).copy(),
+            "next.success": np.asarray(self._execution_merged_step_result["next.success"]).copy(),
+        }
+        return ExecutedStep(feedback=feedback)
+
+    def _finish_execution_slice(self, steps) -> tuple[Any, ...]:
+        reward_steps = torch.stack([torch.as_tensor(step.feedback["next.reward"]) for step in steps], dim=1)
+        terminated_steps = torch.stack([torch.as_tensor(step.feedback["next.terminated"]) for step in steps], dim=1)
+        truncated_steps = torch.stack([torch.as_tensor(step.feedback["next.truncated"]) for step in steps], dim=1)
+        success_steps = torch.stack([torch.as_tensor(step.feedback["next.success"]) for step in steps], dim=1)
+
+        done_mask = (terminated_steps.bool() | truncated_steps.bool()).any(dim=1).numpy()
+        merged_step_result, episode_start = self._auto_reset_done_envs(
+            self._execution_merged_step_result,
+            np.arange(self.num_envs),
+            done_mask=done_mask | self._execution_restart_episode,
+        )
+        obs = {
+            "observation": merged_step_result["observation"],
+            "task": merged_step_result["task"],
+            "task_id": merged_step_result["task_id"],
+            "episode_start": episode_start,
+        }
+        if "eval_episode_id" in merged_step_result:
+            obs["eval_episode_id"] = merged_step_result["eval_episode_id"]
+
+        self._latest_obs = obs
+        self._execution_restart_episode.fill(False)
+        self._execution_done.fill(False)
+        return copy.deepcopy(obs), reward_steps, terminated_steps, truncated_steps, success_steps
+
+    def _async_execution_result(self, feedback_shape: tuple[int, int]) -> tuple[tuple[Any, ...], bool]:
+        merged_step_result, episode_start = self._auto_reset_done_envs(
+            self._execution_merged_step_result,
+            np.arange(self.num_envs),
+            done_mask=self._execution_done | self._execution_restart_episode,
+        )
+        obs = {
+            "observation": merged_step_result["observation"],
+            "task": merged_step_result["task"],
+            "task_id": merged_step_result["task_id"],
+            "episode_start": episode_start,
+        }
+        if "eval_episode_id" in merged_step_result:
+            obs["eval_episode_id"] = merged_step_result["eval_episode_id"]
+
+        self._execution_merged_step_result = merged_step_result
+        self._latest_obs = obs
+        self._execution_restart_episode.fill(False)
+        self._execution_done.fill(False)
+        return (
+            (
+                copy.deepcopy(obs),
+                torch.zeros(feedback_shape, dtype=torch.float32),
+                torch.zeros(feedback_shape, dtype=torch.bool),
+                torch.zeros(feedback_shape, dtype=torch.bool),
+                torch.zeros(feedback_shape, dtype=torch.bool),
+            ),
+            bool(episode_start.any()),
+        )
 
     def env_init(self) -> None:
         """Initialize subclass-owned simulator resources."""
@@ -827,6 +886,7 @@ class BaseEnv(gym.Env):
                 self._recorder_episode_done[env_id] = True
 
     def finish_rollout(self) -> None:
+        self.action_executor.reset()
         if self.auto_reset_enabled:
             return
         if self.recorder is None:

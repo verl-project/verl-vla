@@ -12,12 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import time
 from typing import Any
 
 import numpy as np
 import pytest
 
 import verl_vla.utils.envs.rate_limiter as rate_limiter_module
+from verl_vla.envs.action_executor import AsyncActionExecutor, SerialActionExecutor
 from verl_vla.envs.base import BaseEnv
 
 
@@ -54,6 +56,11 @@ class FakeBaseEnv(BaseEnv):
         self.reset_calls: list[list[int]] = []
         self.recorder_reset_calls: list[list[int]] = []
         self._step_count = 0
+        self._execution_chunk_intervened = np.zeros(self.num_envs, dtype=bool)
+        self._execution_merged_step_result = None
+        self._execution_restart_episode = np.zeros(self.num_envs, dtype=bool)
+        self._execution_done = np.zeros(self.num_envs, dtype=bool)
+        self.action_executor = SerialActionExecutor(self._execute_action_step, self._finish_execution_slice)
 
     def apply_teleop_action(self, action):
         event = self.events.pop(0) if self.events else {}
@@ -226,6 +233,43 @@ def test_restart_episode_resets_without_marking_transition_done() -> None:
     assert success.tolist() == [[False]]
     assert env.reset_calls == [[0]]
     assert env.recorder_reset_calls == [[0]]
+
+
+def test_async_execution_returns_placeholder_feedback_matching_model_chunk() -> None:
+    env = FakeBaseEnv(num_envs=1, auto_reset=False)
+    env.action_executor = AsyncActionExecutor(
+        env._execute_action_step,
+        env._async_execution_result,
+        replan_after_steps=2,
+    )
+
+    obs, reward, terminated, truncated, success = env.step(np.asarray([[[1.0], [2.0], [3.0]]], dtype=np.float32))
+
+    assert obs["observation"] == ["step-2-obs-0"]
+    assert reward.shape == terminated.shape == truncated.shape == success.shape == (1, 3)
+    assert not reward.any()
+    assert not terminated.any()
+    assert not truncated.any()
+    assert not success.any()
+
+    env.action_executor.close()
+
+
+def test_async_execution_discards_old_chunk_after_auto_reset() -> None:
+    env = FakeBaseEnv(num_envs=1, events=[{"restart_episode": [0]}])
+    env.action_executor = AsyncActionExecutor(
+        env._execute_action_step,
+        env._async_execution_result,
+        replan_after_steps=2,
+    )
+
+    obs, *_ = env.step(np.asarray([[[1.0], [2.0], [3.0], [4.0]]], dtype=np.float32))
+
+    assert obs["episode_start"].tolist() == [True]
+    time.sleep(0.02)
+    assert [action.tolist() for action in env.action_calls] == [[[1.0]], [[2.0]]]
+
+    env.action_executor.close()
 
 
 def test_intervention_done_env_is_not_stepped_again() -> None:

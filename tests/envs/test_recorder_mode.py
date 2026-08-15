@@ -19,6 +19,7 @@ from typing import Any
 import numpy as np
 
 import verl_vla.recorder.impl.video as video_module
+from verl_vla.envs.action_executor import SerialActionExecutor
 from verl_vla.envs.base import BaseEnv
 from verl_vla.recorder.base import BaseRecorder
 from verl_vla.recorder.impl.video import VideoRecorder
@@ -62,6 +63,10 @@ class _ModeFakeEnv(BaseEnv):
         self.recorder = recorder
         self._recorder_episode_done = np.zeros(num_envs, dtype=bool)
         self._confirm_before_record_enabled = False
+        self._execution_merged_step_result = None
+        self._execution_restart_episode = np.zeros(num_envs, dtype=bool)
+        self._execution_done = np.zeros(num_envs, dtype=bool)
+        self.action_executor = SerialActionExecutor(lambda *args: None, lambda steps: None)
 
     def env_reset(self, *, env_ids, reset_eval: bool = False):
         del reset_eval
