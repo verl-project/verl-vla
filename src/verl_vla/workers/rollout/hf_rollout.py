@@ -25,8 +25,6 @@ from verl.workers.rollout.base import BaseRollout
 
 from verl_vla.workers.config import RolloutConfig
 
-from .action_chunk_processor import CompositeActionChunkProcessor
-
 logger = logging.getLogger(__name__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
 
@@ -55,7 +53,6 @@ class HFRollout(BaseRollout):
         self.data_keys = data_keys
         self.tokenizer = tokenizer if tokenizer is not None else getattr(model_config, "tokenizer", None)
         self.output_critic_value = bool(config.output_critic_value)
-        self.action_chunk_processor = CompositeActionChunkProcessor.from_config(config)
 
         if self.module is None:
             logger.info("No shared actor engine provided, loading model from path...")
@@ -108,8 +105,6 @@ class HFRollout(BaseRollout):
         return prompts
 
     def generate_sequences(self, prompts: DataProto) -> DataProto:
-        episode_start = prompts.non_tensor_batch.pop("episode_start", None)
-        stage_id = int(prompts.meta_info.get("stage_id", 0))
         prompts = self._apply_acp_prompt_tag(prompts)
         with torch.autocast(device_type=get_device_name(), dtype=torch.bfloat16):
             eval = bool(prompts.meta_info.get("eval", False))
@@ -120,11 +115,6 @@ class HFRollout(BaseRollout):
             )
 
         ret = output.to_data_proto()
-        ret.batch["action"] = self.action_chunk_processor.process(
-            ret.batch["action"],
-            stage_id=stage_id,
-            episode_start=episode_start,
-        )
         if self.output_critic_value:
             with torch.autocast(device_type=get_device_name(), dtype=torch.bfloat16):
                 critic_value = self.module.sac_get_critic_value(prompts, output, self.tokenizer)

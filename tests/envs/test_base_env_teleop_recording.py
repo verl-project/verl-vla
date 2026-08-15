@@ -265,7 +265,7 @@ def test_async_execution_discards_old_chunk_after_auto_reset() -> None:
 
     obs, *_ = env.step(np.asarray([[[1.0], [2.0], [3.0], [4.0]]], dtype=np.float32))
 
-    assert obs["episode_start"].tolist() == [True]
+    assert obs["observation"] == ["reset-obs-0"]
     time.sleep(0.02)
     assert [action.tolist() for action in env.action_calls] == [[[1.0]], [[2.0]]]
 

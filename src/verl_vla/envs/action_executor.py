@@ -20,7 +20,7 @@ import threading
 from abc import ABC, abstractmethod
 from collections import deque
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
@@ -28,12 +28,41 @@ from verl.base_config import BaseConfig
 
 
 @dataclass
+class ActionInterpolationConfig(BaseConfig):
+    """Temporal upsampling shared by all action executors."""
+
+    enable: bool = False
+    factor: int = 2
+
+    def __post_init__(self) -> None:
+        if self.factor < 2:
+            raise ValueError(f"action interpolation factor must be at least 2, got {self.factor}")
+
+
+@dataclass
+class SerialActionSmoothingConfig(BaseConfig):
+    """Plan overlap smoothing owned by the serial executor."""
+
+    enable: bool = False
+    execution_steps: int = 80
+    blend_steps: int = 20
+
+    def __post_init__(self) -> None:
+        if self.execution_steps <= 0:
+            raise ValueError(f"serial execution_steps must be positive, got {self.execution_steps}")
+        if self.blend_steps < 2:
+            raise ValueError(f"serial blend_steps must be at least 2, got {self.blend_steps}")
+
+
+@dataclass
 class ActionExecutionConfig(BaseConfig):
-    """Environment-owned action scheduling configuration."""
+    """Environment-owned action transformation and scheduling configuration."""
 
     mode: str = "serial"
     replan_after_steps: int = 1
     smooth_overlapping_actions: bool = False
+    interpolation: ActionInterpolationConfig = field(default_factory=ActionInterpolationConfig)
+    serial_smoothing: SerialActionSmoothingConfig = field(default_factory=SerialActionSmoothingConfig)
 
     def __post_init__(self) -> None:
         if self.mode not in {"serial", "async"}:
@@ -66,12 +95,19 @@ class ExecutionSlice:
 
 
 StepFn = Callable[[np.ndarray, np.ndarray, bool], ExecutedStep]
-FinishFn = Callable[[Sequence[ExecutedStep]], Any]
-SnapshotFn = Callable[[tuple[int, int]], tuple[Any, bool]]
+FinishFn = Callable[[Sequence[ExecutedStep]], tuple[Any, np.ndarray]]
+SnapshotFn = Callable[[tuple[int, int]], tuple[Any, np.ndarray]]
 
 
 class ActionExecutor(ABC):
     """Exchange action chunks for completed execution intervals."""
+
+    def __init__(self, interpolation: ActionInterpolationConfig) -> None:
+        self._interpolation_factor = interpolation.factor if interpolation.enable else 1
+
+    def _prepare(self, actions: np.ndarray, values: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        actions, values = _normalize_action_chunk(actions, values)
+        return interpolate_action_chunk(actions, values, factor=self._interpolation_factor)
 
     @abstractmethod
     def exchange(self, actions: np.ndarray, values: np.ndarray) -> ExecutionSlice:
@@ -87,14 +123,37 @@ class ActionExecutor(ABC):
 
 
 class SerialActionExecutor(ActionExecutor):
-    """Execute each submitted action chunk completely in the caller thread."""
+    """Synchronously execute complete chunks or smoothed plan prefixes."""
 
-    def __init__(self, step_fn: StepFn, finish_fn: FinishFn) -> None:
+    def __init__(
+        self,
+        step_fn: StepFn,
+        finish_fn: FinishFn,
+        *,
+        interpolation: ActionInterpolationConfig | None = None,
+        smoothing: SerialActionSmoothingConfig | None = None,
+    ) -> None:
+        super().__init__(interpolation or ActionInterpolationConfig())
         self._step_fn = step_fn
         self._finish_fn = finish_fn
+        self._smoothing = smoothing or SerialActionSmoothingConfig()
+        self._previous_actions: np.ndarray | None = None
+        self._previous_valid: np.ndarray | None = None
 
     def exchange(self, actions: np.ndarray, values: np.ndarray) -> ExecutionSlice:
-        actions, values = _normalize_action_chunk(actions, values)
+        actions, values = self._prepare(actions, values)
+        if self._smoothing.enable:
+            actions = smooth_serial_action_chunks(
+                self._previous_actions,
+                actions,
+                execution_steps=self._smoothing.execution_steps,
+                blend_steps=self._smoothing.blend_steps,
+                previous_valid=self._previous_valid,
+            )
+            self._previous_actions = actions.copy()
+            self._previous_valid = np.ones(actions.shape[0], dtype=bool)
+            actions = actions[:, : self._smoothing.execution_steps]
+            values = values[:, : self._smoothing.execution_steps]
         steps = [
             self._step_fn(
                 actions[:, step_idx].copy(),
@@ -103,10 +162,14 @@ class SerialActionExecutor(ActionExecutor):
             )
             for step_idx in range(actions.shape[1])
         ]
-        return _finish_slice(steps, self._finish_fn)
+        result, reset_mask = self._finish_fn(steps)
+        if self._previous_valid is not None:
+            self._previous_valid &= ~np.asarray(reset_mask, dtype=bool).reshape(-1)
+        return ExecutionSlice(result=result)
 
     def reset(self) -> None:
-        return
+        self._previous_actions = None
+        self._previous_valid = None
 
     def close(self) -> None:
         return
@@ -128,7 +191,9 @@ class AsyncActionExecutor(ActionExecutor):
         *,
         replan_after_steps: int,
         smooth_overlapping_actions: bool = False,
+        interpolation: ActionInterpolationConfig | None = None,
     ) -> None:
+        super().__init__(interpolation or ActionInterpolationConfig())
         if replan_after_steps <= 0:
             raise ValueError(f"replan_after_steps must be positive, got {replan_after_steps}")
         self._step_fn = step_fn
@@ -148,7 +213,8 @@ class AsyncActionExecutor(ActionExecutor):
         self._thread.start()
 
     def exchange(self, actions: np.ndarray, values: np.ndarray) -> ExecutionSlice:
-        actions, values = _normalize_action_chunk(actions, values)
+        feedback_shape = actions.shape[:2]
+        actions, values = self._prepare(actions, values)
         if actions.shape[1] < self._replan_after_steps:
             raise ValueError(
                 "async action chunks must cover one replan interval, "
@@ -181,8 +247,8 @@ class AsyncActionExecutor(ActionExecutor):
                 self._raise_if_failed()
                 self._condition.wait()
             try:
-                result, episode_started = self._snapshot_fn(actions.shape[:2])
-                if episode_started:
+                result, reset_mask = self._snapshot_fn(feedback_shape)
+                if np.asarray(reset_mask, dtype=bool).any():
                     self._action_queue.clear()
                 self._chunk_origin_step = self._completed_steps
                 return ExecutionSlice(result=result)
@@ -259,8 +325,30 @@ def _normalize_action_chunk(actions: np.ndarray, values: np.ndarray) -> tuple[np
     return actions, values
 
 
+def interpolate_action_chunk(
+    actions: np.ndarray,
+    values: np.ndarray,
+    *,
+    factor: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Linearly upsample actions and their per-step values along time."""
+    if factor == 1:
+        return actions, values
+
+    output_steps = actions.shape[1] * factor
+    positions = np.linspace(0.0, actions.shape[1] - 1, output_steps)
+    left = np.floor(positions).astype(np.int64)
+    right = np.ceil(positions).astype(np.int64)
+    weight = positions - left
+    interpolated_actions = (1.0 - weight.reshape(1, -1, 1)) * actions[:, left] + weight.reshape(1, -1, 1) * actions[
+        :, right
+    ]
+    interpolated_values = (1.0 - weight.reshape(1, -1)) * values[:, left] + weight.reshape(1, -1) * values[:, right]
+    return interpolated_actions.astype(actions.dtype, copy=False), interpolated_values.astype(values.dtype, copy=False)
+
+
 def smooth_action_chunk_overlap(previous_actions: np.ndarray, next_actions: np.ndarray) -> np.ndarray:
-    """Blend the queued plan tail into the temporally aligned new plan."""
+    """Blend the actual queued tail into the temporally aligned new async plan."""
     overlap_steps = min(previous_actions.shape[1], next_actions.shape[1])
     smoothed_actions = next_actions.copy()
     if overlap_steps == 0:
@@ -274,6 +362,37 @@ def smooth_action_chunk_overlap(previous_actions: np.ndarray, next_actions: np.n
     return smoothed_actions
 
 
-def _finish_slice(steps: Sequence[ExecutedStep], finish_fn: FinishFn) -> ExecutionSlice:
-    result = finish_fn(steps)
-    return ExecutionSlice(result=result)
+def smooth_serial_action_chunks(
+    previous_actions: np.ndarray | None,
+    next_actions: np.ndarray,
+    *,
+    execution_steps: int,
+    blend_steps: int,
+    previous_valid: np.ndarray | None,
+) -> np.ndarray:
+    """Blend the previous unexecuted tail into the next serial action plan."""
+    plan_steps = next_actions.shape[1]
+    if execution_steps + blend_steps > plan_steps:
+        raise ValueError(
+            "serial action smoothing requires execution_steps + blend_steps <= action plan steps, "
+            f"got {execution_steps} + {blend_steps} > {plan_steps}"
+        )
+
+    smoothed_actions = next_actions.copy()
+    if previous_actions is None:
+        return smoothed_actions
+    if previous_actions.shape != next_actions.shape:
+        raise ValueError(
+            "consecutive serial action plans must preserve shape, "
+            f"got {previous_actions.shape} then {next_actions.shape}"
+        )
+
+    valid = np.ones(next_actions.shape[0], dtype=bool) if previous_valid is None else previous_valid
+    if valid.any():
+        weight = np.linspace(0.0, 1.0, blend_steps, dtype=next_actions.dtype)
+        weight = (weight * weight * (3.0 - 2.0 * weight)).reshape(1, blend_steps, 1)
+        previous_tail = previous_actions[valid, execution_steps : execution_steps + blend_steps]
+        smoothed_actions[valid, :blend_steps] = (1.0 - weight) * previous_tail + weight * smoothed_actions[
+            valid, :blend_steps
+        ]
+    return smoothed_actions

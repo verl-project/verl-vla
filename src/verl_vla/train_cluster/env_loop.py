@@ -28,11 +28,7 @@ from verl_vla.utils.data import (
     stack_dataproto_with_padding,
     update_progress_trajectory_counts,
 )
-from verl_vla.utils.keys import (
-    ACTION_KEY,
-    FEEDBACK_KEY,
-    OBS_KEY,
-)
+from verl_vla.utils.keys import ACTION_KEY, FEEDBACK_KEY, OBS_KEY
 
 logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
@@ -121,7 +117,7 @@ class EnvLoop:
         rollout_futures = {}
         for stage_id in range(self.stage_num):
             vla_input = staged_obs[stage_id]
-            vla_input.meta_info = {**rollout_meta_info, "stage_id": stage_id}
+            vla_input.meta_info = rollout_meta_info
             rollout_futures[stage_id] = self.rollout_wg.generate_sequences(vla_input)
 
         stage_timing = {
@@ -181,7 +177,7 @@ class EnvLoop:
 
                 if step_idx < self.max_interactions:
                     vla_input = next_obs
-                    vla_input.meta_info = {**rollout_meta_info, "stage_id": stage_id}
+                    vla_input.meta_info = rollout_meta_info
                     rollout_futures[stage_id] = self.rollout_wg.generate_sequences(vla_input)
 
             stage_timing[stage_id]["stage_wall_s"] = time.perf_counter() - stage_start_t

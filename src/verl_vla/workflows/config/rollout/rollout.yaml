@@ -73,27 +73,6 @@ acp:
   # Prompt suffix used when ACP rollout is enabled
   positive_tag: "Advantage: positive"
 
-# Temporal upsampling of each rollout action chunk before environment execution.
-action_interpolation:
-
-  # Whether to linearly interpolate the action time dimension.
-  enable: false
-
-  # Output action count multiplier. The environment execution rate must use the same multiplier.
-  factor: 2
-
-# Stateful overlap blending between consecutive rollout action plans.
-action_chunk_stitching:
-
-  # Whether to blend the previous plan tail into the new plan prefix.
-  enable: false
-
-  # Number of actions returned to the environment from each complete plan.
-  execution_steps: 80
-
-  # Number of previous tail actions blended into the next plan prefix.
-  blend_steps: 20
-
 # Validation sampling parameters
 val_kwargs:
 

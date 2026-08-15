@@ -128,7 +128,7 @@ class BaseEnv(gym.Env):
         if self.auto_reset_enabled and self._latest_obs is not None and not reset_eval:
             return self._latest_obs, {}
 
-        obs = self._reset_observation(reset_eval=reset_eval, **reset_kwargs)
+        obs = self.env_reset(reset_eval=reset_eval, **reset_kwargs)
         env_ids = reset_kwargs["env_ids"]
         self._latest_obs = obs
         self.reset_teleops()
@@ -237,12 +237,18 @@ class BaseEnv(gym.Env):
     def _create_action_executor(self) -> ActionExecutor:
         execution_cfg = self.cfg.action_execution
         if execution_cfg.mode == "serial":
-            return SerialActionExecutor(self._execute_action_step, self._finish_execution_slice)
+            return SerialActionExecutor(
+                self._execute_action_step,
+                self._finish_execution_slice,
+                interpolation=execution_cfg.interpolation,
+                smoothing=execution_cfg.serial_smoothing,
+            )
         return AsyncActionExecutor(
             self._execute_action_step,
             self._async_execution_result,
             replan_after_steps=execution_cfg.replan_after_steps,
             smooth_overlapping_actions=execution_cfg.smooth_overlapping_actions,
+            interpolation=execution_cfg.interpolation,
         )
 
     def _execute_action_step(
@@ -273,23 +279,25 @@ class BaseEnv(gym.Env):
         }
         return ExecutedStep(feedback=feedback)
 
-    def _finish_execution_slice(self, steps) -> tuple[Any, ...]:
+    def _finish_execution_slice(self, steps) -> tuple[tuple[Any, ...], np.ndarray]:
         reward_steps = torch.stack([torch.as_tensor(step.feedback["next.reward"]) for step in steps], dim=1)
         terminated_steps = torch.stack([torch.as_tensor(step.feedback["next.terminated"]) for step in steps], dim=1)
         truncated_steps = torch.stack([torch.as_tensor(step.feedback["next.truncated"]) for step in steps], dim=1)
         success_steps = torch.stack([torch.as_tensor(step.feedback["next.success"]) for step in steps], dim=1)
 
         done_mask = (terminated_steps.bool() | truncated_steps.bool()).any(dim=1).numpy()
-        merged_step_result, episode_start = self._auto_reset_done_envs(
+        reset_mask = done_mask | self._execution_restart_episode
+        merged_step_result = self._reset_done_envs(
             self._execution_merged_step_result,
             np.arange(self.num_envs),
-            done_mask=done_mask | self._execution_restart_episode,
+            done_mask=reset_mask,
         )
+        if not self.auto_reset_enabled:
+            reset_mask.fill(False)
         obs = {
             "observation": merged_step_result["observation"],
             "task": merged_step_result["task"],
             "task_id": merged_step_result["task_id"],
-            "episode_start": episode_start,
         }
         if "eval_episode_id" in merged_step_result:
             obs["eval_episode_id"] = merged_step_result["eval_episode_id"]
@@ -297,19 +305,22 @@ class BaseEnv(gym.Env):
         self._latest_obs = obs
         self._execution_restart_episode.fill(False)
         self._execution_done.fill(False)
-        return copy.deepcopy(obs), reward_steps, terminated_steps, truncated_steps, success_steps
+        result = copy.deepcopy(obs), reward_steps, terminated_steps, truncated_steps, success_steps
+        return result, reset_mask
 
-    def _async_execution_result(self, feedback_shape: tuple[int, int]) -> tuple[tuple[Any, ...], bool]:
-        merged_step_result, episode_start = self._auto_reset_done_envs(
+    def _async_execution_result(self, feedback_shape: tuple[int, int]) -> tuple[tuple[Any, ...], np.ndarray]:
+        reset_mask = self._execution_done | self._execution_restart_episode
+        merged_step_result = self._reset_done_envs(
             self._execution_merged_step_result,
             np.arange(self.num_envs),
-            done_mask=self._execution_done | self._execution_restart_episode,
+            done_mask=reset_mask,
         )
+        if not self.auto_reset_enabled:
+            reset_mask.fill(False)
         obs = {
             "observation": merged_step_result["observation"],
             "task": merged_step_result["task"],
             "task_id": merged_step_result["task_id"],
-            "episode_start": episode_start,
         }
         if "eval_episode_id" in merged_step_result:
             obs["eval_episode_id"] = merged_step_result["eval_episode_id"]
@@ -326,7 +337,7 @@ class BaseEnv(gym.Env):
                 torch.zeros(feedback_shape, dtype=torch.bool),
                 torch.zeros(feedback_shape, dtype=torch.bool),
             ),
-            bool(episode_start.any()),
+            reset_mask,
         )
 
     def env_init(self) -> None:
@@ -608,37 +619,17 @@ class BaseEnv(gym.Env):
 
         return merged_step_result
 
-    def _reset_observation(self, **reset_kwargs):
-        """Reset environments and mark the returned observations as episode starts.
-
-        Call chains::
-
-            reset -> _reset_observation --------------------------┐
-                                                                  ├-> env_reset
-            step  -> _auto_reset_done_envs -> _reset_observation -┘
-
-        ``episode_start`` describes the observations returned by this call, so
-        every selected environment is marked ``True`` here. Observations from a
-        normal step are marked ``False`` by ``step`` without entering this path.
-        """
-        obs = self.env_reset(**reset_kwargs)
-        env_ids = reset_kwargs["env_ids"]
-        obs["episode_start"] = np.ones(len(env_ids), dtype=bool)
-        return obs
-
-    def _auto_reset_done_envs(self, step_result, env_ids, done_mask):
-        episode_start = np.zeros(self.num_envs, dtype=bool)
+    def _reset_done_envs(self, step_result, env_ids, done_mask):
         if not self.auto_reset_enabled:
-            return step_result, episode_start
+            return step_result
 
         reset_local_ids = np.flatnonzero(done_mask)
         if len(reset_local_ids) == 0:
-            return step_result, episode_start
+            return step_result
 
-        reset_obs = self._reset_observation(
+        reset_obs = self.env_reset(
             env_ids=env_ids[reset_local_ids],
         )
-        episode_start[env_ids[reset_local_ids]] = reset_obs["episode_start"]
         for key in ("observation", "task", "task_id", "eval_episode_id"):
             if key not in step_result or key not in reset_obs:
                 continue
@@ -648,7 +639,7 @@ class BaseEnv(gym.Env):
         self.publish_reset_obs_to_teleop(reset_obs, env_ids=env_ids[reset_local_ids])
         self._confirm_before_record(env_ids[reset_local_ids])
         reset_call_rate(self, "mask_step")
-        return step_result, episode_start
+        return step_result
 
     def _slice_latest_obs(self, env_ids):
         env_ids = np.asarray(env_ids, dtype=np.int64).reshape(-1)
