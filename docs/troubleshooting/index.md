@@ -9,4 +9,5 @@ behavior. Start with the affected simulator, model, or training workflow.
 
 simulators/index
 distributed-execution/index
+teleoperation-devices/index
 ```
