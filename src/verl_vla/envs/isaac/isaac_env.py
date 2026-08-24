@@ -339,7 +339,7 @@ class IsaacEnv(gym.Env):
 
         self.elapsed_steps = np.zeros(self.num_envs, dtype=np.int32)
 
-        # stablize the environment
+        # stabilize the environment
         for _ in range(10):
             zero_actions = torch.zeros((self.num_envs, self.action_dim), device=self.device)
             raw_obs, _, _, _, infos = self.env.step(zero_actions)
