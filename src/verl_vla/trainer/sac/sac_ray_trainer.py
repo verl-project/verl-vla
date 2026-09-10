@@ -174,6 +174,12 @@ class RobRaySACTrainer:
         progress_bar = tqdm(total=self.total_training_steps, initial=self.global_steps, desc="Training Progress")
 
         self.global_steps += 1
+        # Completed runs save global_steps == total_training_steps. The nested
+        # for-loops below always enter at least once, so return before that
+        # extra update and checkpoint.
+        if self.global_steps > self.total_training_steps:
+            progress_bar.close()
+            return
         last_val_metrics = None
         self.max_steps_duration = 0
 
